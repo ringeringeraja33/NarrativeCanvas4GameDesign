@@ -7,10 +7,6 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   async onload() {
     this.registerView(VIEW_TYPE, (leaf) => new NarrativeCanvasView(leaf, this));
 
-    this.addRibbonIcon("network", "Open Narrative Canvas", () => {
-      this.activateView(true);
-    });
-
     this.addCommand({
       id: "open-narrative-canvas",
       name: "Open Narrative Canvas",
