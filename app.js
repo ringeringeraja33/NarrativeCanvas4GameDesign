@@ -59,7 +59,6 @@ const state = {
   selectedLinkId: null,
   panel: "project",
   activeFileId: "adventure",
-  activeRibbon: "show-files",
   view: { x: 0, y: 0, scale: 0.82 },
   connectingFrom: null,
   draggingNode: null,
@@ -135,12 +134,6 @@ function renderAll() {
 }
 
 function renderShellState() {
-  document.querySelectorAll(".ribbon-button").forEach((button) => {
-    const isActive = button.dataset.action === state.activeRibbon;
-    button.classList.toggle("active", isActive);
-    button.setAttribute("aria-pressed", String(isActive));
-  });
-
   document.querySelectorAll(".tree-item[data-file-id]").forEach((button) => {
     const isActive = button.dataset.fileId === state.activeFileId;
     button.classList.toggle("active", isActive);
@@ -418,15 +411,8 @@ function handleDocumentClick(event) {
 
 function handleAction(target) {
   const action = target.dataset.action;
-  if (target.classList.contains("ribbon-button")) {
-    state.activeRibbon = action;
-    renderShellState();
-  }
   if (action === "add-node") addNode(target.dataset.type);
   if (action === "new-project") newProject();
-  if (action === "show-files") showFiles();
-  if (action === "focus-search") focusSearch();
-  if (action === "show-settings") showSettings();
   if (action === "zoom-in") setZoom(state.view.scale + 0.1);
   if (action === "zoom-out") setZoom(state.view.scale - 0.1);
   if (action === "center-view") centerView();
@@ -445,7 +431,6 @@ function handleAction(target) {
 function selectFile(fileId) {
   if (!fileViews[fileId]) return;
   state.activeFileId = fileId;
-  state.activeRibbon = "show-files";
 
   if (fileId === "adventure") {
     state.panel = state.selectedNodeId ? "node" : "project";
@@ -467,28 +452,6 @@ function selectFile(fileId) {
   requestAnimationFrame(() => {
     document.querySelector("[data-project-field='variables']")?.focus();
   });
-}
-
-function showFiles() {
-  state.activeRibbon = "show-files";
-  renderShellState();
-  setStatus("Files panel active.");
-}
-
-function focusSearch() {
-  state.activeRibbon = "focus-search";
-  renderShellState();
-  dom.queryInput.focus();
-  dom.queryInput.select();
-  setStatus("Search ready.");
-}
-
-function showSettings() {
-  state.activeRibbon = "show-settings";
-  state.activeFileId = "variables";
-  state.panel = "project";
-  renderAll();
-  setStatus("Settings opened.");
 }
 
 function handleInput(event) {

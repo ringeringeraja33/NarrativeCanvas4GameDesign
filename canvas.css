@@ -57,23 +57,12 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 44px minmax(220px, 280px) minmax(420px, 1fr) minmax(280px, 340px);
+  grid-template-columns: minmax(220px, 280px) minmax(420px, 1fr) minmax(280px, 340px);
   width: 100vw;
   height: 100vh;
   background: var(--background-primary);
 }
 
-.ribbon {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 6px;
-  border-right: 1px solid var(--background-modifier-border);
-  background: #181818;
-}
-
-.ribbon-button,
 .icon-button,
 .toolbar-button,
 .status-button,
@@ -89,14 +78,6 @@ button {
   transition: 140ms ease;
 }
 
-.ribbon-button {
-  width: 30px;
-  height: 30px;
-  color: var(--text-muted);
-}
-
-.ribbon-button:hover,
-.ribbon-button.active,
 .toolbar-button:hover,
 .status-button:hover,
 .icon-button:hover,
@@ -104,10 +85,6 @@ button {
 .inspector-tab:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
-}
-
-.ribbon-button.active {
-  color: var(--interactive-accent-hover);
 }
 
 .sidebar {
@@ -735,7 +712,7 @@ select:focus {
 
 @media (max-width: 1040px) {
   .app-shell {
-    grid-template-columns: 40px minmax(180px, 230px) minmax(360px, 1fr);
+    grid-template-columns: minmax(180px, 230px) minmax(360px, 1fr);
   }
 
   .sidebar-right {
@@ -754,7 +731,6 @@ select:focus {
     min-height: 100vh;
   }
 
-  .ribbon,
   .sidebar-left,
   .sidebar-right {
     display: none;
