@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Narrative Canvas</title>
-    <link rel="stylesheet" href="./canvas.css">
+    <link rel="stylesheet" href="./canvas.css?v=20260602-0015">
   </head>
   <body>
     <div class="app-shell">
@@ -27,6 +27,10 @@
             <span class="file-dot muted"></span>
             Characters.md
           </button>
+          <button class="tree-item" data-file-id="events">
+            <span class="file-dot muted"></span>
+            Events Sheet.csv
+          </button>
           <button class="tree-item" data-file-id="variables">
             <span class="file-dot muted"></span>
             Variables.json
@@ -46,25 +50,34 @@
 
       <main class="workspace">
         <header class="workspace-tabs">
-          <div id="activeFileTab" class="tab active">The Adventure.canvas</div>
-          <button class="tab preview-tab" data-action="play" type="button">Runtime Preview</button>
-          <div class="spacer"></div>
-          <button class="toolbar-button" data-action="zoom-out" title="Zoom out">-</button>
-          <span id="zoomReadout" class="zoom-readout">100%</span>
-          <button class="toolbar-button" data-action="zoom-in" title="Zoom in">+</button>
-          <button class="toolbar-button" data-action="center-view" title="Center canvas">Center</button>
-          <button class="toolbar-button primary" data-action="play" title="Play from entry">Play</button>
-          <button class="toolbar-button" data-action="save-local" title="Save to this browser">Save</button>
-          <button class="toolbar-button" data-action="export-json" title="Export JSON">Export</button>
-          <button class="toolbar-button" data-action="import-json" title="Import JSON">Import</button>
+          <div class="tab-group">
+            <div id="activeFileTab" class="tab active">The Adventure.canvas</div>
+            <button class="tab preview-tab" data-action="play" type="button">Runtime Preview</button>
+          </div>
+          <div class="toolbar-group">
+            <button class="toolbar-button" data-action="zoom-out" data-files="adventure" title="Zoom out">-</button>
+            <span id="zoomReadout" class="zoom-readout" data-files="adventure">100%</span>
+            <button class="toolbar-button" data-action="zoom-in" data-files="adventure" title="Zoom in">+</button>
+            <button class="toolbar-button" data-action="center-view" data-files="adventure" title="Center canvas">Center</button>
+            <button class="toolbar-button primary" data-action="play" data-files="adventure" title="Play from entry">Play</button>
+            <button class="toolbar-button" data-action="export-json" data-files="adventure" title="Export full project JSON">Export JSON</button>
+            <button class="toolbar-button" data-action="export-characters-md" data-files="characters" title="Export characters as Markdown">Export MD</button>
+            <button class="toolbar-button" data-action="export-event-sheet" data-files="events" title="Export Events Sheet as CSV">Export CSV</button>
+            <button class="toolbar-button" data-action="export-variables-json" data-files="variables" title="Export variables as JSON">Export JSON</button>
+            <button class="toolbar-button" data-action="export-image" data-files="adventure" title="Export canvas as PNG">Image</button>
+            <button class="toolbar-button" data-action="export-html" data-files="adventure" title="Export printable HTML">HTML</button>
+            <button class="toolbar-button" data-action="import-json" data-files="adventure" title="Import project JSON">Import</button>
+          </div>
           <input id="fileInput" type="file" accept="application/json,.json" hidden>
         </header>
 
         <section id="canvasPanel" class="workspace-view canvas-panel active">
-          <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
-            <div id="canvasContent" class="canvas-content">
-              <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
-              <div id="nodeLayer" class="node-layer"></div>
+          <div class="canvas-frame">
+            <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
+              <div id="canvasContent" class="canvas-content">
+                <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+                <div id="nodeLayer" class="node-layer"></div>
+              </div>
             </div>
             <div id="selectionHint" class="selection-hint">Click an output port, then an input port to connect nodes.</div>
             <div id="minimap" class="minimap" aria-hidden="true"></div>
@@ -72,6 +85,7 @@
         </section>
         <section id="charactersPanel" class="workspace-view document-panel" aria-label="Characters"></section>
         <section id="variablesPanel" class="workspace-view document-panel" aria-label="Variables"></section>
+        <section id="eventsPanel" class="workspace-view document-panel event-sheet-panel" aria-label="Events Sheet"></section>
 
         <footer class="status-bar">
           <div id="statusText">Ready</div>
@@ -118,6 +132,19 @@
       </form>
     </dialog>
 
-    <script src="./app.js"></script>
+    <dialog id="confirmDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span class="pane-kicker">New Canvas</span>
+          <h2>Discard the current canvas and create a blank one?</h2>
+        </header>
+        <footer class="confirm-actions">
+          <button class="small-button confirm-muted" value="confirm">Create</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <script src="./app.js?v=20260602-0015"></script>
   </body>
 </html>

@@ -7,16 +7,14 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   async onload() {
     this.registerView(VIEW_TYPE, (leaf) => new NarrativeCanvasView(leaf, this));
 
+    this.addRibbonIcon("network", "Open Narrative Canvas", () => {
+      this.activateView(true);
+    });
+
     this.addCommand({
       id: "open-narrative-canvas",
       name: "Open Narrative Canvas",
       callback: () => this.activateView(true)
-    });
-
-    this.app.workspace.onLayoutReady(() => {
-      if (this.app.workspace.getLeavesOfType(VIEW_TYPE).length === 0) {
-        this.activateView(true);
-      }
     });
   }
 
@@ -40,7 +38,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     }
   }
 
-  async buildCanvasDocument() {
+  async loadCanvasAssets() {
     const pluginDir = this.manifest.dir || `.obsidian/plugins/${PLUGIN_ID}`;
     const [html, css, appJs] = await Promise.all([
       this.app.vault.adapter.read(`${pluginDir}/index.html`),
@@ -48,9 +46,11 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       this.app.vault.adapter.read(`${pluginDir}/app.js`)
     ]);
 
-    return html
-      .replace(/<link rel="stylesheet" href="\.\/canvas\.css">\s*/i, `<style>\n${escapeStyle(css)}\n</style>`)
-      .replace(/<script src="\.\/app\.js"><\/script>/i, `<script>\n${escapeScript(appJs)}\n</script>`);
+    return {
+      bodyHtml: extractBodyHtml(html),
+      css: scopeCanvasCss(css),
+      appJs
+    };
   }
 };
 
@@ -58,6 +58,7 @@ class NarrativeCanvasView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
+    this.styleEl = null;
   }
 
   getViewType() {
@@ -76,18 +77,18 @@ class NarrativeCanvasView extends ItemView {
     this.contentEl.replaceChildren();
     this.contentEl.addClass("narrative-canvas-plugin-host");
 
-    const frame = this.contentEl.createEl("iframe", {
-      cls: "narrative-canvas-plugin-frame",
-      attr: {
-        title: "Narrative Canvas"
-      }
-    });
-
     try {
-      frame.srcdoc = await this.plugin.buildCanvasDocument();
+      const { bodyHtml, css, appJs } = await this.plugin.loadCanvasAssets();
+      this.styleEl = document.createElement("style");
+      this.styleEl.textContent = css;
+      document.head.appendChild(this.styleEl);
+
+      this.contentEl.innerHTML = bodyHtml;
+      runCanvasApp(appJs);
+      window.NarrativeCanvasApp?.init?.();
     } catch (error) {
       console.error(error);
-      frame.remove();
+      this.contentEl.replaceChildren();
       this.contentEl.createEl("div", {
         cls: "narrative-canvas-plugin-error",
         text: "Narrative Canvas failed to load plugin assets. Check the developer console for details."
@@ -97,15 +98,44 @@ class NarrativeCanvasView extends ItemView {
   }
 
   async onClose() {
+    this.styleEl?.remove();
+    this.styleEl = null;
     this.contentEl.removeClass("narrative-canvas-plugin-host");
     this.contentEl.replaceChildren();
   }
 }
 
-function escapeStyle(source) {
-  return source.replace(/<\/style/gi, "<\\/style");
+function extractBodyHtml(html) {
+  const match = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const bodyHtml = match ? match[1] : html;
+  return bodyHtml
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+    .replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, "");
 }
 
-function escapeScript(source) {
-  return source.replace(/<\/script/gi, "<\\/script");
+function runCanvasApp(source) {
+  const execute = new Function(source);
+  execute();
+}
+
+function scopeCanvasCss(source) {
+  let css = source
+    .replace(/:root/g, ".narrative-canvas-plugin-host")
+    .replace(/(^|})\s*html\s*,\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {")
+    .replace(/(^|})\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {");
+
+  css = css.replace(/(^|[{}])\s*([^@{}][^{]+)\s*{/g, (match, boundary, selectorText) => {
+    const selectors = selectorText
+      .split(",")
+      .map((selector) => selector.trim())
+      .filter(Boolean)
+      .map((selector) => {
+        if (selector.startsWith(".narrative-canvas-plugin-host")) return selector;
+        return `.narrative-canvas-plugin-host ${selector}`;
+      });
+
+    return `${boundary}\n${selectors.join(", ")} {`;
+  });
+
+  return css;
 }
