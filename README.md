@@ -6,7 +6,7 @@ Narrative Canvas is a node-based workspace for designing complex narratives. It 
 
 It works in two modes:
 
-- **Web app**: open `index.html` directly, or visit <https://ringeringeraja33.github.io/NarrativeCanvas4GameDesign/>.
+- **Web app**: open `index.html` directly, or visit <https://ringeringeraja33.github.io/NarrativeCanvas/>.
 - **Obsidian plugin**: copy the repository folder to `.obsidian/plugins/narrative-canvas/` in an Obsidian vault, then enable `Narrative Canvas` in Community plugins.
 
 ### Features
@@ -38,7 +38,7 @@ Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可
 
 它支持两种使用方式：
 
-- **网页端**：直接打开 `index.html`，或访问 <https://ringeringeraja33.github.io/NarrativeCanvas4GameDesign/>。
+- **网页端**：直接打开 `index.html`，或访问 <https://ringeringeraja33.github.io/NarrativeCanvas/>。
 - **Obsidian 插件端**：把仓库文件夹复制到 Obsidian vault 的 `.obsidian/plugins/narrative-canvas/`，再在 Community plugins 中启用 `Narrative Canvas`。
 
 ### 主要功能
