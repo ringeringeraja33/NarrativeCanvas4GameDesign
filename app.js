@@ -21,6 +21,22 @@ const sampleProject = {
     hero_name: "Hero",
     ancestry: "Great ancestry"
   },
+  characters: [
+    {
+      id: "c0",
+      name: "Hero",
+      role: "Player character",
+      voice: "Brave, curious, direct",
+      notes: "The default protagonist name used by dialogue nodes and variables."
+    },
+    {
+      id: "c1",
+      name: "The Stranger",
+      role: "Guide",
+      voice: "Mysterious, confident",
+      notes: "Introduces the journey and pushes the first major choice."
+    }
+  ],
   nodes: [
     { id: "n0", type: "Entry", title: "Start", body: "Adventure Begins", x: 80, y: 140 },
     { id: "n1", type: "Content", title: "Fancy to See Wonders?", body: "Dark was the night. Wandering and lost, the hero meets a stranger in the fog.", x: 260, y: 105 },
@@ -79,6 +95,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
 function bindDom() {
   dom.viewport = document.getElementById("canvasViewport");
+  dom.canvasPanel = document.getElementById("canvasPanel");
+  dom.charactersPanel = document.getElementById("charactersPanel");
+  dom.variablesPanel = document.getElementById("variablesPanel");
   dom.content = document.getElementById("canvasContent");
   dom.nodeLayer = document.getElementById("nodeLayer");
   dom.linkLayer = document.getElementById("linkLayer");
@@ -128,6 +147,7 @@ function renderAll() {
   renderTransform();
   renderNodes();
   renderLinks();
+  renderWorkspaceFile();
   renderInspector();
   renderMinimap();
   updateStatus();
@@ -143,6 +163,118 @@ function renderShellState() {
   if (dom.activeFileTab) {
     dom.activeFileTab.textContent = fileViews[state.activeFileId] || fileViews.adventure;
   }
+}
+
+function renderWorkspaceFile() {
+  const activeFile = state.activeFileId || "adventure";
+  dom.canvasPanel.classList.toggle("active", activeFile === "adventure");
+  dom.charactersPanel.classList.toggle("active", activeFile === "characters");
+  dom.variablesPanel.classList.toggle("active", activeFile === "variables");
+
+  if (activeFile === "characters") renderCharactersPage();
+  if (activeFile === "variables") renderVariablesPage();
+}
+
+function renderCharactersPage() {
+  const characters = getCharacters();
+  const dialogNodes = state.project.nodes.filter((node) => node.type === "Dialog");
+  dom.charactersPanel.innerHTML = `
+    <div class="document-shell">
+      <header class="document-header">
+        <div>
+          <span class="pane-kicker">Markdown</span>
+          <h2>Characters.md</h2>
+          <div class="document-meta">${characters.length} characters, ${dialogNodes.length} dialog nodes</div>
+        </div>
+        <button class="small-button" data-action="add-character">Add character</button>
+      </header>
+      <div class="character-grid">
+        ${characters.map((character) => renderCharacterCard(character)).join("") || `<div class="empty-state">No characters yet.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderCharacterCard(character) {
+  const usage = getCharacterDialogNodes(character.name);
+  return `
+    <article class="character-card">
+      <div class="character-card-header">
+        <label class="field">
+          <span>Name</span>
+          <input data-character-id="${escapeAttr(character.id)}" data-character-field="name" value="${escapeAttr(character.name)}">
+        </label>
+        <button class="icon-button danger-button" title="Delete character" data-action="delete-character" data-character-id="${escapeAttr(character.id)}">x</button>
+      </div>
+      <div class="field-row">
+        <label class="field">
+          <span>Role</span>
+          <input data-character-id="${escapeAttr(character.id)}" data-character-field="role" value="${escapeAttr(character.role || "")}">
+        </label>
+        <label class="field">
+          <span>Voice</span>
+          <input data-character-id="${escapeAttr(character.id)}" data-character-field="voice" value="${escapeAttr(character.voice || "")}">
+        </label>
+      </div>
+      <label class="field">
+        <span>Notes</span>
+        <textarea data-character-id="${escapeAttr(character.id)}" data-character-field="notes">${escapeHtml(character.notes || "")}</textarea>
+      </label>
+      <div class="linked-node-list">
+        <div class="document-meta">${usage.length} linked dialog nodes</div>
+        ${usage.map((node) => `
+          <button class="linked-node" data-action="select-node" data-node-id="${escapeAttr(node.id)}">
+            <span>${escapeHtml(node.title || node.id)}</span>
+            <span>${escapeHtml(node.id)}</span>
+          </button>
+        `).join("") || `<div class="linked-node empty">No matching dialog nodes</div>`}
+      </div>
+    </article>
+  `;
+}
+
+function renderVariablesPage() {
+  const variables = state.project.variables || {};
+  const entries = Object.entries(variables);
+  dom.variablesPanel.innerHTML = `
+    <div class="document-shell">
+      <header class="document-header">
+        <div>
+          <span class="pane-kicker">JSON</span>
+          <h2>Variables.json</h2>
+          <div class="document-meta">${entries.length} variables</div>
+        </div>
+        <button class="small-button" data-action="add-variable">Add variable</button>
+      </header>
+      <div class="variable-table">
+        <div class="variable-row variable-heading">
+          <span>Key</span>
+          <span>Type</span>
+          <span>Value</span>
+          <span></span>
+        </div>
+        ${entries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="empty-state">No variables yet.</div>`}
+      </div>
+      <label class="field json-field">
+        <span>Variables JSON</span>
+        <textarea data-project-field="variables">${escapeHtml(JSON.stringify(variables, null, 2))}</textarea>
+      </label>
+    </div>
+  `;
+}
+
+function renderVariableRow(key, value) {
+  const type = variableType(value);
+  return `
+    <div class="variable-row">
+      <input data-variable-key="${escapeAttr(key)}" data-variable-field="key" value="${escapeAttr(key)}">
+      <select data-variable-key="${escapeAttr(key)}" data-variable-field="type">
+        ${["string", "number", "boolean", "json"].map((option) => `<option value="${option}" ${option === type ? "selected" : ""}>${option}</option>`).join("")}
+      </select>
+      <input data-variable-key="${escapeAttr(key)}" data-variable-field="value" value="${escapeAttr(formatVariableValue(value))}">
+      <button class="icon-button danger-button" title="Delete variable" data-action="delete-variable" data-variable-key="${escapeAttr(key)}">x</button>
+    </div>
+  `;
 }
 
 function renderPalette() {
@@ -413,6 +545,10 @@ function handleAction(target) {
   const action = target.dataset.action;
   if (action === "add-node") addNode(target.dataset.type);
   if (action === "new-project") newProject();
+  if (action === "add-character") addCharacter();
+  if (action === "delete-character") deleteCharacter(target.dataset.characterId);
+  if (action === "add-variable") addVariable();
+  if (action === "delete-variable") deleteVariable(target.dataset.variableKey);
   if (action === "zoom-in") setZoom(state.view.scale + 0.1);
   if (action === "zoom-out") setZoom(state.view.scale - 0.1);
   if (action === "center-view") centerView();
@@ -442,15 +578,15 @@ function selectFile(fileId) {
   if (fileId === "characters") {
     state.panel = "story";
     renderAll();
-    setStatus("Characters.md opened in the Story panel.");
+    setStatus("Characters.md opened.");
     return;
   }
 
   state.panel = "project";
   renderAll();
-  setStatus("Variables.json opened in the Project panel.");
+  setStatus("Variables.json opened.");
   requestAnimationFrame(() => {
-    document.querySelector("[data-project-field='variables']")?.focus();
+    document.querySelector("#variablesPanel [data-project-field='variables']")?.focus();
   });
 }
 
@@ -470,6 +606,16 @@ function handleInput(event) {
     return;
   }
 
+  if (target.dataset.characterField) {
+    setCharacterField(target.dataset.characterId, target.dataset.characterField, target.value, false);
+    return;
+  }
+
+  if (target.dataset.variableField === "value") {
+    setVariableField(target.dataset.variableKey, "value", target.value, false);
+    return;
+  }
+
   if (target.dataset.projectField) {
     if (target.dataset.projectField === "variables") return;
     setProjectField(target.dataset.projectField, target.value);
@@ -483,6 +629,14 @@ function handleInput(event) {
 
 function handleChange(event) {
   const target = event.target;
+  if (target.dataset.characterField) {
+    setCharacterField(target.dataset.characterId, target.dataset.characterField, target.value, true);
+    return;
+  }
+  if (target.dataset.variableField) {
+    setVariableField(target.dataset.variableKey, target.dataset.variableField, target.value, true);
+    return;
+  }
   if (target.dataset.projectField) {
     setProjectField(target.dataset.projectField, target.value);
     return;
@@ -614,6 +768,8 @@ function handlePortClick(port) {
 }
 
 function addNode(type) {
+  state.activeFileId = "adventure";
+  renderWorkspaceFile();
   const rect = dom.viewport.getBoundingClientRect();
   const center = screenToBoard(rect.left + rect.width / 2, rect.top + rect.height / 2);
   const meta = nodeTypes[type] || nodeTypes.Content;
@@ -651,7 +807,100 @@ function defaultBody(type) {
   return defaults[type] || "";
 }
 
+function addCharacter() {
+  const characters = getCharacters();
+  const nextNumber = characters.length + 1;
+  const character = {
+    id: nextId("c", characters),
+    name: uniqueCharacterName(`Character ${nextNumber}`),
+    role: "",
+    voice: "",
+    notes: ""
+  };
+  characters.push(character);
+  state.project.characters = characters;
+  state.activeFileId = "characters";
+  renderAll();
+  setStatus("Character added.");
+}
+
+function deleteCharacter(id) {
+  const characters = getCharacters();
+  const character = characters.find((item) => item.id === id);
+  state.project.characters = characters.filter((item) => item.id !== id);
+  renderAll();
+  setStatus(character ? `${character.name} deleted.` : "Character deleted.");
+}
+
+function setCharacterField(id, field, value, rerender) {
+  const character = getCharacters().find((item) => item.id === id);
+  if (!character) return;
+  if (field === "name") {
+    const previousName = character.name;
+    character.name = value;
+    state.project.nodes.forEach((node) => {
+      if (node.type === "Dialog" && node.title === previousName) {
+        node.title = value;
+      }
+    });
+    renderNodes();
+    renderStoryPanel();
+  } else {
+    character[field] = value;
+  }
+  updateStatus();
+  if (rerender) renderWorkspaceFile();
+}
+
+function addVariable() {
+  const variables = state.project.variables || {};
+  const key = uniqueVariableKey("new_variable");
+  variables[key] = "";
+  state.project.variables = variables;
+  state.activeFileId = "variables";
+  renderAll();
+  setStatus("Variable added.");
+}
+
+function deleteVariable(key) {
+  if (!key || !state.project.variables) return;
+  delete state.project.variables[key];
+  renderAll();
+  setStatus(`${key} deleted.`);
+}
+
+function setVariableField(key, field, value, rerender) {
+  const variables = state.project.variables || {};
+  if (!Object.prototype.hasOwnProperty.call(variables, key)) return;
+
+  if (field === "key") {
+    const nextKey = value.trim();
+    if (!nextKey || (nextKey !== key && Object.prototype.hasOwnProperty.call(variables, nextKey))) {
+      setStatus("Variable key already exists.");
+      if (rerender) renderWorkspaceFile();
+      return;
+    }
+    if (nextKey !== key) {
+      variables[nextKey] = variables[key];
+      delete variables[key];
+      renameVariableReferences(key, nextKey);
+    }
+  } else if (field === "type") {
+    variables[key] = coerceVariableInput(formatVariableValue(variables[key]), value);
+  } else if (field === "value") {
+    variables[key] = coerceVariableInput(value, variableType(variables[key]));
+  }
+
+  state.project.variables = variables;
+  renderNodes();
+  renderStoryPanel();
+  renderProjectPanel();
+  updateStatus();
+  if (rerender) renderWorkspaceFile();
+}
+
 function selectNode(id, rerender = true) {
+  state.activeFileId = "adventure";
   state.selectedNodeId = id;
   state.selectedLinkId = null;
   state.panel = "node";
@@ -672,6 +921,8 @@ function setProjectField(field, value) {
   }
   renderNodes();
   renderStoryPanel();
+  renderProjectPanel();
+  renderWorkspaceFile();
   updateStatus();
 }
 
@@ -764,12 +1015,14 @@ function newProject() {
     title: "Untitled Story",
     notes: "",
     variables: {},
+    characters: [],
     nodes: [{ id: "n0", type: "Entry", title: "Start", body: "Adventure Begins", x: 120, y: 120 }],
     links: []
   };
   state.selectedNodeId = "n0";
   state.selectedLinkId = null;
   state.panel = "project";
+  state.activeFileId = "adventure";
   centerView(false);
   renderAll();
   setStatus("New project created.");
@@ -813,6 +1066,7 @@ function importJsonFile() {
       state.selectedNodeId = state.project.nodes[0]?.id || null;
       state.selectedLinkId = null;
       state.panel = "project";
+      state.activeFileId = "adventure";
       centerView(false);
       renderAll();
       setStatus("JSON imported.");
@@ -830,6 +1084,7 @@ function normalizeProject(project) {
     title: project.title || "Untitled Story",
     notes: project.notes || "",
     variables: project.variables || {},
+    characters: Array.isArray(project.characters) ? project.characters : inferCharacters(project),
     nodes: Array.isArray(project.nodes) ? project.nodes : [],
     links: Array.isArray(project.links) ? project.links : []
   };
@@ -903,6 +1158,83 @@ function coerceValue(value) {
   if (value === "false") return false;
   if (value !== "" && !Number.isNaN(Number(value))) return Number(value);
   return value;
+}
+
+function getCharacters() {
+  if (!Array.isArray(state.project.characters)) {
+    state.project.characters = inferCharacters(state.project);
+  }
+  return state.project.characters;
+}
+
+function inferCharacters(project) {
+  const names = [...new Set((project.nodes || [])
+    .filter((node) => node.type === "Dialog" && node.title)
+    .map((node) => node.title))];
+  return names.map((name, index) => ({
+    id: `c${index}`,
+    name,
+    role: "",
+    voice: "",
+    notes: ""
+  }));
+}
+
+function getCharacterDialogNodes(name) {
+  return state.project.nodes.filter((node) => node.type === "Dialog" && node.title === name);
+}
+
+function uniqueCharacterName(baseName) {
+  const used = new Set(getCharacters().map((character) => character.name));
+  if (!used.has(baseName)) return baseName;
+  let index = 2;
+  while (used.has(`${baseName} ${index}`)) index += 1;
+  return `${baseName} ${index}`;
+}
+
+function uniqueVariableKey(baseKey) {
+  const variables = state.project.variables || {};
+  if (!Object.prototype.hasOwnProperty.call(variables, baseKey)) return baseKey;
+  let index = 2;
+  while (Object.prototype.hasOwnProperty.call(variables, `${baseKey}_${index}`)) index += 1;
+  return `${baseKey}_${index}`;
+}
+
+function variableType(value) {
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  if (value && typeof value === "object") return "json";
+  return "string";
+}
+
+function formatVariableValue(value) {
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value ?? "");
+}
+
+function coerceVariableInput(value, type) {
+  if (type === "number") return Number(value) || 0;
+  if (type === "boolean") return String(value).toLowerCase() === "true";
+  if (type === "json") {
+    try {
+      return JSON.parse(value || "null");
+    } catch (error) {
+      setStatus("Variable JSON value is invalid.");
+      return value;
+    }
+  }
+  return value;
+}
+
+function renameVariableReferences(oldKey, newKey) {
+  const tokenPattern = new RegExp(`\\{${escapeRegExp(oldKey)}\\}`, "g");
+  state.project.nodes.forEach((node) => {
+    if (typeof node.body === "string") node.body = node.body.replace(tokenPattern, `{${newKey}}`);
+    if (node.variable === oldKey) node.variable = newKey;
+    if (typeof node.condition === "string") {
+      node.condition = node.condition.replace(new RegExp(`\\b${escapeRegExp(oldKey)}\\b`, "g"), newKey);
+    }
+  });
 }
 
 function getReachableStory() {
@@ -1007,6 +1339,15 @@ function nextId(prefix, items) {
 
 function updateStatus() {
   if (!state.statusOverride) {
+    if (state.activeFileId === "characters") {
+      const dialogCount = state.project.nodes.filter((node) => node.type === "Dialog").length;
+      dom.statusText.textContent = `${fileViews.characters} - ${getCharacters().length} characters, ${dialogCount} dialog nodes`;
+      return;
+    }
+    if (state.activeFileId === "variables") {
+      dom.statusText.textContent = `${fileViews.variables} - ${Object.keys(state.project.variables || {}).length} variables`;
+      return;
+    }
     const nodeCount = state.project.nodes.length;
     const linkCount = state.project.links.length;
     dom.statusText.textContent = `${state.project.title} - ${nodeCount} nodes, ${linkCount} links`;
@@ -1046,4 +1387,8 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replaceAll("\n", "&#10;");
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

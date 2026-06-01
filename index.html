@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
@@ -47,7 +47,7 @@
       <main class="workspace">
         <header class="workspace-tabs">
           <div id="activeFileTab" class="tab active">The Adventure.canvas</div>
-          <div class="tab">Runtime Preview</div>
+          <button class="tab preview-tab" data-action="play" type="button">Runtime Preview</button>
           <div class="spacer"></div>
           <button class="toolbar-button" data-action="zoom-out" title="Zoom out">-</button>
           <span id="zoomReadout" class="zoom-readout">100%</span>
@@ -60,7 +60,7 @@
           <input id="fileInput" type="file" accept="application/json,.json" hidden>
         </header>
 
-        <section class="canvas-panel">
+        <section id="canvasPanel" class="workspace-view canvas-panel active">
           <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
             <div id="canvasContent" class="canvas-content">
               <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
@@ -70,6 +70,8 @@
             <div id="minimap" class="minimap" aria-hidden="true"></div>
           </div>
         </section>
+        <section id="charactersPanel" class="workspace-view document-panel" aria-label="Characters"></section>
+        <section id="variablesPanel" class="workspace-view document-panel" aria-label="Variables"></section>
 
         <footer class="status-bar">
           <div id="statusText">Ready</div>
