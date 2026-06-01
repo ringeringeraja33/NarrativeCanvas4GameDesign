@@ -93,6 +93,7 @@ const state = {
   draggingNode: null,
   resizingNode: null,
   panning: null,
+  contextNodeId: null,
   playNodeId: null,
   playPath: [],
   search: ""
@@ -151,6 +152,7 @@ function bindDom() {
   dom.notes = document.getElementById("projectNotes");
   dom.hint = document.getElementById("selectionHint");
   dom.minimap = document.getElementById("minimap");
+  dom.nodeContextMenu = document.getElementById("nodeContextMenu");
   dom.playDialog = document.getElementById("playDialog");
   dom.confirmDialog = document.getElementById("confirmDialog");
   dom.playTitle = document.getElementById("playTitle");
@@ -176,10 +178,12 @@ function showStartupError(message) {
 
 function bindEvents() {
   document.addEventListener("click", handleDocumentClick);
+  document.addEventListener("contextmenu", handleContextMenu);
   document.addEventListener("input", handleInput);
   document.addEventListener("change", handleChange);
   document.addEventListener("keydown", handleKeyDown);
   window.addEventListener("resize", () => renderLinks());
+  window.addEventListener("scroll", hideNodeContextMenu, true);
 
   dom.viewport.addEventListener("pointerdown", handleViewportPointerDown);
   dom.viewport.addEventListener("pointermove", handleViewportPointerMove);
@@ -198,6 +202,7 @@ function cloneProject(project) {
 }
 
 function renderAll() {
+  hideNodeContextMenu();
   renderShellState();
   renderPalette();
   renderTransform();
@@ -702,12 +707,20 @@ function renderMinimap() {
 
 function handleDocumentClick(event) {
   if (!isNarrativeCanvasTarget(event.target)) return;
+  const layerTarget = event.target.closest("[data-layer-action]");
   const actionTarget = event.target.closest("[data-action]");
   const fileTarget = event.target.closest("[data-file-id]");
   const panelTarget = event.target.closest("[data-panel]");
   const port = event.target.closest("[data-port]");
   const link = event.target.closest("[data-link-id]");
   const node = event.target.closest("[data-node-id]");
+
+  if (layerTarget) {
+    moveContextNode(layerTarget.dataset.layerAction);
+    return;
+  }
+
+  if (!dom.nodeContextMenu?.contains(event.target)) hideNodeContextMenu();
 
   if (port) {
     handlePortClick(port);
@@ -743,6 +756,28 @@ function handleDocumentClick(event) {
   }
 }
 
+function handleContextMenu(event) {
+  if (!isNarrativeCanvasTarget(event.target)) return;
+  const nodeElement = event.target.closest(".node[data-node-id]");
+  if (!nodeElement) {
+    hideNodeContextMenu();
+    return;
+  }
+
+  event.preventDefault();
+  const node = getNode(nodeElement.dataset.nodeId);
+  if (!node) return;
+  state.activeFileId = "adventure";
+  state.selectedNodeId = node.id;
+  state.selectedLinkId = null;
+  state.panel = "node";
+  renderShellState();
+  renderNodes();
+  renderLinks();
+  renderInspector();
+  showNodeContextMenu(node.id, event.clientX, event.clientY);
+}
+
 function handleAction(target) {
   const action = target.dataset.action;
   if (action === "add-node") addNode(target.dataset.type);
@@ -769,6 +804,66 @@ function handleAction(target) {
   if (action === "play-next") advancePreview(target.dataset.nodeId);
   if (action === "play-prev") previousPreview();
   if (action === "restart-play") openPreview();
+}
+
+function showNodeContextMenu(nodeId, clientX, clientY) {
+  if (!dom.nodeContextMenu) return;
+  state.contextNodeId = nodeId;
+  dom.nodeContextMenu.hidden = false;
+  const menuRect = dom.nodeContextMenu.getBoundingClientRect();
+  const left = Math.min(clientX, window.innerWidth - menuRect.width - 8);
+  const top = Math.min(clientY, window.innerHeight - menuRect.height - 8);
+  dom.nodeContextMenu.style.left = `${Math.max(8, left)}px`;
+  dom.nodeContextMenu.style.top = `${Math.max(8, top)}px`;
+}
+
+function hideNodeContextMenu() {
+  state.contextNodeId = null;
+  if (!dom.nodeContextMenu) return;
+  dom.nodeContextMenu.hidden = true;
+}
+
+function moveContextNode(action) {
+  const nodeId = state.contextNodeId;
+  if (!nodeId) return;
+  const changed = moveNodeLayer(nodeId, action);
+  hideNodeContextMenu();
+  if (!changed) return;
+  state.selectedNodeId = nodeId;
+  renderNodes();
+  renderLinks();
+  renderMinimap();
+  renderInspector();
+  setStatus("Node layer updated.");
+}
+
+function moveNodeLayer(nodeId, action) {
+  const nodes = state.project.nodes;
+  const index = nodes.findIndex((node) => node.id === nodeId);
+  if (index < 0) return false;
+  const [node] = nodes.splice(index, 1);
+
+  if (action === "front") {
+    nodes.push(node);
+    return index !== nodes.length - 1;
+  }
+  if (action === "back") {
+    nodes.unshift(node);
+    return index !== 0;
+  }
+  if (action === "forward") {
+    const nextIndex = Math.min(index + 1, nodes.length);
+    nodes.splice(nextIndex, 0, node);
+    return nextIndex !== index;
+  }
+  if (action === "backward") {
+    const nextIndex = Math.max(index - 1, 0);
+    nodes.splice(nextIndex, 0, node);
+    return nextIndex !== index;
+  }
+
+  nodes.splice(index, 0, node);
+  return false;
 }
 
 function selectFile(fileId) {
@@ -882,7 +977,12 @@ function handleKeyDown(event) {
 }
 
 function isNarrativeCanvasTarget(target) {
-  return Boolean(dom.root?.contains(target) || dom.playDialog?.contains(target) || dom.confirmDialog?.contains(target));
+  return Boolean(
+    dom.root?.contains(target)
+    || dom.nodeContextMenu?.contains(target)
+    || dom.playDialog?.contains(target)
+    || dom.confirmDialog?.contains(target)
+  );
 }
 
 function handleViewportPointerDown(event) {

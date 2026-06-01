@@ -663,6 +663,36 @@ button {
   opacity: 0.85;
 }
 
+.node-context-menu {
+  position: fixed;
+  z-index: 100;
+  display: grid;
+  min-width: 168px;
+  padding: 5px;
+  border: 1px solid var(--background-modifier-border-hover);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  box-shadow: var(--shadow-soft);
+}
+
+.node-context-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-normal);
+  text-align: left;
+  cursor: pointer;
+}
+
+.node-context-menu button:hover {
+  background: var(--background-modifier-hover);
+}
+
 .status-bar {
   display: flex;
   align-items: center;

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Narrative Canvas</title>
-    <link rel="stylesheet" href="./canvas.css?v=20260602-0015">
+    <link rel="stylesheet" href="./canvas.css?v=20260602-0045">
   </head>
   <body>
     <div class="app-shell">
@@ -118,6 +118,13 @@
       </aside>
     </div>
 
+    <div id="nodeContextMenu" class="node-context-menu" hidden>
+      <button data-layer-action="front">Bring to front</button>
+      <button data-layer-action="forward">Bring forward</button>
+      <button data-layer-action="backward">Send backward</button>
+      <button data-layer-action="back">Send to back</button>
+    </div>
+
     <dialog id="playDialog" class="play-dialog">
       <form method="dialog" class="play-shell">
         <header class="play-header">
@@ -145,6 +152,6 @@
       </form>
     </dialog>
 
-    <script src="./app.js?v=20260602-0015"></script>
+    <script src="./app.js?v=20260602-0045"></script>
   </body>
 </html>
