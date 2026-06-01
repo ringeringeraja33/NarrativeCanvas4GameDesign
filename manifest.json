@@ -1,0 +1,9 @@
+{
+  "id": "narrative-canvas",
+  "name": "Narrative Canvas",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "A node-based narrative planning canvas that runs inside Obsidian.",
+  "author": "Local",
+  "isDesktopOnly": true
+}

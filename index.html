@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Narrative Canvas</title>
+    <link rel="stylesheet" href="./canvas.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <nav class="ribbon" aria-label="Main navigation">
+        <button class="ribbon-button active" title="Files" aria-label="Files" data-action="show-files">F</button>
+        <button class="ribbon-button" title="Search" aria-label="Search" data-action="focus-search">S</button>
+        <button class="ribbon-button" title="Graph" aria-label="Graph" data-action="center-view">G</button>
+        <button class="ribbon-button" title="Play" aria-label="Play" data-action="play">P</button>
+        <button class="ribbon-button" title="Settings" aria-label="Settings" data-action="show-settings">C</button>
+      </nav>
+
+      <aside class="sidebar sidebar-left">
+        <header class="pane-header">
+          <div>
+            <span class="pane-kicker">Vault</span>
+            <h1>Narrative Canvas</h1>
+          </div>
+          <button class="icon-button" title="New project" data-action="new-project">+</button>
+        </header>
+
+        <section class="nav-section">
+          <h2>Files</h2>
+          <button class="tree-item active" data-file-id="adventure">
+            <span class="file-dot"></span>
+            The Adventure.canvas
+          </button>
+          <button class="tree-item" data-file-id="characters">
+            <span class="file-dot muted"></span>
+            Characters.md
+          </button>
+          <button class="tree-item" data-file-id="variables">
+            <span class="file-dot muted"></span>
+            Variables.json
+          </button>
+        </section>
+
+        <section class="nav-section palette">
+          <h2>Node Library</h2>
+          <div id="nodePalette" class="palette-list"></div>
+        </section>
+
+        <section class="nav-section">
+          <h2>Quick Notes</h2>
+          <textarea id="projectNotes" spellcheck="false" placeholder="Project notes"></textarea>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-tabs">
+          <div id="activeFileTab" class="tab active">The Adventure.canvas</div>
+          <div class="tab">Runtime Preview</div>
+          <div class="spacer"></div>
+          <button class="toolbar-button" data-action="zoom-out" title="Zoom out">-</button>
+          <span id="zoomReadout" class="zoom-readout">100%</span>
+          <button class="toolbar-button" data-action="zoom-in" title="Zoom in">+</button>
+          <button class="toolbar-button" data-action="center-view" title="Center canvas">Center</button>
+          <button class="toolbar-button primary" data-action="play" title="Play from entry">Play</button>
+          <button class="toolbar-button" data-action="save-local" title="Save to this browser">Save</button>
+          <button class="toolbar-button" data-action="export-json" title="Export JSON">Export</button>
+          <button class="toolbar-button" data-action="import-json" title="Import JSON">Import</button>
+          <input id="fileInput" type="file" accept="application/json,.json" hidden>
+        </header>
+
+        <section class="canvas-panel">
+          <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
+            <div id="canvasContent" class="canvas-content">
+              <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+              <div id="nodeLayer" class="node-layer"></div>
+            </div>
+            <div id="selectionHint" class="selection-hint">Click an output port, then an input port to connect nodes.</div>
+            <div id="minimap" class="minimap" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <footer class="status-bar">
+          <div id="statusText">Ready</div>
+          <label class="search-box">
+            Query
+            <input id="queryInput" type="search" placeholder="Find nodes">
+          </label>
+          <div id="matchCount">0 matches</div>
+          <button class="status-button" data-action="play">Inspect</button>
+        </footer>
+      </main>
+
+      <aside class="sidebar sidebar-right">
+        <header class="pane-header compact">
+          <div>
+            <span class="pane-kicker">Inspector</span>
+            <h1 id="inspectorTitle">Project</h1>
+          </div>
+        </header>
+
+        <div class="inspector-tabs">
+          <button class="inspector-tab active" data-panel="project">Project</button>
+          <button class="inspector-tab" data-panel="node">Node</button>
+          <button class="inspector-tab" data-panel="story">Story</button>
+        </div>
+
+        <section id="projectPanel" class="inspector-panel active"></section>
+        <section id="nodePanel" class="inspector-panel"></section>
+        <section id="storyPanel" class="inspector-panel"></section>
+      </aside>
+    </div>
+
+    <dialog id="playDialog" class="play-dialog">
+      <form method="dialog" class="play-shell">
+        <header class="play-header">
+          <div>
+            <span class="pane-kicker">Runtime</span>
+            <h2 id="playTitle">Preview</h2>
+          </div>
+          <button class="icon-button" value="close" aria-label="Close preview">x</button>
+        </header>
+        <article id="playBody" class="play-body"></article>
+        <footer id="playActions" class="play-actions"></footer>
+      </form>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

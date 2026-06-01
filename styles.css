@@ -1,0 +1,17 @@
+.narrative-canvas-plugin-host {
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+.narrative-canvas-plugin-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #1f1f1f;
+}
+
+.narrative-canvas-plugin-error {
+  padding: 16px;
+  color: var(--text-normal);
+}
