@@ -2,6 +2,7 @@ const { ItemView, Notice, Plugin } = require("obsidian");
 
 const VIEW_TYPE = "narrative-canvas-view";
 const PLUGIN_ID = "narrative-canvas";
+const PROJECT_FILE = "NarrativeCanvas/project.json";
 
 module.exports = class NarrativeCanvasPlugin extends Plugin {
   async onload() {
@@ -52,6 +53,21 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       appJs
     };
   }
+
+  async loadProjectFile() {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(PROJECT_FILE))) return null;
+    return adapter.read(PROJECT_FILE);
+  }
+
+  async saveProjectFile(projectJson) {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists("NarrativeCanvas"))) {
+      await adapter.mkdir("NarrativeCanvas");
+    }
+    await adapter.write(PROJECT_FILE, projectJson);
+    return PROJECT_FILE;
+  }
 };
 
 class NarrativeCanvasView extends ItemView {
@@ -84,6 +100,12 @@ class NarrativeCanvasView extends ItemView {
       document.head.appendChild(this.styleEl);
 
       this.contentEl.innerHTML = bodyHtml;
+      window.NarrativeCanvasHost = {
+        loadProject: () => this.plugin.loadProjectFile(),
+        saveProject: (projectJson) => this.plugin.saveProjectFile(projectJson),
+        projectFile: PROJECT_FILE
+      };
+      window.NarrativeCanvasApp?.destroy?.();
       runCanvasApp(appJs);
       window.NarrativeCanvasApp?.init?.();
     } catch (error) {
@@ -98,6 +120,10 @@ class NarrativeCanvasView extends ItemView {
   }
 
   async onClose() {
+    window.NarrativeCanvasApp?.destroy?.();
+    if (window.NarrativeCanvasHost?.projectFile === PROJECT_FILE) {
+      delete window.NarrativeCanvasHost;
+    }
     this.styleEl?.remove();
     this.styleEl = null;
     this.contentEl.removeClass("narrative-canvas-plugin-host");

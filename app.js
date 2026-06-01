@@ -103,8 +103,11 @@ const dom = {};
 let initialized = false;
 
 window.NarrativeCanvasApp = {
-  init: initNarrativeCanvas
+  init: initNarrativeCanvas,
+  destroy: destroyNarrativeCanvas
 };
+
+let eventController = null;
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initNarrativeCanvas, { once: true });
@@ -177,24 +180,40 @@ function showStartupError(message) {
 }
 
 function bindEvents() {
-  document.addEventListener("click", handleDocumentClick);
-  document.addEventListener("contextmenu", handleContextMenu);
-  document.addEventListener("input", handleInput);
-  document.addEventListener("change", handleChange);
-  document.addEventListener("keydown", handleKeyDown);
-  window.addEventListener("resize", () => renderLinks());
-  window.addEventListener("scroll", hideNodeContextMenu, true);
+  eventController?.abort();
+  eventController = new AbortController();
+  const { signal } = eventController;
 
-  dom.viewport.addEventListener("pointerdown", handleViewportPointerDown);
-  dom.viewport.addEventListener("pointermove", handleViewportPointerMove);
-  dom.viewport.addEventListener("pointerup", endPointerActions);
-  dom.viewport.addEventListener("pointerleave", endPointerActions);
-  dom.viewport.addEventListener("wheel", handleWheel, { passive: false });
+  document.addEventListener("click", handleDocumentClick, { signal });
+  document.addEventListener("contextmenu", handleContextMenu, { signal });
+  document.addEventListener("input", handleInput, { signal });
+  document.addEventListener("change", handleChange, { signal });
+  document.addEventListener("keydown", handleKeyDown, { signal });
+  window.addEventListener("resize", handleWindowResize, { signal });
 
-  dom.fileInput.addEventListener("change", importJsonFile);
+  dom.viewport.addEventListener("scroll", hideNodeContextMenu, { signal });
+  dom.viewport.addEventListener("pointerdown", handleViewportPointerDown, { signal });
+  dom.viewport.addEventListener("pointermove", handleViewportPointerMove, { signal });
+  dom.viewport.addEventListener("pointerup", endPointerActions, { signal });
+  dom.viewport.addEventListener("pointerleave", endPointerActions, { signal });
+  dom.viewport.addEventListener("wheel", handleWheel, { passive: false, signal });
+
+  dom.fileInput.addEventListener("change", importJsonFile, { signal });
   dom.confirmDialog.addEventListener("close", () => {
     if (dom.confirmDialog.returnValue === "confirm") newProject();
-  });
+  }, { signal });
+}
+
+function destroyNarrativeCanvas() {
+  eventController?.abort();
+  eventController = null;
+  hideNodeContextMenu();
+  initialized = false;
+}
+
+function handleWindowResize() {
+  hideNodeContextMenu();
+  renderLinks();
 }
 
 function cloneProject(project) {
