@@ -45,6 +45,12 @@
           <div id="nodePalette" class="palette-list"></div>
           <div class="custom-node-form node-type-form">
             <input id="customNodeName" placeholder="Type name" spellcheck="false">
+            <select id="customNodeKind" title="Node behavior">
+              <option value="node">Node</option>
+              <option value="frame">Frame</option>
+              <option value="eventFrame">Event Frame</option>
+            </select>
+            <textarea id="customNodeFields" class="custom-node-fields" rows="3" placeholder="Properties, one per line" spellcheck="false"></textarea>
             <div class="custom-node-row">
               <input id="customNodeBadge" placeholder="Badge" maxlength="3" spellcheck="false">
               <input id="customNodeColor" type="color" value="#7fdbca" title="Node color">
@@ -153,19 +159,58 @@
       </form>
     </dialog>
 
-    <dialog id="nodeIconDialog" class="icon-dialog" aria-label="Edit node icon">
+    <dialog id="nodeIconDialog" class="icon-dialog" aria-label="Edit node type icon">
       <form method="dialog" class="icon-shell">
         <header>
           <span class="pane-kicker">Node Icon</span>
-          <h2 id="nodeIconDialogTitle">Edit node icon</h2>
+          <h2 id="nodeIconDialogTitle">Edit node type icon</h2>
         </header>
         <label class="field">
-          <span>Icon</span>
-          <input id="nodeIconInput" maxlength="12" spellcheck="false" autocomplete="off">
+          <span>Custom icon</span>
+          <input id="nodeIconInput" maxlength="8" spellcheck="false" autocomplete="off" inputmode="text" aria-label="Custom icon text or emoji">
         </label>
         <footer class="confirm-actions">
-          <button class="small-button" data-action="reset-node-icon" type="button">Use title initial</button>
+          <button class="small-button" data-action="reset-node-icon" type="button">Use type initial</button>
           <button class="small-button primary" value="confirm">Apply</button>
+          <button class="small-button confirm-cancel" value="cancel">Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="nodeTypeDialog" class="type-dialog" aria-label="Edit node type">
+      <form method="dialog" class="type-shell">
+        <header>
+          <span class="pane-kicker">Node Type</span>
+          <h2 id="nodeTypeDialogTitle">Edit node type</h2>
+        </header>
+        <label class="field">
+          <span>Name</span>
+          <input id="nodeTypeNameInput" maxlength="40" spellcheck="false" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Behavior</span>
+          <select id="nodeTypeKindInput">
+            <option value="node">Node</option>
+            <option value="frame">Frame</option>
+            <option value="eventFrame">Event Frame</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Properties</span>
+          <textarea id="nodeTypeFieldsInput" rows="5" spellcheck="false" placeholder="Properties, one per line"></textarea>
+        </label>
+        <div class="type-dialog-row">
+          <label class="field">
+            <span>Color</span>
+            <input id="nodeTypeColorInput" type="color">
+          </label>
+          <label class="checkbox-field">
+            <input id="nodeTypeHiddenInput" type="checkbox">
+            <span>Hide from library</span>
+          </label>
+        </div>
+        <footer class="confirm-actions">
+          <button class="small-button primary" value="confirm">Save</button>
           <button class="small-button confirm-cancel" value="cancel">Cancel</button>
         </footer>
       </form>

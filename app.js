@@ -9,24 +9,28 @@ const EVENT_LAYER_BASE = 0;
 const REGULAR_LAYER_BASE = 1000000;
 const LINK_PORT_ANCHOR_OFFSET = 6;
 const DEFAULT_CUSTOM_NODE_COLOR = "#7fdbca";
-const NODE_ICON_MAX_GRAPHEMES = 3;
+const DEFAULT_VISUAL_FRAME_COLOR = "#9ca3af";
+const DEFAULT_EVENT_FRAME_COLOR = "#b48cff";
+const NODE_TYPE_ICON_MAX_UNITS = 3;
 const SAVED_STATE_VERSION = 1;
 const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
 const FALLBACK_NODE_META = { badge: "N", color: DEFAULT_CUSTOM_NODE_COLOR, width: 230, label: "Node" };
+const LEGACY_DEFAULT_NODE_BADGES = { Content: "T", Choice: "?", Set: "$", Event: "EV" };
+const LEGACY_EVENT_FRAME_COLORS = new Set(["#98c379"]);
 const graphemeSegmenter = typeof Intl !== "undefined" && Intl.Segmenter
   ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
   : null;
 
 const nodeTypes = {
   Entry: { badge: "E", color: "#cdd6f4", width: 170 },
-  Content: { badge: "T", color: "#61afef", width: 250 },
+  Content: { badge: "C", color: "#61afef", width: 250 },
   Dialog: { badge: "D", color: "#56b6c2", width: 250 },
-  Choice: { badge: "?", color: "#d19a66", width: 250 },
+  Choice: { badge: "C", color: "#d19a66", width: 250 },
   Condition: { badge: "C", color: "#e06c75", width: 240 },
-  Set: { badge: "$", color: "#98c379", width: 240 },
+  Set: { badge: "S", color: "#98c379", width: 240 },
   Jump: { badge: "J", color: "#abb2bf", width: 190 },
   Marker: { badge: "M", color: "#7fdbca", width: 190 },
-  Event: { badge: "EV", color: "#98c379", width: 420 }
+  Event: { badge: "E", color: DEFAULT_EVENT_FRAME_COLOR, width: 420 }
 };
 
 const eventSheetColumns = [
@@ -114,7 +118,8 @@ const state = {
   resizingNode: null,
   panning: null,
   contextNodeId: null,
-  iconDialogNodeId: null,
+  iconDialogType: null,
+  typeDialogType: null,
   playNodeId: null,
   playPath: [],
   search: ""
@@ -166,6 +171,8 @@ function bindDom() {
   dom.linkLayer = dom.scope.querySelector("#linkLayer");
   dom.palette = dom.scope.querySelector("#nodePalette");
   dom.customNodeName = dom.scope.querySelector("#customNodeName");
+  dom.customNodeKind = dom.scope.querySelector("#customNodeKind");
+  dom.customNodeFields = dom.scope.querySelector("#customNodeFields");
   dom.customNodeBadge = dom.scope.querySelector("#customNodeBadge");
   dom.customNodeColor = dom.scope.querySelector("#customNodeColor");
   dom.zoomReadout = dom.scope.querySelector("#zoomReadout");
@@ -188,6 +195,13 @@ function bindDom() {
   dom.nodeIconDialog = dom.scope.querySelector("#nodeIconDialog");
   dom.nodeIconInput = dom.scope.querySelector("#nodeIconInput");
   dom.nodeIconDialogTitle = dom.scope.querySelector("#nodeIconDialogTitle");
+  dom.nodeTypeDialog = dom.scope.querySelector("#nodeTypeDialog");
+  dom.nodeTypeDialogTitle = dom.scope.querySelector("#nodeTypeDialogTitle");
+  dom.nodeTypeNameInput = dom.scope.querySelector("#nodeTypeNameInput");
+  dom.nodeTypeKindInput = dom.scope.querySelector("#nodeTypeKindInput");
+  dom.nodeTypeFieldsInput = dom.scope.querySelector("#nodeTypeFieldsInput");
+  dom.nodeTypeColorInput = dom.scope.querySelector("#nodeTypeColorInput");
+  dom.nodeTypeHiddenInput = dom.scope.querySelector("#nodeTypeHiddenInput");
   dom.playDialog = dom.scope.querySelector("#playDialog");
   dom.confirmDialog = dom.scope.querySelector("#confirmDialog");
   dom.nodeRequiredDialog = dom.scope.querySelector("#nodeRequiredDialog");
@@ -246,11 +260,18 @@ function bindEvents() {
     if (dom.confirmDialog.returnValue === "confirm") newProject();
   }, { signal });
   dom.nodeIconDialog.addEventListener("close", () => {
-    if (dom.nodeIconDialog.returnValue === "confirm") applyNodeIconDialog();
-    state.iconDialogNodeId = null;
+    if (dom.nodeIconDialog.returnValue === "confirm") applyNodeTypeBadgeDialog();
+    state.iconDialogType = null;
   }, { signal });
   dom.nodeIconDialog.addEventListener("click", (event) => {
     if (event.target === dom.nodeIconDialog) dom.nodeIconDialog.close("cancel");
+  }, { signal });
+  dom.nodeTypeDialog.addEventListener("close", () => {
+    if (dom.nodeTypeDialog.returnValue === "confirm") applyNodeTypeDialog();
+    state.typeDialogType = null;
+  }, { signal });
+  dom.nodeTypeDialog.addEventListener("click", (event) => {
+    if (event.target === dom.nodeTypeDialog) dom.nodeTypeDialog.close("cancel");
   }, { signal });
   dom.nodeRequiredDialog.addEventListener("click", (event) => {
     if (event.target === dom.nodeRequiredDialog) dom.nodeRequiredDialog.close();
@@ -503,17 +524,41 @@ function renderVariableRow(key, value) {
 
 function renderPalette() {
   const entries = getNodeTypeEntries();
-  dom.palette.innerHTML = entries.length ? entries
+  const visibleRows = entries.length ? entries
     .map(([type, meta]) => `
       <div class="palette-row">
+        <button class="palette-badge" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(type)}" data-icon-size="${getNodeIconSize(meta.badge)}" style="--node-color:${escapeAttr(meta.color)}" title="Edit icon for ${escapeAttr(getNodeTypeLabel(type))}" aria-label="Edit icon for ${escapeAttr(getNodeTypeLabel(type))}">${escapeHtml(meta.badge)}</button>
         <button class="palette-item" data-action="add-node" data-type="${escapeAttr(type)}">
-          <span class="palette-badge" style="--node-color:${escapeAttr(meta.color)}">${escapeHtml(meta.badge)}</span>
           <span class="palette-label">${escapeHtml(getNodeTypeLabel(type))}</span>
         </button>
+        <button class="icon-button palette-settings-button" title="Edit node type" data-action="edit-node-type" data-node-type="${escapeAttr(type)}">...</button>
         <button class="icon-button danger-button palette-delete-button" title="Delete node type" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">x</button>
       </div>
     `)
-    .join("") : `<div class="custom-node-empty">No node types yet.</div>`;
+    .join("") : `<div class="custom-node-empty">No visible node types.</div>`;
+  dom.palette.innerHTML = `${renderHiddenNodeTypeSection()}${visibleRows}`;
+}
+
+function renderHiddenNodeTypeSection() {
+  const hiddenEntries = getHiddenNodeTypeEntries();
+  return `
+    <details class="hidden-node-types" ${hiddenEntries.length ? "open" : "data-empty=\"true\""}>
+      <summary>
+        <span>Hidden</span>
+        <span class="hidden-node-count">${hiddenEntries.length}</span>
+      </summary>
+      <div class="hidden-node-list">
+        ${hiddenEntries.length ? hiddenEntries.map(([type, meta]) => `
+          <div class="hidden-node-row">
+            <span class="palette-badge hidden-node-badge" data-icon-size="${getNodeIconSize(meta.badge)}" style="--node-color:${escapeAttr(meta.color)}">${escapeHtml(meta.badge)}</span>
+            <span class="palette-label">${escapeHtml(getNodeTypeLabel(type))}</span>
+            <button class="icon-button palette-settings-button" title="Edit node type" data-action="edit-node-type" data-node-type="${escapeAttr(type)}">...</button>
+            <button class="small-button restore-node-type-button" title="Restore node type" data-action="restore-node-type" data-node-type="${escapeAttr(type)}">Show</button>
+          </div>
+        `).join("") : `<div class="custom-node-empty">No hidden node types.</div>`}
+      </div>
+    </details>
+  `;
 }
 
 function renderTransform() {
@@ -527,16 +572,17 @@ function renderNodes() {
     .map((node) => {
       const meta = getNodeMeta(node.type);
       const isSelected = node.id === state.selectedNodeId;
-      const isFrame = node.type === "Event";
+      const isFrame = isFrameNode(node);
+      const frameClass = isFrame ? (isEventSheetNode(node) ? "event-frame" : "visual-frame") : "";
       const match = query && nodeMatches(node, query);
       const width = node.width || meta.width || 230;
       const height = nodeHeight(node);
       const icon = getNodeIcon(node);
       return `
-        <article class="node ${isFrame ? "frame" : ""} ${isSelected ? "selected" : ""}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px; width:${width}px; height:${height}px; --node-color:${meta.color}; ${match ? "outline:1px solid var(--accent-orange);" : ""}">
+        <article class="node ${isFrame ? `frame ${frameClass}` : ""} ${isSelected ? "selected" : ""}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px; width:${width}px; height:${height}px; --node-color:${meta.color}; ${match ? "outline:1px solid var(--accent-orange);" : ""}">
           <button class="port input" data-port="input" data-node-id="${node.id}" title="Input"></button>
           <div class="node-header" data-drag-handle="true" data-node-id="${node.id}">
-            <button class="node-icon" type="button" data-action="edit-node-icon" data-node-id="${node.id}" data-no-drag="true" data-icon-size="${getNodeIconSize(icon)}" title="Edit node icon" aria-label="Edit node icon for ${escapeAttr(node.title || getNodeTypeLabel(node.type))}">${escapeHtml(icon)}</button>
+            <button class="node-icon" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(node.type)}" data-node-id="${node.id}" data-no-drag="true" data-icon-size="${getNodeIconSize(icon)}" title="Edit ${escapeAttr(getNodeTypeLabel(node.type))} icon" aria-label="Edit icon for all ${escapeAttr(getNodeTypeLabel(node.type))} nodes">${escapeHtml(icon)}</button>
             <span class="node-type">${escapeHtml(getNodeTypeLabel(node.type))}</span>
             <span class="node-id">${node.id.replace("n", "#")}</span>
           </div>
@@ -576,7 +622,10 @@ function getNodeTypeMap() {
       color: typeDef.color,
       width: typeDef.width,
       label: typeDef.label,
-      custom: Boolean(typeDef.custom)
+      custom: Boolean(typeDef.custom),
+      kind: typeDef.kind,
+      fields: typeDef.fields || [],
+      hidden: Boolean(typeDef.hidden)
     };
   });
   return map;
@@ -585,19 +634,22 @@ function getNodeTypeMap() {
 function getFallbackNodeMeta(type) {
   const builtIn = nodeTypes[type];
   if (builtIn) {
-    return { ...builtIn, label: getDefaultNodeTypeLabel(type) };
+    return { ...builtIn, label: getDefaultNodeTypeLabel(type), kind: type === "Event" ? "eventFrame" : "node", fields: [], hidden: false };
   }
-  return { ...FALLBACK_NODE_META, label: type || FALLBACK_NODE_META.label };
+  return { ...FALLBACK_NODE_META, label: type || FALLBACK_NODE_META.label, kind: "node", fields: [], hidden: false };
 }
 
 function defaultNodeTypeList() {
   return Object.entries(nodeTypes).map(([type, meta]) => ({
     type,
     label: getDefaultNodeTypeLabel(type),
-    badge: meta.badge,
+    badge: getDefaultNodeTypeBadge(getDefaultNodeTypeLabel(type)),
     color: meta.color,
     width: meta.width,
-    custom: false
+    custom: false,
+    kind: type === "Event" ? "eventFrame" : "node",
+    fields: [],
+    hidden: false
   }));
 }
 
@@ -606,17 +658,42 @@ function getDefaultNodeTypeLabel(type) {
 }
 
 function getNodeTypeEntries(includeType = null) {
-  const entries = getProjectNodeTypes().map((typeDef) => [typeDef.type, {
-    badge: typeDef.badge,
-    color: typeDef.color,
-    width: typeDef.width,
-    label: typeDef.label,
-    custom: Boolean(typeDef.custom)
-  }]);
+  const entries = getProjectNodeTypes()
+    .filter((typeDef) => !typeDef.hidden || typeDef.type === includeType)
+    .map((typeDef) => [typeDef.type, {
+      badge: typeDef.badge,
+      color: typeDef.color,
+      width: typeDef.width,
+      label: typeDef.label,
+      custom: Boolean(typeDef.custom),
+      kind: typeDef.kind,
+      fields: typeDef.fields || [],
+      hidden: Boolean(typeDef.hidden)
+    }]);
   if (includeType && !entries.some(([type]) => type === includeType)) {
     entries.push([includeType, { ...getNodeMeta(includeType), removed: true }]);
   }
   return entries;
+}
+
+function getHiddenNodeTypeEntries() {
+  return getProjectNodeTypes()
+    .filter((typeDef) => typeDef.hidden)
+    .map((typeDef) => [typeDef.type, {
+      badge: typeDef.badge,
+      color: typeDef.color,
+      width: typeDef.width,
+      label: typeDef.label,
+      custom: Boolean(typeDef.custom),
+      kind: typeDef.kind,
+      fields: typeDef.fields || [],
+      hidden: true
+    }]);
+}
+
+function getNodeTypeDef(type) {
+  if (!type) return null;
+  return getProjectNodeTypes().find((typeDef) => typeDef.type === type) || null;
 }
 
 function renderLinks() {
@@ -709,7 +786,7 @@ function renderNodePanel(node) {
       <label class="field">
         <span>Type</span>
         <select data-node-field="type">
-          ${getNodeTypeEntries(node.type).map(([type, meta]) => `<option value="${escapeAttr(type)}" ${node.type === type ? "selected" : ""}>${escapeHtml(getNodeTypeLabel(type))}${meta.removed ? " (removed)" : ""}</option>`).join("")}
+          ${getNodeTypeEntries(node.type).map(([type, meta]) => `<option value="${escapeAttr(type)}" ${node.type === type ? "selected" : ""}>${escapeHtml(getNodeTypeLabel(type))}${meta.hidden ? " (hidden)" : ""}${meta.removed ? " (removed)" : ""}</option>`).join("")}
         </select>
       </label>
       <label class="field">
@@ -718,7 +795,8 @@ function renderNodePanel(node) {
       </label>
       ${renderNodeBodyField(node)}
       ${renderTypeFields(node)}
-      ${node.type === "Event" ? renderEventFields(node) : ""}
+      ${renderCustomFields(node)}
+      ${isEventSheetNode(node) ? renderEventFields(node) : ""}
       <div class="field-row">
         <label class="field">
           <span>X</span>
@@ -730,6 +808,7 @@ function renderNodePanel(node) {
         </label>
       </div>
       <div class="button-row">
+        <button class="small-button" data-action="edit-node-type" data-node-type="${escapeAttr(node.type)}">Type settings</button>
         <button class="small-button" data-action="duplicate-node">Duplicate</button>
         <button class="small-button" data-action="delete-node">Delete</button>
         <button class="small-button" data-action="focus-node">Focus</button>
@@ -836,11 +915,27 @@ function renderTypeFields(node) {
   return "";
 }
 
+function renderCustomFields(node) {
+  const fields = getNodeMeta(node.type).fields || [];
+  if (!fields.length) return "";
+  return `
+    <section class="custom-fields">
+      <h3>Properties</h3>
+      ${fields.map((field) => `
+        <label class="field">
+          <span>${escapeHtml(field.label)}</span>
+          <input data-node-custom-field="${escapeAttr(field.key)}" value="${escapeAttr(getNodeCustomFieldValue(node, field.key))}">
+        </label>
+      `).join("")}
+    </section>
+  `;
+}
+
 function renderStoryPanel() {
   const ordered = getReachableStory();
   dom.storyPanel.innerHTML = `
     <div class="story-panel-header">
-      <div class="document-meta">${ordered.filter((node) => node.type !== "Event").length} preview pages</div>
+      <div class="document-meta">${ordered.filter((node) => !isFrameNode(node)).length} preview pages</div>
       <button class="small-button" data-action="play">Run</button>
     </div>
     <div class="story-list">
@@ -949,9 +1044,11 @@ function handleAction(target) {
   const action = target.dataset.action;
   if (action === "add-node") addNode(target.dataset.type);
   if (action === "add-custom-node-type") addCustomNodeType();
+  if (action === "edit-node-type") editNodeType(target.dataset.nodeType);
+  if (action === "restore-node-type") restoreNodeType(target.dataset.nodeType);
   if (action === "delete-custom-node-type") deleteCustomNodeType(target.dataset.customNodeType);
-  if (action === "edit-node-icon") editNodeIcon(target.dataset.nodeId);
-  if (action === "reset-node-icon") resetNodeIconDialog();
+  if (action === "edit-node-type-badge") editNodeTypeBadge(target.dataset.nodeType);
+  if (action === "reset-node-icon") resetNodeTypeBadgeDialog();
   if (action === "save-project") saveCurrentState();
   if (action === "new-project") showNewProjectConfirm();
   if (action === "add-character") addCharacter();
@@ -1111,6 +1208,11 @@ function handleInput(event) {
     return;
   }
 
+  if (target.dataset.nodeCustomField) {
+    setNodeCustomField(target.dataset.nodeCustomField, target.value, false);
+    return;
+  }
+
   if (target.dataset.projectField) {
     if (target.dataset.projectField === "variables") return;
     setProjectField(target.dataset.projectField, target.value);
@@ -1138,6 +1240,10 @@ function handleChange(event) {
     setEventField(target.dataset.eventNodeId, target.dataset.eventField, target.value, true);
     return;
   }
+  if (target.dataset.nodeCustomField) {
+    setNodeCustomField(target.dataset.nodeCustomField, target.value, true);
+    return;
+  }
   if (target.dataset.projectField) {
     setProjectField(target.dataset.projectField, target.value);
     return;
@@ -1161,6 +1267,7 @@ function isNarrativeCanvasTarget(target) {
     dom.root?.contains(target)
     || dom.nodeContextMenu?.contains(target)
     || dom.nodeIconDialog?.contains(target)
+    || dom.nodeTypeDialog?.contains(target)
     || dom.playDialog?.contains(target)
     || dom.confirmDialog?.contains(target)
     || dom.nodeRequiredDialog?.contains(target)
@@ -1341,6 +1448,7 @@ function addNode(type) {
     node.value = "true";
   }
   if (type === "Condition") node.condition = "flag == true";
+  applyNodeTypeDefaults(node);
   state.project.nodes.push(normalizeNode(node));
   selectNode(node.id);
   setStatus(`${getNodeTypeLabel(type)} added.`);
@@ -1352,14 +1460,20 @@ function addCustomNodeType() {
     setStatus("Enter a custom node type name.");
     return;
   }
+  const kind = dom.customNodeKind.value;
   const typeDef = normalizeCustomNodeType({
     type: uniqueCustomNodeTypeId(label),
     label,
     badge: dom.customNodeBadge.value.trim() || label,
-    color: dom.customNodeColor.value || DEFAULT_CUSTOM_NODE_COLOR
+    color: getCustomNodeFormColor(kind),
+    badgeCustom: Boolean(dom.customNodeBadge.value.trim()),
+    kind,
+    fields: parseCustomNodeFields(dom.customNodeFields.value)
   });
   state.project.nodeTypes = [...getProjectNodeTypes(), typeDef];
   dom.customNodeName.value = "";
+  dom.customNodeKind.value = "node";
+  dom.customNodeFields.value = "";
   dom.customNodeBadge.value = "";
   dom.customNodeColor.value = DEFAULT_CUSTOM_NODE_COLOR;
   renderPalette();
@@ -1367,13 +1481,34 @@ function addCustomNodeType() {
   setStatus(`${typeDef.label} node type added.`);
 }
 
+function getCustomNodeFormColor(kind) {
+  const color = dom.customNodeColor.value || DEFAULT_CUSTOM_NODE_COLOR;
+  if (color === DEFAULT_CUSTOM_NODE_COLOR && kind !== "node") return getDefaultNodeTypeColor(kind);
+  return color;
+}
+
 function deleteCustomNodeType(type) {
   if (!type) return;
   const typeDef = getProjectNodeTypes().find((item) => item.type === type);
-  state.project.nodeTypes = getProjectNodeTypes().filter((item) => item.type !== type);
+  if (!typeDef) return;
+  if (state.project.nodes.some((node) => node.type === type)) {
+    typeDef.hidden = true;
+    setStatus(`${typeDef.label || type} hidden from Node Library.`);
+  } else {
+    state.project.nodeTypes = getProjectNodeTypes().filter((item) => item.type !== type);
+    setStatus(`${typeDef.label || type} node type deleted.`);
+  }
   renderPalette();
   renderInspector();
-  setStatus(`${typeDef?.label || type} node type deleted.`);
+}
+
+function restoreNodeType(type) {
+  const typeDef = getNodeTypeDef(type);
+  if (!typeDef) return;
+  typeDef.hidden = false;
+  renderPalette();
+  renderInspector();
+  setStatus(`${typeDef.label || type} restored to Node Library.`);
 }
 
 function defaultBody(type) {
@@ -1388,7 +1523,20 @@ function defaultBody(type) {
     Marker: "Planning marker.",
     Event: "Group related beats into one event-sheet row."
   };
-  return defaults[type] || "Write custom node content here.";
+  if (defaults[type]) return defaults[type];
+  const kind = getNodeMeta(type).kind;
+  if (isEventFrameKind(kind)) return "Group related beats into one event-sheet row.";
+  return isFrameKind(kind) ? "Group related nodes." : "Write custom node content here.";
+}
+
+function applyNodeTypeDefaults(node) {
+  const meta = getNodeMeta(node.type);
+  ensureCustomFieldDefaults(node);
+  if (isEventSheetNode(node)) ensureEventDefaults(node);
+  if (isFrameNode(node)) {
+    node.width = node.width || meta.width || 420;
+    node.height = node.height || defaultNodeHeight(node);
+  }
 }
 
 function addCharacter() {
@@ -1496,19 +1644,85 @@ function clearNodeSelection() {
   if (state.panel === "node") state.panel = "project";
 }
 
-function editNodeIcon(nodeId) {
-  const node = getNode(nodeId);
-  if (!node) return;
+function editNodeType(type) {
+  const typeDef = getNodeTypeDef(type);
+  if (!typeDef) return;
+  state.typeDialogType = typeDef.type;
+
+  if (dom.nodeTypeDialog?.showModal) {
+    dom.nodeTypeDialog.returnValue = "";
+    dom.nodeTypeDialogTitle.textContent = `Edit ${typeDef.label}`;
+    dom.nodeTypeNameInput.value = typeDef.label || typeDef.type;
+    dom.nodeTypeKindInput.value = typeDef.kind || "node";
+    dom.nodeTypeFieldsInput.value = formatNodeTypeFields(typeDef.fields);
+    dom.nodeTypeColorInput.value = normalizeCustomColor(typeDef.color);
+    dom.nodeTypeHiddenInput.checked = Boolean(typeDef.hidden);
+    dom.nodeTypeDialog.showModal();
+    requestAnimationFrame(() => {
+      dom.nodeTypeNameInput.focus();
+      dom.nodeTypeNameInput.select();
+    });
+    return;
+  }
+
+  const nextName = window.prompt?.("Node type name", typeDef.label || typeDef.type);
+  if (nextName == null) return;
+  applyNodeTypeValues(typeDef.type, {
+    label: nextName,
+    kind: typeDef.kind,
+    fields: typeDef.fields,
+    color: typeDef.color,
+    hidden: typeDef.hidden
+  });
+}
+
+function applyNodeTypeDialog() {
+  applyNodeTypeValues(state.typeDialogType, {
+    label: dom.nodeTypeNameInput.value,
+    kind: dom.nodeTypeKindInput.value,
+    fields: parseCustomNodeFields(dom.nodeTypeFieldsInput.value, getNodeTypeDef(state.typeDialogType)?.fields || []),
+    color: dom.nodeTypeColorInput.value,
+    hidden: dom.nodeTypeHiddenInput.checked
+  });
+}
+
+function applyNodeTypeValues(type, values) {
+  const typeDef = getNodeTypeDef(type);
+  if (!typeDef) return;
+  const label = String(values.label || "").trim().slice(0, 40);
+  if (!label) {
+    setStatus("Node type name is required.");
+    return;
+  }
+  typeDef.label = label;
+  typeDef.kind = normalizeNodeTypeKind(values.kind);
+  typeDef.fields = normalizeNodeTypeFields(values.fields);
+  typeDef.color = normalizeNodeTypeColor(typeDef.type, typeDef.kind, values.color);
+  typeDef.hidden = Boolean(values.hidden);
+  typeDef.width = clamp(typeDef.width || (isFrameKind(typeDef.kind) ? 420 : 230), 160, isFrameKind(typeDef.kind) ? 860 : 420);
+
+  state.project.nodes
+    .filter((node) => node.type === typeDef.type)
+    .forEach((node) => applyNodeTypeDefaults(node));
+
+  renderAll();
+  setStatus(`${typeDef.label} node type updated.`);
+}
+
+function formatNodeTypeFields(fields) {
+  return (fields || []).map((field) => field.label || field.key || "").filter(Boolean).join("\n");
+}
+
+function editNodeTypeBadge(type) {
+  const typeDef = getNodeTypeDef(type);
+  if (!typeDef) return;
   state.activeFileId = "adventure";
-  state.selectedNodeId = node.id;
   state.selectedLinkId = null;
-  state.panel = "node";
-  state.iconDialogNodeId = node.id;
+  state.iconDialogType = typeDef.type;
 
-  const fallbackIcon = getDefaultNodeIcon(node);
-  const existingIcon = normalizeNodeIcon(node.icon);
-  const currentIcon = existingIcon || fallbackIcon;
+  const currentIcon = typeDef.badge || getDefaultNodeTypeBadge(typeDef.label);
 
+  renderPalette();
   renderNodes();
   renderInspector();
   renderWorkspaceFile();
@@ -1516,7 +1730,7 @@ function editNodeIcon(nodeId) {
 
   if (dom.nodeIconDialog?.showModal) {
     dom.nodeIconDialog.returnValue = "";
-    dom.nodeIconDialogTitle.textContent = `Edit icon for ${node.title || getNodeTypeLabel(node.type)}`;
+    dom.nodeIconDialogTitle.textContent = `Edit icon for ${typeDef.label}`;
     dom.nodeIconInput.value = currentIcon;
     dom.nodeIconDialog.showModal();
     requestAnimationFrame(() => {
@@ -1526,42 +1740,35 @@ function editNodeIcon(nodeId) {
     return;
   }
 
-  const nextValue = window.prompt?.("Node icon (leave blank to use title initial)", currentIcon);
+  const nextValue = window.prompt?.("Node type icon text or emoji (leave blank to use type initial)", currentIcon);
   if (nextValue == null) return;
-  applyNodeIconValue(node, nextValue);
+  applyNodeTypeBadgeValue(typeDef.type, nextValue);
 }
 
-function applyNodeIconDialog() {
-  const node = getNode(state.iconDialogNodeId);
-  if (!node) return;
-  applyNodeIconValue(node, dom.nodeIconInput.value);
+function applyNodeTypeBadgeDialog() {
+  applyNodeTypeBadgeValue(state.iconDialogType, dom.nodeIconInput.value);
 }
 
-function resetNodeIconDialog() {
-  const node = getNode(state.iconDialogNodeId);
-  if (!node) return;
-  delete node.icon;
+function resetNodeTypeBadgeDialog() {
+  const typeDef = getNodeTypeDef(state.iconDialogType);
+  if (!typeDef) return;
+  typeDef.badge = getDefaultNodeTypeBadge(typeDef.label);
+  typeDef.badgeCustom = false;
   if (dom.nodeIconDialog?.open) dom.nodeIconDialog.close("reset");
-  finishNodeIconEdit("Node icon reset.");
+  finishNodeTypeBadgeEdit("Node type icon now uses type initial.");
 }
 
-function applyNodeIconValue(node, value) {
-  const fallbackIcon = getDefaultNodeIcon(node);
-  const existingIcon = normalizeNodeIcon(node.icon);
-  const nextIcon = normalizeNodeIcon(value);
-  if (nextIcon) {
-    if (existingIcon || nextIcon !== fallbackIcon) {
-      node.icon = nextIcon;
-    } else {
-      delete node.icon;
-    }
-  } else {
-    delete node.icon;
-  }
-  finishNodeIconEdit(nextIcon ? "Node icon updated." : "Node icon reset.");
+function applyNodeTypeBadgeValue(type, value) {
+  const typeDef = getNodeTypeDef(type);
+  if (!typeDef) return;
+  const nextIcon = normalizeNodeTypeBadge(value);
+  typeDef.badge = nextIcon || getDefaultNodeTypeBadge(typeDef.label);
+  typeDef.badgeCustom = Boolean(nextIcon);
+  finishNodeTypeBadgeEdit(nextIcon ? "Node type icon updated." : "Node type icon now uses type initial.");
 }
 
-function finishNodeIconEdit(message) {
+function finishNodeTypeBadgeEdit(message) {
+  renderPalette();
   renderNodes();
   renderInspector();
   renderWorkspaceFile();
@@ -1606,7 +1813,7 @@ function setNodeField(field, value) {
     node.choices = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
   } else if (field === "type") {
     node[field] = value;
-    if (value === "Event") ensureEventDefaults(node);
+    applyNodeTypeDefaults(node);
   } else {
     node[field] = value;
   }
@@ -1619,6 +1826,20 @@ function setNodeField(field, value) {
     renderStoryPanel();
   }
   updateStatus();
+}
+
+function setNodeCustomField(key, value, rerender) {
+  const node = getNode(state.selectedNodeId);
+  if (!node) return;
+  const fields = getNodeMeta(node.type).fields || [];
+  if (!fields.some((field) => field.key === key)) return;
+  if (!node.customFields || typeof node.customFields !== "object" || Array.isArray(node.customFields)) node.customFields = {};
+  node.customFields[key] = value;
+  renderNodes();
+  renderStoryPanel();
+  renderProjectPanel();
+  updateStatus();
+  if (rerender) renderNodePanel(node);
 }
 
 function setEventField(nodeId, field, value, rerender) {
@@ -1995,6 +2216,7 @@ async function exportAll() {
     const files = [
       { name: `${slug}.json`, blob: new Blob([buildProjectJson()], { type: "application/json" }) },
       { name: "Events Sheet.csv", blob: new Blob([buildEventSheetCsv()], { type: "text/csv;charset=utf-8" }) },
+      { name: "Node Properties.csv", blob: new Blob([buildNodePropertiesCsv()], { type: "text/csv;charset=utf-8" }) },
       { name: "Characters.md", blob: new Blob([buildCharactersMarkdown()], { type: "text/markdown;charset=utf-8" }) },
       { name: "Variables.json", blob: new Blob([buildVariablesJson()], { type: "application/json" }) },
       { name: `${slug}.html`, blob: new Blob([buildExportHtml()], { type: "text/html" }) }
@@ -2045,6 +2267,16 @@ function buildEventSheetCsv() {
   const rows = [
     eventSheetColumns.map((column) => column.label),
     ...getEventRows().map((node) => eventSheetColumns.map((column) => getNodeEventValue(node, column.key)))
+  ];
+  return rows.map((row) => row.map(formatCsvCell).join(",")).join("\n");
+}
+
+function buildNodePropertiesCsv() {
+  const rows = [
+    ["Node ID", "Type", "Title", "Field", "Value"],
+    ...state.project.nodes.flatMap((node) => getNodeCustomFieldEntries(node)
+      .filter((field) => field.value !== "")
+      .map((field) => [node.id, getNodeTypeLabel(node.type), node.title || "", field.label, field.value]))
   ];
   return rows.map((row) => row.map(formatCsvCell).join(",")).join("\n");
 }
@@ -2228,14 +2460,16 @@ function importJsonFile() {
 }
 
 function normalizeProject(project) {
+  const nodeTypesList = normalizeProjectNodeTypes(project.nodeTypes, project.customNodeTypes);
+  const eventFrameTypes = new Set(nodeTypesList.filter((typeDef) => isEventFrameKind(typeDef.kind)).map((typeDef) => typeDef.type));
   return {
     title: project.title || "Untitled Story",
     notes: project.notes || "",
     variables: project.variables || {},
-    nodeTypes: normalizeProjectNodeTypes(project.nodeTypes, project.customNodeTypes),
+    nodeTypes: nodeTypesList,
     customNodeTypes: [],
     characters: Array.isArray(project.characters) ? project.characters : inferCharacters(project),
-    nodes: Array.isArray(project.nodes) ? project.nodes.map(normalizeNode) : [],
+    nodes: Array.isArray(project.nodes) ? project.nodes.map((node) => normalizeNode(node, eventFrameTypes)) : [],
     links: Array.isArray(project.links) ? project.links : []
   };
 }
@@ -2281,14 +2515,68 @@ function normalizeCustomNodeType(typeDef) {
   const label = String(typeDef?.label || typeDef?.type || "").trim().slice(0, 40);
   if (!label) return null;
   const type = String(typeDef?.type || customNodeTypeId(label)).trim() || customNodeTypeId(label);
+  const kind = type === "Event" ? "eventFrame" : normalizeNodeTypeKind(typeDef?.kind || "node");
   return {
     type,
     label,
-    badge: normalizeCustomBadge(typeDef?.badge || label),
-    color: normalizeCustomColor(typeDef?.color),
-    width: clamp(Number(typeDef?.width) || 230, 160, 420),
-    custom: Boolean(typeDef?.custom)
+    badge: normalizeNodeTypeBadge(getNormalizedNodeTypeBadge(type, label, typeDef?.badge, typeDef?.badgeCustom)) || getDefaultNodeTypeBadge(label),
+    color: normalizeNodeTypeColor(type, kind, typeDef?.color),
+    width: clamp(Number(typeDef?.width) || (isFrameKind(kind) ? 420 : 230), 160, isFrameKind(kind) ? 860 : 420),
+    custom: Boolean(typeDef?.custom),
+    badgeCustom: Boolean(typeDef?.badgeCustom),
+    kind,
+    fields: normalizeNodeTypeFields(typeDef?.fields),
+    hidden: Boolean(typeDef?.hidden)
   };
+}
+
+function getNodeCustomFieldValue(node, key) {
+  if (!node?.customFields || typeof node.customFields !== "object") return "";
+  return node.customFields[key] == null ? "" : String(node.customFields[key]);
+}
+
+function normalizeNodeTypeKind(value) {
+  if (value === "eventFrame") return "eventFrame";
+  return value === "frame" ? "frame" : "node";
+}
+
+function parseCustomNodeFields(value, previousFields = []) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .map((label, index) => label ? { key: previousFields[index]?.key, label } : null)
+    .filter(Boolean);
+}
+
+function normalizeNodeTypeFields(fields) {
+  if (!Array.isArray(fields)) return [];
+  const seen = new Set();
+  return fields
+    .map((field, index) => {
+      const label = String(field?.label || field?.key || "").trim().slice(0, 40);
+      if (!label) return null;
+      let key = String(field?.key || fieldKeyFromLabel(label, index)).trim();
+      key = key.replace(/[^\w-]/g, "_").replace(/^[-_]+|[-_]+$/g, "") || "field";
+      if (/^\d/.test(key)) key = `field_${key}`;
+      let uniqueKey = key;
+      let duplicateIndex = 2;
+      while (seen.has(uniqueKey)) {
+        uniqueKey = `${key}_${duplicateIndex}`;
+        duplicateIndex += 1;
+      }
+      seen.add(uniqueKey);
+      return { key: uniqueKey, label };
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function fieldKeyFromLabel(label, index) {
+  const ascii = String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return ascii || `field_${index + 1}`;
 }
 
 function uniqueCustomNodeTypeId(label) {
@@ -2307,9 +2595,21 @@ function customNodeTypeId(label) {
   return `Custom_${slugify(label).replace(/-/g, "_") || "node"}`;
 }
 
-function normalizeCustomBadge(value) {
-  const compact = String(value || "").trim().replace(/\s+/g, "").slice(0, 3).toUpperCase();
-  return compact || "N";
+function getNormalizedNodeTypeBadge(type, label, value, isCustomBadge = false) {
+  const raw = String(value ?? "").trim();
+  if (!raw || (!isCustomBadge && nodeTypes[type] && raw === LEGACY_DEFAULT_NODE_BADGES[type])) {
+    return getDefaultNodeTypeBadge(label);
+  }
+  return raw;
+}
+
+function getDefaultNodeTypeBadge(label) {
+  const first = firstGrapheme(label);
+  return first ? uppercaseIconGrapheme(first) : "N";
+}
+
+function normalizeNodeTypeBadge(value) {
+  return normalizeCustomIconText(value);
 }
 
 function normalizeCustomColor(value) {
@@ -2317,20 +2617,58 @@ function normalizeCustomColor(value) {
   return /^#[0-9a-f]{6}$/i.test(color) ? color : DEFAULT_CUSTOM_NODE_COLOR;
 }
 
-function normalizeNode(node) {
-  const normalized = { ...node };
-  const icon = normalizeNodeIcon(normalized.icon);
-  if (icon) {
-    normalized.icon = icon;
-  } else {
-    delete normalized.icon;
+function normalizeNodeTypeColor(type, kind, value) {
+  const color = String(value || "").trim();
+  if (type === "Event" && (!/^#[0-9a-f]{6}$/i.test(color) || LEGACY_EVENT_FRAME_COLORS.has(color.toLowerCase()))) {
+    return DEFAULT_EVENT_FRAME_COLOR;
   }
+  if (/^#[0-9a-f]{6}$/i.test(color)) return color;
+  return getDefaultNodeTypeColor(kind);
+}
+
+function getDefaultNodeTypeColor(kind) {
+  if (kind === "eventFrame") return DEFAULT_EVENT_FRAME_COLOR;
+  if (kind === "frame") return DEFAULT_VISUAL_FRAME_COLOR;
+  return DEFAULT_CUSTOM_NODE_COLOR;
+}
+
+function normalizeNode(node, eventFrameTypes = null) {
+  const normalized = { ...node };
+  delete normalized.icon;
+  normalized.customFields = normalizeNodeCustomFields(normalized.customFields);
   if (normalized.type === "Frame") {
     normalized.type = "Event";
     if (normalized.eventType === "Frame" || normalized.eventType === "Event") normalized.eventType = "";
   }
-  if (normalized.type === "Event") ensureEventDefaults(normalized);
+  const isEventType = eventFrameTypes ? eventFrameTypes.has(normalized.type) : isEventSheetNode(normalized);
+  if (isEventType) ensureEventDefaults(normalized);
   return normalized;
+}
+
+function normalizeNodeCustomFields(customFields) {
+  if (!customFields || typeof customFields !== "object" || Array.isArray(customFields)) return {};
+  const normalized = {};
+  Object.entries(customFields).forEach(([key, value]) => {
+    normalized[String(key)] = value == null ? "" : String(value);
+  });
+  return normalized;
+}
+
+function ensureCustomFieldDefaults(node) {
+  const fields = getNodeMeta(node.type).fields || [];
+  if (!fields.length) return;
+  if (!node.customFields || typeof node.customFields !== "object" || Array.isArray(node.customFields)) node.customFields = {};
+  fields.forEach((field) => {
+    if (node.customFields[field.key] == null) node.customFields[field.key] = "";
+  });
+}
+
+function getNodeCustomFieldEntries(node) {
+  return (getNodeMeta(node?.type).fields || []).map((field) => ({
+    key: field.key,
+    label: field.label,
+    value: getNodeCustomFieldValue(node, field.key)
+  }));
 }
 
 function ensureEventDefaults(node) {
@@ -2385,6 +2723,7 @@ function renderPreviewNode(nodeId) {
     : "";
   const nextPathId = state.playPath[pathIndex + 1];
   dom.playTitle.textContent = node.title || node.type;
+  const customFields = renderPreviewCustomFields(node);
   dom.playBody.innerHTML = `
     <div class="play-meta">
       <span>${escapeHtml(node.type)} ${escapeHtml(node.id)}</span>
@@ -2392,6 +2731,7 @@ function renderPreviewNode(nodeId) {
     </div>
     <h3>${escapeHtml(node.title || node.type)}</h3>
     <p>${escapeHtml(interpolate(displayBody(node)))}</p>
+    ${customFields}
   `;
 
   if (node.type === "Choice" && nextLinks.length) {
@@ -2411,7 +2751,22 @@ function renderPreviewNode(nodeId) {
 }
 
 function getPreviewPath() {
-  return getReachableStory().filter((node) => node.type !== "Event");
+  return getReachableStory().filter((node) => !isFrameNode(node));
+}
+
+function renderPreviewCustomFields(node) {
+  const fields = getNodeCustomFieldEntries(node).filter((field) => field.value !== "");
+  if (!fields.length) return "";
+  return `
+    <dl class="play-properties">
+      ${fields.map((field) => `
+        <div>
+          <dt>${escapeHtml(field.label)}</dt>
+          <dd>${escapeHtml(interpolate(field.value))}</dd>
+        </div>
+      `).join("")}
+    </dl>
+  `;
 }
 
 function evaluateCondition(source) {
@@ -2543,7 +2898,7 @@ function getProjectBounds() {
 
 function getEventRows() {
   return state.project.nodes
-    .filter((node) => node.type === "Event")
+    .filter((node) => isEventSheetNode(node))
     .sort((a, b) => a.y - b.y || a.x - b.x);
 }
 
@@ -2559,19 +2914,20 @@ function getNodeEventValue(node, key) {
 }
 
 function getEventContainedNodes(eventNode) {
-  if (!eventNode || eventNode.type !== "Event") return [];
+  if (!isEventSheetNode(eventNode)) return [];
   const bounds = getEventBounds(eventNode);
   return state.project.nodes
-    .filter((node) => node.id !== eventNode.id && node.type !== "Event")
+    .filter((node) => node.id !== eventNode.id && !isFrameNode(node))
     .filter((node) => isNodeInsideBounds(node, bounds))
     .sort((a, b) => a.y - b.y || a.x - b.x);
 }
 
 function getEventBounds(eventNode) {
+  const meta = getNodeMeta(eventNode?.type);
   return {
     left: eventNode.x,
     top: eventNode.y,
-    right: eventNode.x + (eventNode.width || nodeTypes.Event.width),
+    right: eventNode.x + (eventNode.width || meta.width || nodeTypes.Event.width),
     bottom: eventNode.y + nodeHeight(eventNode)
   };
 }
@@ -2633,10 +2989,11 @@ function renderExportNode(node, offset) {
   const height = exportNodeHeight(node);
   const x = node.x + offset.x;
   const y = node.y + offset.y;
-  const isFrame = node.type === "Event";
-  const fill = isFrame ? "rgba(61,78,36,0.62)" : "rgba(43,43,43,0.96)";
-  const stroke = isFrame ? "rgba(152,195,121,0.52)" : "rgba(255,255,255,0.13)";
-  const bodyLines = wrapSvgText(displayBody(node), Math.max(14, Math.floor((width - 28) / 7.2)), isFrame ? 8 : 5);
+  const isFrame = isFrameNode(node);
+  const frameStyle = getExportFrameStyle(node);
+  const fill = isFrame ? frameStyle.fill : "rgba(43,43,43,0.96)";
+  const stroke = isFrame ? frameStyle.stroke : "rgba(255,255,255,0.13)";
+  const bodyLines = wrapSvgText(getNodeExportBody(node), Math.max(14, Math.floor((width - 28) / 7.2)), isFrame ? 8 : 5);
   const titleLines = wrapSvgText(node.title || "Untitled", Math.max(10, Math.floor((width - 76) / 8)), 2);
   const titleText = renderSvgLines(titleLines, x + 14, y + 58, 14, 13, "#dcddde", 700);
   const bodyText = renderSvgLines(bodyLines, x + 14, y + 88, 14, 12, "#dcddde", 400);
@@ -2653,6 +3010,12 @@ function renderExportNode(node, offset) {
     ${bodyText}
     ${node.type === "Choice" && Array.isArray(node.choices) ? `<text x="${x + 14}" y="${y + height - 16}" fill="#a8a8a8" font-family="system-ui, sans-serif" font-size="12">${node.choices.length} choices</text>` : ""}
   </g>`;
+}
+
+function getExportFrameStyle(node) {
+  return isEventSheetNode(node)
+    ? { fill: "rgba(96,65,150,0.52)", stroke: "rgba(180,140,255,0.62)" }
+    : { fill: "rgba(118,124,134,0.2)", stroke: "rgba(188,194,204,0.42)" };
 }
 
 function renderExportLink(link, offset) {
@@ -2759,23 +3122,30 @@ function nodeHeight(node) {
 
 function defaultNodeHeight(node) {
   const contentHeight = Math.max(126, 80 + Math.min(120, String(displayBody(node) || "").length * 0.35));
-  return node.type === "Event" ? Math.max(250, contentHeight) : contentHeight;
+  return isFrameNode(node) ? Math.max(250, contentHeight) : contentHeight;
+}
+
+function getNodeExportBody(node) {
+  const propertyLines = getNodeCustomFieldEntries(node)
+    .filter((field) => field.value !== "")
+    .map((field) => `${field.label}: ${field.value}`);
+  return [displayBody(node), ...propertyLines].filter(Boolean).join("\n");
 }
 
 function minNodeWidth(node) {
-  return node.type === "Event" ? 260 : 140;
+  return isFrameNode(node) ? 260 : 140;
 }
 
 function minNodeHeight(node) {
-  return node.type === "Event" ? 160 : 96;
+  return isFrameNode(node) ? 160 : 96;
 }
 
 function maxNodeWidth(node) {
-  return node.type === "Event" ? Number.POSITIVE_INFINITY : 860;
+  return isFrameNode(node) ? Number.POSITIVE_INFINITY : 860;
 }
 
 function maxNodeHeight(node) {
-  return node.type === "Event" ? Number.POSITIVE_INFINITY : 620;
+  return isFrameNode(node) ? Number.POSITIVE_INFINITY : 620;
 }
 
 function nodeSize(node) {
@@ -2813,18 +3183,8 @@ function displayBody(node) {
 }
 
 function getNodeIcon(node) {
-  return normalizeNodeIcon(node?.icon) || getDefaultNodeIcon(node);
-}
-
-function getDefaultNodeIcon(node) {
-  const source = node?.title || getNodeTypeLabel(node?.type) || node?.id || "Node";
-  const first = firstGrapheme(source);
-  return first ? uppercaseIconGrapheme(first) : "N";
-}
-
-function normalizeNodeIcon(value) {
-  const graphemes = getTextGraphemes(value);
-  return graphemes.slice(0, NODE_ICON_MAX_GRAPHEMES).join("");
+  const meta = getNodeMeta(node?.type);
+  return normalizeNodeTypeBadge(meta.badge) || getDefaultNodeTypeBadge(meta.label || node?.type || "Node");
 }
 
 function getNodeIconSize(icon) {
@@ -2847,6 +3207,28 @@ function uppercaseIconGrapheme(value) {
   return firstGrapheme(String(value || "").toLocaleUpperCase()) || String(value || "");
 }
 
+function normalizeCustomIconText(value) {
+  const graphemes = getTextGraphemes(String(value || "").toLocaleUpperCase());
+  const accepted = [];
+  let units = 0;
+  for (const grapheme of graphemes) {
+    const nextUnits = iconGraphemeUnits(grapheme);
+    if (accepted.length && units + nextUnits > NODE_TYPE_ICON_MAX_UNITS) break;
+    accepted.push(grapheme);
+    units += nextUnits;
+    if (units >= NODE_TYPE_ICON_MAX_UNITS) break;
+  }
+  return accepted.join("");
+}
+
+function iconGraphemeUnits(grapheme) {
+  if (!grapheme) return 0;
+  if (/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(grapheme)) return 2;
+  if ((grapheme.codePointAt(0) || 0) > 0xffff) return 2;
+  if (/[\u2600-\u27bf]/.test(grapheme)) return 2;
+  return 1;
+}
+
 function getTextGraphemes(value) {
   const text = String(value || "").trim().replace(/\s+/g, "");
   if (!text) return [];
@@ -2857,7 +3239,7 @@ function getTextGraphemes(value) {
 }
 
 function nodeMatches(node, query) {
-  return [node.type, node.title, node.body, node.condition, node.variable, node.value]
+  return [node.type, node.title, node.body, node.condition, node.variable, node.value, ...Object.values(node.customFields || {})]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(query));
 }
@@ -2874,11 +3256,23 @@ function getCanvasLayerItems() {
 
 function getNodeLayerOrder(node, index) {
   if (Number.isFinite(node.layerOrder)) return node.layerOrder;
-  return (isEventFrame(node) ? EVENT_LAYER_BASE : REGULAR_LAYER_BASE) + index;
+  return (isFrameNode(node) ? EVENT_LAYER_BASE : REGULAR_LAYER_BASE) + index;
 }
 
-function isEventFrame(node) {
-  return node.type === "Event";
+function isFrameNode(node) {
+  return isFrameKind(getNodeMeta(node?.type).kind);
+}
+
+function isFrameKind(kind) {
+  return kind === "frame" || kind === "eventFrame";
+}
+
+function isEventSheetNode(node) {
+  return isEventFrameKind(getNodeMeta(node?.type).kind);
+}
+
+function isEventFrameKind(kind) {
+  return kind === "eventFrame";
 }
 
 function nextId(prefix, items) {
