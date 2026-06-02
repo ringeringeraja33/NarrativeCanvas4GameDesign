@@ -107,19 +107,6 @@ Runtime preview starts from the Entry node and follows links.
 - Condition nodes choose between the first or second outgoing link.
 - Event Frames are skipped in preview because they are planning/grouping containers.
 
-### Obsidian Plugin Release Files
-
-This plugin uses more runtime files than the usual `main.js`, `manifest.json`, and `styles.css`. A complete install or release package must include:
-
-```text
-app.js
-canvas.css
-index.html
-main.js
-manifest.json
-styles.css
-```
-
 ## 中文
 
 Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可以把剧情段落、角色对白、选择分支、条件判断、变量变化、跳转、角色和笔记整理成可连接、可预览的互动流程。它适用于游戏、互动小说、分支剧本、任务链和其他非线性叙事结构。
@@ -169,7 +156,7 @@ Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可
 
 #### 工作区
 
-- **Save**：保存当前本地编辑状态，适合下次继续做。
+- **Save**：保存当前本地编辑状态。
 - **New**：新建空项目，确认后会丢弃当前内存中的项目。
 - **Light/Dark**：切换界面主题。
 - **The Adventure.canvas**：主画布。
@@ -228,16 +215,3 @@ Event Frame 用来圈定一组相关叙事节点，并生成事件表行。
 - Set 会在预览过程中修改变量。
 - Condition 会根据条件选择第一条或第二条出线。
 - Event Frame 是策划分组容器，不会作为预览页面显示。
-
-#### Obsidian 插件发布文件
-
-这个插件运行时需要的文件不止 `main.js`、`manifest.json`、`styles.css`。完整安装包或 release 包至少要包含：
-
-```text
-app.js
-canvas.css
-index.html
-main.js
-manifest.json
-styles.css
-```
