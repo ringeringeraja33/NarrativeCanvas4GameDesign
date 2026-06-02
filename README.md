@@ -32,7 +32,9 @@ It works in two modes:
 4. Enable `Narrative Canvas` in `Settings -> Community plugins`.
 5. Open it from the command palette command `Open Narrative Canvas`.
 
-### First Open, Save, and Export
+### Usage Guide
+
+#### First Open, Save, and Export
 
 When Narrative Canvas opens for the first time, it shows the built-in template project `The Adventure`. Treat it as sample content, not as your saved story.
 
@@ -45,7 +47,7 @@ Save is convenient for continuing a local editing session, but it is not a safe 
 
 For backups, handoff, version history, or publishing, use **Export JSON** or **Export all** instead of relying on Save. **Export JSON** gives you the full project file for re-import. **Export all** creates a zip package with the supported outputs: project JSON, event CSV, character Markdown, variables JSON, image, and HTML.
 
-### Workspace Guide
+#### Workspace Guide
 
 - **Save** stores the current local editing state. Use it as a session resume tool.
 - **New** creates a fresh project and discards the current in-memory project after confirmation.
@@ -58,7 +60,7 @@ For backups, handoff, version history, or publishing, use **Export JSON** or **E
 - **Play** opens the runtime preview from the Entry node.
 - **Import JSON** replaces the current project with an exported project JSON.
 
-### Canvas Operations
+#### Canvas Operations
 
 - Click a node to focus it in the Node inspector.
 - Drag a node header to move a node.
@@ -69,7 +71,7 @@ For backups, handoff, version history, or publishing, use **Export JSON** or **E
 - Right-click a node to change layer order with **Bring to front**, **Bring forward**, **Send backward**, or **Send to back**.
 - Use the search field in the footer to find matching nodes on the current project.
 
-### Node Library
+#### Node Library
 
 The Node Library is fully customizable. You can add new node types with a name, badge, and color, and you can remove existing node types from the library. Removing a node type hides it from the add menu; existing nodes of that type remain in the project and can still be edited.
 
@@ -85,7 +87,7 @@ Built-in node types:
 - **Marker**: a planning note for WIP sections, reminders, or production comments.
 - **Event Frame**: a resizable grouping frame that also creates one row in `Events Sheet.csv`.
 
-### Event Frame Guide
+#### Event Frame Guide
 
 Event Frames are for grouping related beats and producing event-sheet rows.
 
@@ -97,7 +99,7 @@ Event Frames are for grouping related beats and producing event-sheet rows.
 - Event Frames have extra fields in the Node inspector: ACT, chapter, character encountered, event description, levels, quest episode, beat list, time/weather, and event type.
 - `Events Sheet.csv` rows are sorted by frame position, top to bottom and then left to right.
 
-### Runtime Preview
+#### Runtime Preview
 
 Runtime preview starts from the Entry node and follows links.
 
