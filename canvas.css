@@ -4,10 +4,29 @@
   --background-primary: #1f1f1f;
   --background-secondary: #252525;
   --background-secondary-alt: #2b2b2b;
+  --background-canvas: #202020;
+  --background-control: #1a1a1a;
+  --workspace-bar-bg: #202020;
   --background-modifier-hover: #333333;
   --background-modifier-active: #3a3a3a;
   --background-modifier-border: #404040;
   --background-modifier-border-hover: #5a5a5a;
+  --canvas-grid-small: rgba(255, 255, 255, 0.055);
+  --canvas-grid-large: rgba(255, 255, 255, 0.09);
+  --node-surface: rgba(43, 43, 43, 0.94);
+  --node-border: rgba(255, 255, 255, 0.08);
+  --frame-surface: rgba(61, 78, 36, 0.5);
+  --frame-border: rgba(152, 195, 121, 0.35);
+  --subtle-button-border: rgba(255, 255, 255, 0.035);
+  --subtle-button-bg: rgba(255, 255, 255, 0.025);
+  --node-header-border: rgba(255, 255, 255, 0.065);
+  --node-header-bg: rgba(255, 255, 255, 0.055);
+  --overlay-bg: rgba(31, 31, 31, 0.9);
+  --minimap-bg: rgba(25, 25, 25, 0.88);
+  --scrollbar-track: rgba(255, 255, 255, 0.045);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.28);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.38);
+  --link-color: rgba(220, 221, 222, 0.72);
   --text-normal: #dcddde;
   --text-muted: #a8a8a8;
   --text-faint: #7a7a7a;
@@ -25,12 +44,73 @@
   color-scheme: dark;
 }
 
+:root[data-theme="light"],
+.app-shell[data-theme="light"] {
+  --background-primary: #f4f4f1;
+  --background-secondary: #e9e7e2;
+  --background-secondary-alt: #dedbd3;
+  --background-canvas: #efeee9;
+  --background-control: #ffffff;
+  --workspace-bar-bg: #eceae5;
+  --background-modifier-hover: #ddd9d1;
+  --background-modifier-active: #d3cec3;
+  --background-modifier-border: #c7c1b6;
+  --background-modifier-border-hover: #aaa397;
+  --canvas-grid-small: rgba(40, 37, 32, 0.085);
+  --canvas-grid-large: rgba(40, 37, 32, 0.14);
+  --node-surface: rgba(255, 255, 255, 0.94);
+  --node-border: rgba(35, 31, 27, 0.14);
+  --frame-surface: rgba(218, 231, 190, 0.72);
+  --frame-border: rgba(96, 132, 59, 0.35);
+  --subtle-button-border: rgba(35, 31, 27, 0.08);
+  --subtle-button-bg: rgba(35, 31, 27, 0.035);
+  --node-header-border: rgba(35, 31, 27, 0.09);
+  --node-header-bg: rgba(35, 31, 27, 0.045);
+  --overlay-bg: rgba(255, 255, 255, 0.9);
+  --minimap-bg: rgba(255, 255, 255, 0.78);
+  --scrollbar-track: rgba(40, 37, 32, 0.08);
+  --scrollbar-thumb: rgba(40, 37, 32, 0.32);
+  --scrollbar-thumb-hover: rgba(40, 37, 32, 0.44);
+  --link-color: rgba(55, 51, 45, 0.64);
+  --text-normal: #171717;
+  --text-muted: #3f3b35;
+  --text-faint: #625b52;
+  --text-on-accent: #ffffff;
+  --interactive-accent: #6655dd;
+  --interactive-accent-hover: #5343c5;
+  --shadow-soft: 0 16px 36px rgba(40, 37, 32, 0.16);
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  scrollbar-width: thin;
 }
 
 [hidden] {
   display: none !important;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
 }
 
 html,
@@ -41,6 +121,7 @@ body {
 }
 
 body {
+  position: relative;
   overflow: hidden;
   background: var(--background-primary);
   color: var(--text-normal);
@@ -92,7 +173,6 @@ button {
 
 .icon-button,
 .toolbar-button,
-.status-button,
 .inspector-tab,
 .tree-item,
 .palette-item,
@@ -106,7 +186,6 @@ button {
 }
 
 .toolbar-button:hover,
-.status-button:hover,
 .icon-button:hover,
 .small-button:hover,
 .inspector-tab:hover {
@@ -123,6 +202,9 @@ button {
 }
 
 .sidebar-right {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
   border-right: 0;
   border-left: 1px solid var(--background-modifier-border);
 }
@@ -137,9 +219,16 @@ button {
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
+.pane-header > div:first-child {
+  min-width: 0;
+}
+
 .header-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  margin-left: auto;
   gap: 6px;
 }
 
@@ -155,7 +244,7 @@ button {
 
 .pane-kicker {
   display: block;
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: 11px;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -164,8 +253,12 @@ button {
 .pane-header h1,
 .play-header h2 {
   margin: 2px 0 0;
+  color: var(--text-normal);
   font-size: 15px;
   font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .icon-button {
@@ -226,6 +319,25 @@ button {
   gap: 4px;
 }
 
+.palette-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 6px;
+}
+
+.palette-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-delete-button {
+  width: 28px;
+  height: 30px;
+}
+
 .palette-badge {
   display: inline-grid;
   place-items: center;
@@ -238,35 +350,64 @@ button {
   font-weight: 800;
 }
 
-#projectNotes {
-  width: 100%;
-  min-height: 96px;
-  resize: vertical;
+.custom-node-form {
+  display: grid;
+  gap: 8px;
+}
+
+.node-type-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.custom-node-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px auto;
+  gap: 6px;
+}
+
+.custom-node-row input[type="color"] {
+  width: 34px;
+  min-width: 34px;
+  padding: 3px;
+}
+
+.custom-node-empty {
+  color: var(--text-faint);
+  font-size: 12px;
 }
 
 .workspace {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) 36px;
+  align-content: stretch;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   background: var(--background-primary);
 }
 
+.app-shell[data-active-file="characters"] .workspace,
+.app-shell[data-active-file="variables"] .workspace,
+.app-shell[data-active-file="events"] .workspace {
+  grid-template-rows: auto minmax(0, auto) 36px;
+  align-content: start;
+}
+
 .workspace-tabs {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 6px;
   min-height: 46px;
   padding: 7px 8px;
   overflow: auto hidden;
   border-bottom: 1px solid var(--background-modifier-border);
-  background: #202020;
+  background: var(--workspace-bar-bg);
 }
 
-.tab-group,
 .toolbar-group {
   display: flex;
   flex: 0 1 auto;
@@ -277,27 +418,24 @@ button {
 }
 
 .toolbar-group {
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
-.tab {
-  display: inline-flex;
-  align-items: center;
-  max-width: 100%;
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid var(--background-modifier-border);
-  border-bottom-color: transparent;
-  border-radius: var(--radius-s) var(--radius-s) 0 0;
-  color: var(--text-muted);
-  background: var(--background-secondary);
-  font: inherit;
-  white-space: nowrap;
+.new-project-button {
+  font-weight: 650;
 }
 
-.tab.active {
-  color: var(--text-normal);
-  background: var(--background-primary);
+.save-project-button {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: 700;
+}
+
+.save-project-button:hover {
+  border-color: var(--interactive-accent-hover);
+  background: var(--interactive-accent-hover);
+  color: var(--text-on-accent);
 }
 
 .preview-tab {
@@ -315,7 +453,6 @@ button {
 }
 
 .toolbar-button,
-.status-button,
 .small-button {
   display: inline-flex;
   align-items: center;
@@ -346,7 +483,7 @@ button {
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   color: var(--text-muted);
-  background: #1a1a1a;
+  background: var(--background-control);
 }
 
 .workspace-view {
@@ -376,15 +513,23 @@ button {
 }
 
 .document-panel {
+  min-height: 0;
   overflow: auto;
   padding: 16px;
   background: var(--background-primary);
 }
 
+.document-panel.active {
+  display: grid;
+}
+
 .document-shell {
   display: grid;
+  align-content: start;
   gap: 16px;
-  max-width: 1100px;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 
 .document-header {
@@ -402,6 +547,13 @@ button {
   font-weight: 700;
 }
 
+.document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .document-meta {
   color: var(--text-muted);
   font-size: 12px;
@@ -414,12 +566,12 @@ button {
   overflow: auto;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
-  background-color: #202020;
+  background-color: var(--background-canvas);
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
-    linear-gradient(rgba(255, 255, 255, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.09) 1px, transparent 1px);
+    linear-gradient(var(--canvas-grid-small) 1px, transparent 1px),
+    linear-gradient(90deg, var(--canvas-grid-small) 1px, transparent 1px),
+    linear-gradient(var(--canvas-grid-large) 1px, transparent 1px),
+    linear-gradient(90deg, var(--canvas-grid-large) 1px, transparent 1px);
   background-position: 0 0;
   background-size: 16px 16px, 16px 16px, 80px 80px, 80px 80px;
   outline: none;
@@ -451,15 +603,15 @@ button {
 
 .link-path {
   fill: none;
-  stroke: rgba(220, 221, 222, 0.72);
-  stroke-width: 3;
+  stroke: var(--link-color);
+  stroke-width: 2;
   stroke-linecap: round;
   pointer-events: stroke;
 }
 
 .link-path.selected {
   stroke: var(--interactive-accent-hover);
-  stroke-width: 4;
+  stroke-width: 3;
 }
 
 .link-path.pending {
@@ -472,9 +624,9 @@ button {
   width: 230px;
   min-width: 140px;
   min-height: 96px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--node-border);
   border-radius: var(--radius-m);
-  background: rgba(43, 43, 43, 0.94);
+  background: var(--node-surface);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
   pointer-events: auto;
   user-select: none;
@@ -484,8 +636,8 @@ button {
   width: 420px;
   min-width: 260px;
   min-height: 160px;
-  background: rgba(61, 78, 36, 0.5);
-  border-color: rgba(152, 195, 121, 0.35);
+  background: var(--frame-surface);
+  border-color: var(--frame-border);
 }
 
 .node.selected {
@@ -500,9 +652,9 @@ button {
   gap: 8px;
   min-height: 34px;
   padding: 7px 9px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+  border-bottom: 1px solid var(--node-header-border);
   border-radius: var(--radius-m) var(--radius-m) 0 0;
-  background: rgba(255, 255, 255, 0.055);
+  background: var(--node-header-bg);
   cursor: grab;
 }
 
@@ -599,27 +751,40 @@ button {
 .port {
   position: absolute;
   top: 50%;
-  width: 14px;
-  height: 14px;
-  border: 2px solid #d6d6d6;
+  width: 18px;
+  height: 18px;
+  border: 0;
   border-radius: 50%;
-  background: var(--background-primary);
+  background: transparent;
   transform: translateY(-50%);
   cursor: crosshair;
 }
 
-.port:hover,
-.port.active {
+.port::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border: 1px solid #d6d6d6;
+  border-radius: 50%;
+  background: var(--background-primary);
+  transform: translate(-50%, -50%);
+}
+
+.port:hover::before,
+.port.active::before {
   border-color: var(--interactive-accent-hover);
   background: var(--interactive-accent-hover);
 }
 
 .port.input {
-  left: -8px;
+  left: -15px;
 }
 
 .port.output {
-  right: -8px;
+  right: -15px;
 }
 
 .selection-hint {
@@ -630,7 +795,7 @@ button {
   padding: 8px 10px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
-  background: rgba(31, 31, 31, 0.9);
+  background: var(--overlay-bg);
   color: var(--text-muted);
   opacity: 0;
   pointer-events: none;
@@ -650,7 +815,7 @@ button {
   height: 118px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
-  background: rgba(25, 25, 25, 0.88);
+  background: var(--minimap-bg);
   overflow: hidden;
 }
 
@@ -664,14 +829,14 @@ button {
 }
 
 .node-context-menu {
-  position: fixed;
+  position: absolute;
   z-index: 100;
   display: grid;
   min-width: 168px;
   padding: 5px;
   border: 1px solid var(--background-modifier-border-hover);
   border-radius: var(--radius-m);
-  background: var(--background-secondary);
+  background: var(--background-secondary-alt);
   box-shadow: var(--shadow-soft);
 }
 
@@ -682,6 +847,7 @@ button {
   min-height: 30px;
   padding: 0 10px;
   border: 0;
+  border-bottom: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   background: transparent;
   color: var(--text-normal);
@@ -693,6 +859,10 @@ button {
   background: var(--background-modifier-hover);
 }
 
+.node-context-menu button:last-child {
+  border-bottom: 0;
+}
+
 .status-bar {
   display: flex;
   align-items: center;
@@ -701,7 +871,7 @@ button {
   width: 100%;
   padding: 4px 8px;
   border-top: 1px solid var(--background-modifier-border);
-  background: #202020;
+  background: var(--workspace-bar-bg);
   color: var(--text-muted);
   text-align: left;
 }
@@ -730,7 +900,7 @@ select {
   width: 100%;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
-  background: #1a1a1a;
+  background: var(--background-control);
   color: var(--text-normal);
 }
 
@@ -771,11 +941,17 @@ select:focus {
   color: var(--text-normal);
 }
 
+.inspector-tab:disabled {
+  color: var(--text-faint);
+  cursor: default;
+  opacity: 0.55;
+}
+
 .inspector-panel {
   display: none;
-  height: calc(100vh - 96px);
+  min-height: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 12px 12px 40px;
 }
 
 .inspector-panel.active {
@@ -993,7 +1169,7 @@ select:focus {
   padding: 12px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--subtle-button-bg);
 }
 
 .event-fields h3 {
@@ -1005,13 +1181,14 @@ select:focus {
 }
 
 .event-sheet-shell {
+  grid-template-rows: auto minmax(0, 1fr);
   max-width: none;
 }
 
 .event-sheet-scroll {
   overflow: auto;
   max-width: 100%;
-  max-height: calc(100vh - 220px);
+  min-height: 0;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   background: var(--background-secondary);
@@ -1058,9 +1235,9 @@ select:focus {
   max-width: 100%;
   min-height: 44px;
   padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--subtle-button-border);
   border-radius: var(--radius-s);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--subtle-button-bg);
   color: var(--text-normal);
   text-align: center;
   cursor: pointer;
@@ -1089,7 +1266,7 @@ select:focus {
   min-width: 100%;
   max-width: 100%;
   border-color: transparent;
-  background: #1a1a1a;
+  background: var(--background-control);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1104,7 +1281,7 @@ select:focus {
   max-width: 100%;
   padding: 8px;
   border-radius: var(--radius-s);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--subtle-button-bg);
   color: var(--text-muted);
   line-height: 1.4;
   white-space: pre-wrap;
@@ -1131,7 +1308,8 @@ select:focus {
   background: rgba(0, 0, 0, 0.55);
 }
 
-.confirm-dialog {
+.confirm-dialog,
+.notice-dialog {
   width: min(420px, calc(100vw - 32px));
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
@@ -1141,7 +1319,8 @@ select:focus {
   box-shadow: var(--shadow-soft);
 }
 
-.confirm-dialog::backdrop {
+.confirm-dialog::backdrop,
+.notice-dialog::backdrop {
   background: rgba(0, 0, 0, 0.6);
 }
 
@@ -1154,6 +1333,19 @@ select:focus {
 .confirm-shell h2 {
   margin: 4px 0 0;
   font-size: 16px;
+  line-height: 1.45;
+}
+
+.notice-shell {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+}
+
+.notice-shell p {
+  margin: 0;
+  color: var(--text-normal);
+  font-size: 15px;
   line-height: 1.45;
 }
 
@@ -1244,7 +1436,7 @@ select:focus {
   text-align: center;
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 1320px) {
   .app-shell {
     grid-template-columns: minmax(180px, 230px) minmax(360px, 1fr);
   }
@@ -1300,5 +1492,24 @@ select:focus {
   .status-bar {
     flex-wrap: wrap;
     min-height: 96px;
+  }
+
+  .app-shell[data-active-file="characters"] .workspace,
+  .app-shell[data-active-file="variables"] .workspace,
+  .app-shell[data-active-file="events"] .workspace {
+    min-height: 0;
+    grid-template-rows: auto auto auto;
+  }
+
+  .app-shell[data-active-file="characters"] .document-panel,
+  .app-shell[data-active-file="variables"] .document-panel,
+  .app-shell[data-active-file="events"] .document-panel {
+    min-height: 0;
+  }
+
+  .app-shell[data-active-file="characters"] .status-bar,
+  .app-shell[data-active-file="variables"] .status-bar,
+  .app-shell[data-active-file="events"] .status-bar {
+    min-height: 0;
   }
 }

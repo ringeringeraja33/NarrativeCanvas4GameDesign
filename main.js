@@ -3,6 +3,7 @@ const { ItemView, Notice, Plugin } = require("obsidian");
 const VIEW_TYPE = "narrative-canvas-view";
 const PLUGIN_ID = "narrative-canvas";
 const PROJECT_FILE = "NarrativeCanvas/project.json";
+const STATE_FILE = "data.json";
 
 module.exports = class NarrativeCanvasPlugin extends Plugin {
   async onload() {
@@ -68,6 +69,15 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     await adapter.write(PROJECT_FILE, projectJson);
     return PROJECT_FILE;
   }
+
+  async loadSavedState() {
+    return this.loadData();
+  }
+
+  async saveSavedState(savedState) {
+    await this.saveData(savedState);
+    return STATE_FILE;
+  }
 };
 
 class NarrativeCanvasView extends ItemView {
@@ -101,8 +111,12 @@ class NarrativeCanvasView extends ItemView {
 
       this.contentEl.innerHTML = bodyHtml;
       window.NarrativeCanvasHost = {
+        root: this.contentEl,
+        loadState: () => this.plugin.loadSavedState(),
+        saveState: (savedState) => this.plugin.saveSavedState(savedState),
         loadProject: () => this.plugin.loadProjectFile(),
         saveProject: (projectJson) => this.plugin.saveProjectFile(projectJson),
+        stateFile: STATE_FILE,
         projectFile: PROJECT_FILE
       };
       window.NarrativeCanvasApp?.destroy?.();

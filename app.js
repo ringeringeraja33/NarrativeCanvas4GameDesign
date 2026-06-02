@@ -1,5 +1,17 @@
 const BOARD_WIDTH = 4000;
 const BOARD_HEIGHT = 2600;
+const CANVAS_VIEW_PADDING = 48;
+const CANVAS_MIN_ZOOM = 0.1;
+const CANVAS_MAX_ZOOM = 3;
+const CANVAS_MIN_AUTO_SCALE = CANVAS_MIN_ZOOM;
+const CANVAS_MAX_AUTO_SCALE = 1;
+const EVENT_LAYER_BASE = 0;
+const REGULAR_LAYER_BASE = 1000000;
+const LINK_PORT_ANCHOR_OFFSET = 6;
+const DEFAULT_CUSTOM_NODE_COLOR = "#7fdbca";
+const SAVED_STATE_VERSION = 1;
+const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
+const FALLBACK_NODE_META = { badge: "N", color: DEFAULT_CUSTOM_NODE_COLOR, width: 230, label: "Node" };
 
 const nodeTypes = {
   Entry: { badge: "E", color: "#cdd6f4", width: 170 },
@@ -33,6 +45,7 @@ const sampleProject = {
     hero_name: "Hero",
     ancestry: "Great ancestry"
   },
+  nodeTypes: defaultNodeTypeList(),
   characters: [
     {
       id: "c0",
@@ -82,12 +95,15 @@ const fileViews = {
   variables: "Variables.json"
 };
 
+const validPanels = new Set(["project", "node", "story"]);
+
 const state = {
   project: cloneProject(sampleProject),
   selectedNodeId: "n1",
   selectedLinkId: null,
   panel: "project",
   activeFileId: "adventure",
+  theme: "dark",
   view: { x: 0, y: 0, scale: 0.82 },
   connectingFrom: null,
   draggingNode: null,
@@ -100,6 +116,7 @@ const state = {
 };
 
 const dom = {};
+const optionalDomKeys = new Set(["activeFileTab"]);
 let initialized = false;
 
 window.NarrativeCanvasApp = {
@@ -124,54 +141,71 @@ async function initNarrativeCanvas() {
     return;
   }
   initialized = true;
-  await loadFromVault(false);
+  const restoredView = await loadSavedState(false);
   renderAll();
   bindEvents();
-  centerView(false);
+  if (!restoredView) settleInitialCanvasView();
 }
 
 function bindDom() {
-  dom.root = document.querySelector(".app-shell");
-  dom.viewport = document.getElementById("canvasViewport");
-  dom.canvasPanel = document.getElementById("canvasPanel");
-  dom.charactersPanel = document.getElementById("charactersPanel");
-  dom.variablesPanel = document.getElementById("variablesPanel");
-  dom.eventsPanel = document.getElementById("eventsPanel");
-  dom.content = document.getElementById("canvasContent");
-  dom.nodeLayer = document.getElementById("nodeLayer");
-  dom.linkLayer = document.getElementById("linkLayer");
-  dom.palette = document.getElementById("nodePalette");
-  dom.zoomReadout = document.getElementById("zoomReadout");
-  dom.projectPanel = document.getElementById("projectPanel");
-  dom.nodePanel = document.getElementById("nodePanel");
-  dom.storyPanel = document.getElementById("storyPanel");
-  dom.inspectorTitle = document.getElementById("inspectorTitle");
-  dom.statusText = document.getElementById("statusText");
-  dom.queryInput = document.getElementById("queryInput");
-  dom.matchCount = document.getElementById("matchCount");
-  dom.fileInput = document.getElementById("fileInput");
-  dom.activeFileTab = document.getElementById("activeFileTab");
-  dom.fileScopedActions = [...document.querySelectorAll("[data-files]")];
-  dom.notes = document.getElementById("projectNotes");
-  dom.hint = document.getElementById("selectionHint");
-  dom.minimap = document.getElementById("minimap");
-  dom.nodeContextMenu = document.getElementById("nodeContextMenu");
-  dom.playDialog = document.getElementById("playDialog");
-  dom.confirmDialog = document.getElementById("confirmDialog");
-  dom.playTitle = document.getElementById("playTitle");
-  dom.playBody = document.getElementById("playBody");
-  dom.playActions = document.getElementById("playActions");
+  dom.scope = resolveDomScope();
+  dom.root = dom.scope.querySelector(".app-shell");
+  dom.themeHost = dom.root?.closest(".narrative-canvas-plugin-host") || document.documentElement;
+  dom.viewport = dom.scope.querySelector("#canvasViewport");
+  dom.canvasPanel = dom.scope.querySelector("#canvasPanel");
+  dom.charactersPanel = dom.scope.querySelector("#charactersPanel");
+  dom.variablesPanel = dom.scope.querySelector("#variablesPanel");
+  dom.eventsPanel = dom.scope.querySelector("#eventsPanel");
+  dom.content = dom.scope.querySelector("#canvasContent");
+  dom.nodeLayer = dom.scope.querySelector("#nodeLayer");
+  dom.linkLayer = dom.scope.querySelector("#linkLayer");
+  dom.palette = dom.scope.querySelector("#nodePalette");
+  dom.customNodeName = dom.scope.querySelector("#customNodeName");
+  dom.customNodeBadge = dom.scope.querySelector("#customNodeBadge");
+  dom.customNodeColor = dom.scope.querySelector("#customNodeColor");
+  dom.zoomReadout = dom.scope.querySelector("#zoomReadout");
+  dom.themeToggle = dom.scope.querySelector("#themeToggle");
+  dom.vaultProjectTitle = dom.scope.querySelector("#vaultProjectTitle");
+  dom.workspaceToolbar = dom.scope.querySelector("#workspaceToolbar");
+  dom.projectPanel = dom.scope.querySelector("#projectPanel");
+  dom.nodePanel = dom.scope.querySelector("#nodePanel");
+  dom.storyPanel = dom.scope.querySelector("#storyPanel");
+  dom.inspectorTitle = dom.scope.querySelector("#inspectorTitle");
+  dom.statusText = dom.scope.querySelector("#statusText");
+  dom.queryInput = dom.scope.querySelector("#queryInput");
+  dom.matchCount = dom.scope.querySelector("#matchCount");
+  dom.fileInput = dom.scope.querySelector("#fileInput");
+  dom.activeFileTab = dom.scope.querySelector("#activeFileTab");
+  dom.fileScopedActions = [...dom.scope.querySelectorAll("[data-files]")];
+  dom.hint = dom.scope.querySelector("#selectionHint");
+  dom.minimap = dom.scope.querySelector("#minimap");
+  dom.nodeContextMenu = dom.scope.querySelector("#nodeContextMenu");
+  dom.playDialog = dom.scope.querySelector("#playDialog");
+  dom.confirmDialog = dom.scope.querySelector("#confirmDialog");
+  dom.nodeRequiredDialog = dom.scope.querySelector("#nodeRequiredDialog");
+  dom.playTitle = dom.scope.querySelector("#playTitle");
+  dom.playBody = dom.scope.querySelector("#playBody");
+  dom.playActions = dom.scope.querySelector("#playActions");
+}
+
+function resolveDomScope() {
+  const hostRoot = window.NarrativeCanvasHost?.root;
+  if (hostRoot?.querySelector?.(".app-shell")) return hostRoot;
+  const pluginHosts = [...document.querySelectorAll(".narrative-canvas-plugin-host")]
+    .filter((host) => host.querySelector(".app-shell"));
+  return pluginHosts[pluginHosts.length - 1] || document;
 }
 
 function getMissingDomElements() {
   return Object.entries(dom)
-    .filter(([, element]) => !element)
+    .filter(([key, element]) => !optionalDomKeys.has(key) && !element)
     .map(([key]) => key);
 }
 
 function showStartupError(message) {
   console.error(message);
-  document.body.innerHTML = `
+  const target = dom.scope === document ? document.body : dom.scope;
+  target.innerHTML = `
     <main class="startup-error">
       <h1>Narrative Canvas failed to load</h1>
       <p>${escapeHtml(message)}</p>
@@ -183,12 +217,13 @@ function bindEvents() {
   eventController?.abort();
   eventController = new AbortController();
   const { signal } = eventController;
+  const eventRoot = dom.scope || document;
 
-  document.addEventListener("click", handleDocumentClick, { signal });
-  document.addEventListener("contextmenu", handleContextMenu, { signal });
-  document.addEventListener("input", handleInput, { signal });
-  document.addEventListener("change", handleChange, { signal });
-  document.addEventListener("keydown", handleKeyDown, { signal });
+  eventRoot.addEventListener("click", handleDocumentClick, { signal });
+  eventRoot.addEventListener("contextmenu", handleContextMenu, { signal });
+  eventRoot.addEventListener("input", handleInput, { signal });
+  eventRoot.addEventListener("change", handleChange, { signal });
+  eventRoot.addEventListener("keydown", handleKeyDown, { signal });
   window.addEventListener("resize", handleWindowResize, { signal });
 
   dom.viewport.addEventListener("scroll", hideNodeContextMenu, { signal });
@@ -201,6 +236,9 @@ function bindEvents() {
   dom.fileInput.addEventListener("change", importJsonFile, { signal });
   dom.confirmDialog.addEventListener("close", () => {
     if (dom.confirmDialog.returnValue === "confirm") newProject();
+  }, { signal });
+  dom.nodeRequiredDialog.addEventListener("click", (event) => {
+    if (event.target === dom.nodeRequiredDialog) dom.nodeRequiredDialog.close();
   }, { signal });
 }
 
@@ -234,7 +272,22 @@ function renderAll() {
 }
 
 function renderShellState() {
-  document.querySelectorAll(".tree-item[data-file-id]").forEach((button) => {
+  dom.root?.setAttribute("data-theme", state.theme);
+  dom.themeHost?.setAttribute("data-theme", state.theme);
+  if (dom.themeToggle) {
+    const isLight = state.theme === "light";
+    dom.themeToggle.textContent = isLight ? "Dark" : "Light";
+    dom.themeToggle.setAttribute("aria-pressed", String(isLight));
+  }
+  if (dom.vaultProjectTitle) {
+    dom.vaultProjectTitle.textContent = state.project.title || "Untitled Story";
+  }
+  dom.root?.setAttribute("data-active-file", state.activeFileId || "adventure");
+  if (dom.queryInput && dom.queryInput.value !== state.search) {
+    dom.queryInput.value = state.search;
+  }
+
+  dom.scope.querySelectorAll(".tree-item[data-file-id]").forEach((button) => {
     const isActive = button.dataset.fileId === state.activeFileId;
     button.classList.toggle("active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
@@ -243,6 +296,8 @@ function renderShellState() {
   if (dom.activeFileTab) {
     dom.activeFileTab.textContent = fileViews[state.activeFileId] || fileViews.adventure;
   }
+
+  dom.workspaceToolbar.hidden = state.activeFileId !== "adventure";
 
   dom.fileScopedActions.forEach((button) => {
     const files = String(button.dataset.files || "").split(/\s+/);
@@ -273,7 +328,10 @@ function renderCharactersPage() {
           <h2>Characters.md</h2>
           <div class="document-meta">${characters.length} characters, ${dialogNodes.length} dialog nodes</div>
         </div>
-        <button class="small-button" data-action="add-character">Add character</button>
+        <div class="document-actions">
+          <button class="small-button" data-action="add-character">Add character</button>
+          <button class="small-button" data-action="export-characters-md">Export MD</button>
+        </div>
       </header>
       <div class="character-grid">
         ${characters.map((character) => renderCharacterCard(character)).join("") || `<div class="empty-state">No characters yet.</div>`}
@@ -331,7 +389,10 @@ function renderVariablesPage() {
           <h2>Variables.json</h2>
           <div class="document-meta">${entries.length} variables</div>
         </div>
-        <button class="small-button" data-action="add-variable">Add variable</button>
+        <div class="document-actions">
+          <button class="small-button" data-action="add-variable">Add variable</button>
+          <button class="small-button" data-action="export-variables-json">Export JSON</button>
+        </div>
       </header>
       <div class="variable-table">
         <div class="variable-row variable-heading">
@@ -360,7 +421,10 @@ function renderEventsSheetPage() {
           <h2>Events Sheet.csv</h2>
           <div class="document-meta">${rows.length} event rows from canvas nodes</div>
         </div>
-        <button class="small-button" data-action="export-event-sheet">Export CSV</button>
+        <div class="document-actions">
+          <button class="small-button" data-action="add-node" data-type="Event">Add event frame</button>
+          <button class="small-button" data-action="export-event-sheet">Export CSV</button>
+        </div>
       </header>
       <div class="event-sheet-scroll">
         <table class="event-sheet-table">
@@ -423,14 +487,18 @@ function renderVariableRow(key, value) {
 }
 
 function renderPalette() {
-  dom.palette.innerHTML = Object.entries(nodeTypes)
+  const entries = getNodeTypeEntries();
+  dom.palette.innerHTML = entries.length ? entries
     .map(([type, meta]) => `
-      <button class="palette-item" data-action="add-node" data-type="${type}">
-        <span class="palette-badge" style="--node-color:${meta.color}">${meta.badge}</span>
-        ${escapeHtml(getNodeTypeLabel(type))}
-      </button>
+      <div class="palette-row">
+        <button class="palette-item" data-action="add-node" data-type="${escapeAttr(type)}">
+          <span class="palette-badge" style="--node-color:${escapeAttr(meta.color)}">${escapeHtml(meta.badge)}</span>
+          <span class="palette-label">${escapeHtml(getNodeTypeLabel(type))}</span>
+        </button>
+        <button class="icon-button danger-button palette-delete-button" title="Delete node type" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">x</button>
+      </div>
     `)
-    .join("");
+    .join("") : `<div class="custom-node-empty">No node types yet.</div>`;
 }
 
 function renderTransform() {
@@ -440,9 +508,9 @@ function renderTransform() {
 
 function renderNodes() {
   const query = state.search.trim().toLowerCase();
-  dom.nodeLayer.innerHTML = state.project.nodes
+  dom.nodeLayer.innerHTML = getCanvasRenderNodes()
     .map((node) => {
-      const meta = nodeTypes[node.type] || nodeTypes.Content;
+      const meta = getNodeMeta(node.type);
       const isSelected = node.id === state.selectedNodeId;
       const isFrame = node.type === "Event";
       const match = query && nodeMatches(node, query);
@@ -475,14 +543,71 @@ function renderNodes() {
 }
 
 function getNodeTypeLabel(type) {
+  const meta = getNodeMeta(type);
+  if (meta.label) return meta.label;
   return type === "Event" ? "Event Frame" : type;
+}
+
+function getNodeMeta(type) {
+  return getNodeTypeMap()[type] || getFallbackNodeMeta(type);
+}
+
+function getNodeTypeMap() {
+  const map = {};
+  getProjectNodeTypes().forEach((typeDef) => {
+    map[typeDef.type] = {
+      badge: typeDef.badge,
+      color: typeDef.color,
+      width: typeDef.width,
+      label: typeDef.label,
+      custom: Boolean(typeDef.custom)
+    };
+  });
+  return map;
+}
+
+function getFallbackNodeMeta(type) {
+  const builtIn = nodeTypes[type];
+  if (builtIn) {
+    return { ...builtIn, label: getDefaultNodeTypeLabel(type) };
+  }
+  return { ...FALLBACK_NODE_META, label: type || FALLBACK_NODE_META.label };
+}
+
+function defaultNodeTypeList() {
+  return Object.entries(nodeTypes).map(([type, meta]) => ({
+    type,
+    label: getDefaultNodeTypeLabel(type),
+    badge: meta.badge,
+    color: meta.color,
+    width: meta.width,
+    custom: false
+  }));
+}
+
+function getDefaultNodeTypeLabel(type) {
+  return type === "Event" ? "Event Frame" : type;
+}
+
+function getNodeTypeEntries(includeType = null) {
+  const entries = getProjectNodeTypes().map((typeDef) => [typeDef.type, {
+    badge: typeDef.badge,
+    color: typeDef.color,
+    width: typeDef.width,
+    label: typeDef.label,
+    custom: Boolean(typeDef.custom)
+  }]);
+  if (includeType && !entries.some(([type]) => type === includeType)) {
+    entries.push([includeType, { ...getNodeMeta(includeType), removed: true }]);
+  }
+  return entries;
 }
 
 function renderLinks() {
   const linkSvg = [
     `<defs>
-      <marker id="arrow-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(220, 221, 222, 0.72)"></path>
+      <marker id="arrow-head" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="5" markerHeight="5" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+        <path d="M 0 0 L 8 4 L 0 8 z" fill="var(--link-color)"></path>
       </marker>
     </defs>`
   ];
@@ -517,14 +642,15 @@ function renderInspector() {
   renderProjectPanel();
   renderNodePanel(activeNode);
   renderStoryPanel();
-  dom.notes.value = state.project.notes || "";
 }
 
 function renderInspectorTabs() {
-  document.querySelectorAll(".inspector-tab").forEach((button) => {
+  dom.scope.querySelectorAll(".inspector-tab").forEach((button) => {
+    button.disabled = false;
+    button.removeAttribute("aria-disabled");
     button.classList.toggle("active", button.dataset.panel === state.panel);
   });
-  document.querySelectorAll(".inspector-panel").forEach((panel) => {
+  dom.scope.querySelectorAll(".inspector-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.id === `${state.panel}Panel`);
   });
 }
@@ -539,6 +665,10 @@ function renderProjectPanel() {
         <span>Project title</span>
         <input data-project-field="title" value="${escapeAttr(state.project.title)}">
       </label>
+      <label class="field">
+        <span>Project notes</span>
+        <textarea data-project-field="notes" spellcheck="false" placeholder="Project notes">${escapeHtml(state.project.notes || "")}</textarea>
+      </label>
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-label">Nodes</div><div class="stat-value">${nodeCount}</div></div>
         <div class="stat-card"><div class="stat-label">Links</div><div class="stat-value">${links}</div></div>
@@ -546,18 +676,16 @@ function renderProjectPanel() {
         <div class="stat-card"><div class="stat-label">Zoom</div><div class="stat-value">${Math.round(state.view.scale * 100)}%</div></div>
       </div>
       <div class="button-row">
-        <button class="small-button" data-action="export-json">Export JSON</button>
-        <button class="small-button" data-action="export-image">Export image</button>
-        <button class="small-button" data-action="export-html">Export HTML</button>
-        <button class="small-button" data-action="import-json">Import JSON</button>
+        <button class="small-button" data-action="export-all">Export all</button>
       </div>
     </div>
   `;
 }
 
 function renderNodePanel(node) {
+  dom.nodePanel.classList.remove("is-empty");
   if (!node) {
-    dom.nodePanel.innerHTML = `<div class="empty-state">Select a node to edit it.</div>`;
+    dom.nodePanel.replaceChildren();
     return;
   }
   dom.nodePanel.innerHTML = `
@@ -565,7 +693,7 @@ function renderNodePanel(node) {
       <label class="field">
         <span>Type</span>
         <select data-node-field="type">
-          ${Object.keys(nodeTypes).map((type) => `<option value="${type}" ${node.type === type ? "selected" : ""}>${escapeHtml(getNodeTypeLabel(type))}</option>`).join("")}
+          ${getNodeTypeEntries(node.type).map(([type, meta]) => `<option value="${escapeAttr(type)}" ${node.type === type ? "selected" : ""}>${escapeHtml(getNodeTypeLabel(type))}${meta.removed ? " (removed)" : ""}</option>`).join("")}
         </select>
       </label>
       <label class="field">
@@ -716,7 +844,7 @@ function renderStoryPanel() {
 function renderMinimap() {
   dom.minimap.innerHTML = state.project.nodes
     .map((node) => {
-      const meta = nodeTypes[node.type] || nodeTypes.Content;
+      const meta = getNodeMeta(node.type);
       const x = Math.max(2, Math.min(164, node.x / BOARD_WIDTH * 180));
       const y = Math.max(2, Math.min(106, node.y / BOARD_HEIGHT * 118));
       return `<span class="minimap-node" style="left:${x}px; top:${y}px; --node-color:${meta.color}"></span>`;
@@ -749,12 +877,16 @@ function handleDocumentClick(event) {
 
   if (link) {
     state.selectedLinkId = link.dataset.linkId;
-    state.selectedNodeId = null;
+    clearNodeSelection();
     renderAll();
     return;
   }
 
   if (panelTarget) {
+    if (panelTarget.dataset.panel === "node") {
+      openNodeInspector();
+      return;
+    }
     state.panel = panelTarget.dataset.panel;
     renderInspector();
     return;
@@ -770,7 +902,7 @@ function handleDocumentClick(event) {
     return;
   }
 
-  if (node && !event.target.closest("[data-drag-handle]")) {
+  if (node) {
     selectNode(node.dataset.nodeId);
   }
 }
@@ -800,6 +932,9 @@ function handleContextMenu(event) {
 function handleAction(target) {
   const action = target.dataset.action;
   if (action === "add-node") addNode(target.dataset.type);
+  if (action === "add-custom-node-type") addCustomNodeType();
+  if (action === "delete-custom-node-type") deleteCustomNodeType(target.dataset.customNodeType);
+  if (action === "save-project") saveCurrentState();
   if (action === "new-project") showNewProjectConfirm();
   if (action === "add-character") addCharacter();
   if (action === "delete-character") deleteCharacter(target.dataset.characterId);
@@ -807,7 +942,9 @@ function handleAction(target) {
   if (action === "delete-variable") deleteVariable(target.dataset.variableKey);
   if (action === "zoom-in") setZoom(state.view.scale + 0.1);
   if (action === "zoom-out") setZoom(state.view.scale - 0.1);
+  if (action === "toggle-theme") toggleTheme();
   if (action === "center-view") centerView();
+  if (action === "export-all") exportAll();
   if (action === "export-json") exportJson();
   if (action === "export-characters-md") exportCharactersMarkdown();
   if (action === "export-image") exportImage();
@@ -828,12 +965,23 @@ function handleAction(target) {
 function showNodeContextMenu(nodeId, clientX, clientY) {
   if (!dom.nodeContextMenu) return;
   state.contextNodeId = nodeId;
+  dom.nodeContextMenu.style.left = "0px";
+  dom.nodeContextMenu.style.top = "0px";
   dom.nodeContextMenu.hidden = false;
   const menuRect = dom.nodeContextMenu.getBoundingClientRect();
-  const left = Math.min(clientX, window.innerWidth - menuRect.width - 8);
-  const top = Math.min(clientY, window.innerHeight - menuRect.height - 8);
-  dom.nodeContextMenu.style.left = `${Math.max(8, left)}px`;
-  dom.nodeContextMenu.style.top = `${Math.max(8, top)}px`;
+  const containerRect = getContextMenuContainerRect();
+  const pointerX = clientX - containerRect.left;
+  const pointerY = clientY - containerRect.top;
+  const maxLeft = Math.max(8, containerRect.width - menuRect.width - 8);
+  const maxTop = Math.max(8, containerRect.height - menuRect.height - 8);
+  dom.nodeContextMenu.style.left = `${clamp(pointerX + 4, 8, maxLeft)}px`;
+  dom.nodeContextMenu.style.top = `${clamp(pointerY + 4, 8, maxTop)}px`;
+}
+
+function getContextMenuContainerRect() {
+  const parent = dom.nodeContextMenu?.offsetParent;
+  if (parent?.getBoundingClientRect) return parent.getBoundingClientRect();
+  return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
 }
 
 function hideNodeContextMenu() {
@@ -857,32 +1005,33 @@ function moveContextNode(action) {
 }
 
 function moveNodeLayer(nodeId, action) {
-  const nodes = state.project.nodes;
-  const index = nodes.findIndex((node) => node.id === nodeId);
-  if (index < 0) return false;
-  const [node] = nodes.splice(index, 1);
+  const layerItems = getCanvasLayerItems();
+  const layerIndex = layerItems.findIndex((item) => item.node.id === nodeId);
+  if (layerIndex < 0) return false;
+  let targetLayerIndex = layerIndex;
 
   if (action === "front") {
-    nodes.push(node);
-    return index !== nodes.length - 1;
-  }
-  if (action === "back") {
-    nodes.unshift(node);
-    return index !== 0;
-  }
-  if (action === "forward") {
-    const nextIndex = Math.min(index + 1, nodes.length);
-    nodes.splice(nextIndex, 0, node);
-    return nextIndex !== index;
-  }
-  if (action === "backward") {
-    const nextIndex = Math.max(index - 1, 0);
-    nodes.splice(nextIndex, 0, node);
-    return nextIndex !== index;
+    targetLayerIndex = layerItems.length - 1;
+  } else if (action === "back") {
+    targetLayerIndex = 0;
+  } else if (action === "forward") {
+    targetLayerIndex = Math.min(layerIndex + 1, layerItems.length - 1);
+  } else if (action === "backward") {
+    targetLayerIndex = Math.max(layerIndex - 1, 0);
+  } else {
+    return false;
   }
 
-  nodes.splice(index, 0, node);
-  return false;
+  if (targetLayerIndex === layerIndex) return false;
+
+  const layerOrders = layerItems.map((item) => item.order).sort((a, b) => a - b);
+  const [movedItem] = layerItems.splice(layerIndex, 1);
+  layerItems.splice(targetLayerIndex, 0, movedItem);
+  layerItems.forEach((item, itemIndex) => {
+    item.node.layerOrder = layerOrders[itemIndex];
+  });
+  state.project.nodes = layerItems.map((item) => item.node);
+  return true;
 }
 
 function selectFile(fileId) {
@@ -914,7 +1063,7 @@ function selectFile(fileId) {
   renderAll();
   setStatus("Variables.json opened.");
   requestAnimationFrame(() => {
-    document.querySelector("#variablesPanel [data-project-field='variables']")?.focus();
+    dom.variablesPanel?.querySelector("[data-project-field='variables']")?.focus();
   });
 }
 
@@ -926,12 +1075,6 @@ function handleInput(event) {
     state.search = target.value;
     renderNodes();
     updateStatus();
-    return;
-  }
-
-  if (target === dom.notes) {
-    state.project.notes = target.value;
-    renderProjectPanel();
     return;
   }
 
@@ -1001,6 +1144,7 @@ function isNarrativeCanvasTarget(target) {
     || dom.nodeContextMenu?.contains(target)
     || dom.playDialog?.contains(target)
     || dom.confirmDialog?.contains(target)
+    || dom.nodeRequiredDialog?.contains(target)
   );
 }
 
@@ -1047,7 +1191,7 @@ function handleViewportPointerDown(event) {
       viewX: state.view.x,
       viewY: state.view.y
     };
-    state.selectedNodeId = null;
+    clearNodeSelection();
     state.selectedLinkId = null;
     renderAll();
   }
@@ -1059,10 +1203,18 @@ function handleViewportPointerMove(event) {
     if (!node) return;
     const handle = state.resizingNode.handle;
     if (handle.includes("e")) {
-      node.width = Math.round(clamp(state.resizingNode.width + (event.clientX - state.resizingNode.startX) / state.view.scale, minNodeWidth(node), 860));
+      node.width = Math.round(clamp(
+        state.resizingNode.width + (event.clientX - state.resizingNode.startX) / state.view.scale,
+        minNodeWidth(node),
+        maxNodeWidth(node)
+      ));
     }
     if (handle.includes("s")) {
-      node.height = Math.round(clamp(state.resizingNode.height + (event.clientY - state.resizingNode.startY) / state.view.scale, minNodeHeight(node), 620));
+      node.height = Math.round(clamp(
+        state.resizingNode.height + (event.clientY - state.resizingNode.startY) / state.view.scale,
+        minNodeHeight(node),
+        maxNodeHeight(node)
+      ));
     }
     renderNodes();
     renderLinks();
@@ -1106,7 +1258,7 @@ function handleWheel(event) {
   event.preventDefault();
   const before = screenToBoard(event.clientX, event.clientY);
   const delta = event.deltaY < 0 ? 0.08 : -0.08;
-  const nextScale = clamp(state.view.scale + delta, 0.35, 1.6);
+  const nextScale = clamp(state.view.scale + delta, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
   state.view.scale = nextScale;
   state.view.x = event.clientX - dom.viewport.getBoundingClientRect().left - before.x * nextScale;
   state.view.y = event.clientY - dom.viewport.getBoundingClientRect().top - before.y * nextScale;
@@ -1136,7 +1288,7 @@ function handlePortClick(port) {
     state.connectingTo = null;
     dom.hint.classList.remove("show");
     state.selectedLinkId = link.id;
-    state.selectedNodeId = null;
+    clearNodeSelection();
     renderAll();
     setStatus("Link created.");
     return;
@@ -1149,14 +1301,15 @@ function handlePortClick(port) {
 
 function addNode(type) {
   state.activeFileId = "adventure";
+  renderShellState();
   renderWorkspaceFile();
   const rect = dom.viewport.getBoundingClientRect();
   const center = screenToBoard(rect.left + rect.width / 2, rect.top + rect.height / 2);
-  const meta = nodeTypes[type] || nodeTypes.Content;
+  const meta = getNodeMeta(type);
   const node = {
     id: nextId("n", state.project.nodes),
     type,
-    title: type === "Entry" ? "Start" : `${type} Node`,
+    title: type === "Entry" ? "Start" : getNodeTypeLabel(type),
     body: defaultBody(type),
     x: Math.round(center.x - (meta.width || 230) / 2),
     y: Math.round(center.y - 70)
@@ -1169,7 +1322,37 @@ function addNode(type) {
   if (type === "Condition") node.condition = "flag == true";
   state.project.nodes.push(normalizeNode(node));
   selectNode(node.id);
-  setStatus(`${type} node added.`);
+  setStatus(`${getNodeTypeLabel(type)} added.`);
+}
+
+function addCustomNodeType() {
+  const label = dom.customNodeName.value.trim();
+  if (!label) {
+    setStatus("Enter a custom node type name.");
+    return;
+  }
+  const typeDef = normalizeCustomNodeType({
+    type: uniqueCustomNodeTypeId(label),
+    label,
+    badge: dom.customNodeBadge.value.trim() || label,
+    color: dom.customNodeColor.value || DEFAULT_CUSTOM_NODE_COLOR
+  });
+  state.project.nodeTypes = [...getProjectNodeTypes(), typeDef];
+  dom.customNodeName.value = "";
+  dom.customNodeBadge.value = "";
+  dom.customNodeColor.value = DEFAULT_CUSTOM_NODE_COLOR;
+  renderPalette();
+  renderInspector();
+  setStatus(`${typeDef.label} node type added.`);
+}
+
+function deleteCustomNodeType(type) {
+  if (!type) return;
+  const typeDef = getProjectNodeTypes().find((item) => item.type === type);
+  state.project.nodeTypes = getProjectNodeTypes().filter((item) => item.type !== type);
+  renderPalette();
+  renderInspector();
+  setStatus(`${typeDef?.label || type} node type deleted.`);
 }
 
 function defaultBody(type) {
@@ -1184,7 +1367,7 @@ function defaultBody(type) {
     Marker: "Planning marker.",
     Event: "Group related beats into one event-sheet row."
   };
-  return defaults[type] || "";
+  return defaults[type] || "Write custom node content here.";
 }
 
 function addCharacter() {
@@ -1287,6 +1470,11 @@ function selectNode(id, rerender = true) {
   if (rerender) renderAll();
 }
 
+function clearNodeSelection() {
+  state.selectedNodeId = null;
+  if (state.panel === "node") state.panel = "project";
+}
+
 function setProjectField(field, value) {
   if (field === "variables") {
     try {
@@ -1299,6 +1487,15 @@ function setProjectField(field, value) {
   } else {
     state.project[field] = value;
   }
+
+  if (field === "title" || field === "notes") {
+    renderShellState();
+    renderStoryPanel();
+    renderWorkspaceFile();
+    updateStatus();
+    return;
+  }
+
   renderNodes();
   renderStoryPanel();
   renderProjectPanel();
@@ -1357,8 +1554,7 @@ function deleteSelectedNode() {
   const id = state.selectedNodeId;
   state.project.nodes = state.project.nodes.filter((node) => node.id !== id);
   state.project.links = state.project.links.filter((link) => link.from !== id && link.to !== id);
-  state.selectedNodeId = null;
-  state.panel = "project";
+  clearNodeSelection();
   renderAll();
   setStatus("Node deleted.");
 }
@@ -1387,26 +1583,64 @@ function focusSelectedNode() {
   setStatus(`${node.title || node.id} focused.`);
 }
 
+function openNodeInspector() {
+  if (!getNode(state.selectedNodeId)) {
+    if (state.panel === "node") {
+      state.panel = "project";
+      renderInspector();
+    }
+    showNodeRequiredDialog();
+    return;
+  }
+  focusSelectedNode();
+}
+
 function centerView(announce = true) {
   const bounds = getProjectBounds();
   resetCanvasScroll();
   const rect = dom.viewport.getBoundingClientRect();
-  const scaleX = rect.width / Math.max(bounds.width + 240, 600);
-  const scaleY = rect.height / Math.max(bounds.height + 240, 400);
-  state.view.scale = clamp(Math.min(scaleX, scaleY, 1), 0.45, 1);
-  state.view.x = rect.width / 2 - (bounds.x + bounds.width / 2) * state.view.scale;
-  state.view.y = rect.height / 2 - (bounds.y + bounds.height / 2) * state.view.scale;
+  const availableWidth = Math.max(rect.width - CANVAS_VIEW_PADDING * 2, 1);
+  const availableHeight = Math.max(rect.height - CANVAS_VIEW_PADDING * 2, 1);
+  const scaleX = availableWidth / Math.max(bounds.width, 1);
+  const scaleY = availableHeight / Math.max(bounds.height, 1);
+  state.view.scale = clamp(Math.min(scaleX, scaleY, CANVAS_MAX_AUTO_SCALE), CANVAS_MIN_AUTO_SCALE, CANVAS_MAX_AUTO_SCALE);
+  state.view.x = getCanvasAxisOffset(bounds.x, bounds.width, state.view.scale, rect.width);
+  state.view.y = getCanvasAxisOffset(bounds.y, bounds.height, state.view.scale, rect.height);
   renderTransform();
   updateGridPosition();
   renderProjectPanel();
   if (announce) setStatus("Canvas centered.");
 }
 
+function settleInitialCanvasView() {
+  centerView(false);
+  const schedule = window.requestAnimationFrame?.bind(window) || ((callback) => setTimeout(callback, 0));
+  schedule(() => {
+    centerView(false);
+    schedule(() => centerView(false));
+  });
+}
+
+function getCanvasAxisOffset(origin, size, scale, viewportSize) {
+  const scaledSize = size * scale;
+  if (scaledSize + CANVAS_VIEW_PADDING * 2 > viewportSize) {
+    return CANVAS_VIEW_PADDING - origin * scale;
+  }
+  return (viewportSize - scaledSize) / 2 - origin * scale;
+}
+
 function setZoom(value) {
-  state.view.scale = clamp(value, 0.35, 1.6);
+  state.view.scale = clamp(value, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
   renderTransform();
   updateGridPosition();
   renderProjectPanel();
+}
+
+function toggleTheme() {
+  state.theme = state.theme === "light" ? "dark" : "light";
+  renderShellState();
+  renderTransform();
+  updateGridPosition();
 }
 
 function updateGridPosition() {
@@ -1433,6 +1667,8 @@ function newProject() {
     title: "Untitled Story",
     notes: "",
     variables: {},
+    nodeTypes: defaultNodeTypeList(),
+    customNodeTypes: [],
     characters: [],
     nodes: [normalizeNode({ id: "n0", type: "Entry", title: "Start", body: "Adventure Begins", x: 120, y: 120 })],
     links: []
@@ -1455,6 +1691,153 @@ function showNewProjectConfirm() {
   if (window.confirm("Discard the current canvas and create a blank one?")) newProject();
 }
 
+function showNodeRequiredDialog() {
+  if (dom.nodeRequiredDialog?.showModal) {
+    if (!dom.nodeRequiredDialog.open) dom.nodeRequiredDialog.showModal();
+    return;
+  }
+  setStatus("Select a node first to open the Node inspector.");
+}
+
+async function saveCurrentState() {
+  const savedState = buildSavedState();
+  try {
+    const host = window.NarrativeCanvasHost;
+    if (host?.saveState) {
+      const target = await host.saveState(savedState);
+      setStatus(`Project saved${target ? ` to ${target}` : ""}.`);
+      return true;
+    }
+    if (host?.saveProject) {
+      const target = await host.saveProject(buildProjectJson());
+      setStatus(`Project saved${target ? ` to ${target}` : ""}.`);
+      return true;
+    }
+    saveWebState(savedState);
+    setStatus("Project saved.");
+    return true;
+  } catch (error) {
+    console.error(error);
+    setStatus("Project save failed.");
+    return false;
+  }
+}
+
+async function loadSavedState(announce = true) {
+  const host = window.NarrativeCanvasHost;
+  if (host?.loadState) {
+    try {
+      const saved = await host.loadState();
+      if (saved) {
+        const restoredView = applySavedState(saved);
+        if (announce) setStatus(`Loaded ${host.stateFile || "saved state"}.`);
+        return restoredView;
+      }
+    } catch (error) {
+      console.error(error);
+      if (announce) setStatus("Could not load saved state.");
+    }
+  }
+
+  if (!host) {
+    const saved = loadWebState();
+    if (saved) {
+      const restoredView = applySavedState(saved);
+      if (announce) setStatus("Loaded browser saved state.");
+      return restoredView;
+    }
+  }
+
+  await loadFromVault(announce);
+  return false;
+}
+
+function buildSavedState() {
+  return {
+    version: SAVED_STATE_VERSION,
+    savedAt: new Date().toISOString(),
+    project: cloneProject(state.project),
+    ui: {
+      selectedNodeId: state.selectedNodeId,
+      selectedLinkId: state.selectedLinkId,
+      panel: state.panel,
+      activeFileId: state.activeFileId,
+      theme: state.theme,
+      view: { ...state.view },
+      search: state.search
+    }
+  };
+}
+
+function applySavedState(saved) {
+  const payload = parseSavedPayload(saved);
+  if (!payload) return false;
+  const projectSource = payload.project || payload;
+  state.project = normalizeProject(projectSource);
+
+  const ui = payload.ui || {};
+  state.selectedNodeId = getValidSavedNodeId(ui.selectedNodeId);
+  state.selectedLinkId = getValidSavedLinkId(ui.selectedLinkId);
+  state.panel = getValidSavedPanel(ui.panel, state.selectedNodeId);
+  state.activeFileId = fileViews[ui.activeFileId] ? ui.activeFileId : "adventure";
+  state.theme = ui.theme === "light" ? "light" : "dark";
+  state.search = typeof ui.search === "string" ? ui.search : "";
+  return applySavedView(ui.view);
+}
+
+function parseSavedPayload(saved) {
+  if (!saved) return null;
+  if (typeof saved !== "string") return saved;
+  try {
+    return JSON.parse(saved);
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+function getValidSavedNodeId(nodeId) {
+  return state.project.nodes.some((node) => node.id === nodeId) ? nodeId : null;
+}
+
+function getValidSavedLinkId(linkId) {
+  return state.project.links.some((link) => link.id === linkId) ? linkId : null;
+}
+
+function getValidSavedPanel(panel, selectedNodeId) {
+  if (!validPanels.has(panel)) return "project";
+  if (panel === "node" && !selectedNodeId) return "project";
+  return panel;
+}
+
+function applySavedView(view) {
+  if (!view || typeof view !== "object") return false;
+  const x = Number(view.x);
+  const y = Number(view.y);
+  const scale = Number(view.scale);
+  if (![x, y, scale].every(Number.isFinite)) return false;
+  state.view = {
+    x,
+    y,
+    scale: clamp(scale, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM)
+  };
+  return true;
+}
+
+function loadWebState() {
+  try {
+    return window.localStorage?.getItem(WEB_STORAGE_KEY) || null;
+  } catch (error) {
+    console.error(error);
+    return null;
+  }
+}
+
+function saveWebState(savedState) {
+  if (!window.localStorage) throw new Error("localStorage is unavailable.");
+  window.localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(savedState));
+}
+
 async function loadFromVault(announce = true) {
   if (!window.NarrativeCanvasHost?.loadProject) return false;
   try {
@@ -1472,42 +1855,24 @@ async function loadFromVault(announce = true) {
 }
 
 function exportJson() {
-  const blob = new Blob([JSON.stringify(state.project, null, 2)], { type: "application/json" });
+  const blob = new Blob([buildProjectJson()], { type: "application/json" });
   downloadBlob(blob, `${slugify(state.project.title || "narrative-canvas")}.json`);
   setStatus("JSON exported.");
 }
 
 function exportCharactersMarkdown() {
-  const characters = getCharacters();
-  const lines = [`# Characters`, ""];
-  characters.forEach((character) => {
-    lines.push(`## ${character.name || "Unnamed Character"}`);
-    if (character.role) lines.push(`- Role: ${character.role}`);
-    if (character.voice) lines.push(`- Voice: ${character.voice}`);
-    if (character.notes) lines.push("", character.notes);
-    const usage = getCharacterDialogNodes(character.name);
-    if (usage.length) {
-      lines.push("", "### Dialog Nodes");
-      usage.forEach((node) => lines.push(`- ${node.title || node.id} (${node.id})`));
-    }
-    lines.push("");
-  });
-  downloadBlob(new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" }), "Characters.md");
+  downloadBlob(new Blob([buildCharactersMarkdown()], { type: "text/markdown;charset=utf-8" }), "Characters.md");
   setStatus("Characters Markdown exported.");
 }
 
 function exportVariablesJson() {
-  const blob = new Blob([JSON.stringify(state.project.variables || {}, null, 2)], { type: "application/json" });
+  const blob = new Blob([buildVariablesJson()], { type: "application/json" });
   downloadBlob(blob, "Variables.json");
   setStatus("Variables JSON exported.");
 }
 
 function exportEventSheetCsv() {
-  const rows = [
-    eventSheetColumns.map((column) => column.label),
-    ...getEventRows().map((node) => eventSheetColumns.map((column) => getNodeEventValue(node, column.key)))
-  ];
-  const csv = rows.map((row) => row.map(formatCsvCell).join(",")).join("\n");
+  const csv = buildEventSheetCsv();
   downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${slugify(state.project.title || "narrative-canvas")}-events.csv`);
   setStatus("Event sheet CSV exported.");
 }
@@ -1526,9 +1891,74 @@ async function exportImage() {
 }
 
 function exportHtml() {
+  downloadBlob(new Blob([buildExportHtml()], { type: "text/html" }), `${slugify(state.project.title || "narrative-canvas")}.html`);
+  setStatus("HTML exported.");
+}
+
+async function exportAll() {
+  try {
+    const slug = slugify(state.project.title || "narrative-canvas");
+    const files = [
+      { name: `${slug}.json`, blob: new Blob([buildProjectJson()], { type: "application/json" }) },
+      { name: "Events Sheet.csv", blob: new Blob([buildEventSheetCsv()], { type: "text/csv;charset=utf-8" }) },
+      { name: "Characters.md", blob: new Blob([buildCharactersMarkdown()], { type: "text/markdown;charset=utf-8" }) },
+      { name: "Variables.json", blob: new Blob([buildVariablesJson()], { type: "application/json" }) },
+      { name: `${slug}.html`, blob: new Blob([buildExportHtml()], { type: "text/html" }) }
+    ];
+    const svg = buildExportSvg();
+    try {
+      files.push({ name: `${slug}.png`, blob: await svgToPngBlob(svg) });
+    } catch (error) {
+      console.error(error);
+      files.push({ name: `${slug}.svg`, blob: new Blob([svg], { type: "image/svg+xml" }) });
+    }
+    const zipBlob = await createZipBlob(files);
+    downloadBlob(zipBlob, `${slug}-export.zip`);
+    setStatus("Project export package created.");
+  } catch (error) {
+    console.error(error);
+    setStatus("Project export package failed.");
+  }
+}
+
+function buildProjectJson() {
+  return JSON.stringify(state.project, null, 2);
+}
+
+function buildCharactersMarkdown() {
+  const characters = getCharacters();
+  const lines = [`# Characters`, ""];
+  characters.forEach((character) => {
+    lines.push(`## ${character.name || "Unnamed Character"}`);
+    if (character.role) lines.push(`- Role: ${character.role}`);
+    if (character.voice) lines.push(`- Voice: ${character.voice}`);
+    if (character.notes) lines.push("", character.notes);
+    const usage = getCharacterDialogNodes(character.name);
+    if (usage.length) {
+      lines.push("", "### Dialog Nodes");
+      usage.forEach((node) => lines.push(`- ${node.title || node.id} (${node.id})`));
+    }
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
+function buildVariablesJson() {
+  return JSON.stringify(state.project.variables || {}, null, 2);
+}
+
+function buildEventSheetCsv() {
+  const rows = [
+    eventSheetColumns.map((column) => column.label),
+    ...getEventRows().map((node) => eventSheetColumns.map((column) => getNodeEventValue(node, column.key)))
+  ];
+  return rows.map((row) => row.map(formatCsvCell).join(",")).join("\n");
+}
+
+function buildExportHtml() {
   const svg = buildExportSvg();
   const title = escapeHtml(state.project.title || "Narrative Canvas");
-  const documentHtml = `<!doctype html>
+  return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
@@ -1549,8 +1979,6 @@ function exportHtml() {
     </main>
   </body>
 </html>`;
-  downloadBlob(new Blob([documentHtml], { type: "text/html" }), `${slugify(state.project.title || "narrative-canvas")}.html`);
-  setStatus("HTML exported.");
 }
 
 function downloadBlob(blob, filename) {
@@ -1560,6 +1988,126 @@ function downloadBlob(blob, filename) {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+async function createZipBlob(files) {
+  const entries = [];
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const file of files) {
+    const nameBytes = encodeUtf8(file.name);
+    const data = new Uint8Array(await file.blob.arrayBuffer());
+    const crc = crc32(data);
+    const { dosTime, dosDate } = zipDateTime(new Date());
+    const localHeader = concatBytes(
+      uint32(0x04034b50),
+      uint16(20),
+      uint16(0x0800),
+      uint16(0),
+      uint16(dosTime),
+      uint16(dosDate),
+      uint32(crc),
+      uint32(data.length),
+      uint32(data.length),
+      uint16(nameBytes.length),
+      uint16(0),
+      nameBytes
+    );
+    localParts.push(localHeader, data);
+    entries.push({ nameBytes, crc, size: data.length, dosTime, dosDate, offset });
+    offset += localHeader.length + data.length;
+  }
+  const centralOffset = offset;
+  for (const entry of entries) {
+    const centralHeader = concatBytes(
+      uint32(0x02014b50),
+      uint16(20),
+      uint16(20),
+      uint16(0x0800),
+      uint16(0),
+      uint16(entry.dosTime),
+      uint16(entry.dosDate),
+      uint32(entry.crc),
+      uint32(entry.size),
+      uint32(entry.size),
+      uint16(entry.nameBytes.length),
+      uint16(0),
+      uint16(0),
+      uint16(0),
+      uint16(0),
+      uint32(0),
+      uint32(entry.offset),
+      entry.nameBytes
+    );
+    centralParts.push(centralHeader);
+    offset += centralHeader.length;
+  }
+  const centralSize = offset - centralOffset;
+  const endRecord = concatBytes(
+    uint32(0x06054b50),
+    uint16(0),
+    uint16(0),
+    uint16(entries.length),
+    uint16(entries.length),
+    uint32(centralSize),
+    uint32(centralOffset),
+    uint16(0)
+  );
+  return new Blob([...localParts, ...centralParts, endRecord], { type: "application/zip" });
+}
+
+function encodeUtf8(value) {
+  return new TextEncoder().encode(value);
+}
+
+function uint16(value) {
+  return new Uint8Array([value & 0xff, (value >>> 8) & 0xff]);
+}
+
+function uint32(value) {
+  return new Uint8Array([value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff]);
+}
+
+function concatBytes(...parts) {
+  const length = parts.reduce((sum, part) => sum + part.length, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  parts.forEach((part) => {
+    bytes.set(part, offset);
+    offset += part.length;
+  });
+  return bytes;
+}
+
+function zipDateTime(date) {
+  const year = Math.max(1980, date.getFullYear());
+  return {
+    dosTime: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+    dosDate: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate()
+  };
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (let index = 0; index < bytes.length; index += 1) {
+    crc = (crc >>> 8) ^ crc32Table()[(crc ^ bytes[index]) & 0xff];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function crc32Table() {
+  if (crc32Table.cache) return crc32Table.cache;
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) {
+      value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    }
+    table[index] = value >>> 0;
+  }
+  crc32Table.cache = table;
+  return table;
 }
 
 function importJsonFile() {
@@ -1590,10 +2138,89 @@ function normalizeProject(project) {
     title: project.title || "Untitled Story",
     notes: project.notes || "",
     variables: project.variables || {},
+    nodeTypes: normalizeProjectNodeTypes(project.nodeTypes, project.customNodeTypes),
+    customNodeTypes: [],
     characters: Array.isArray(project.characters) ? project.characters : inferCharacters(project),
     nodes: Array.isArray(project.nodes) ? project.nodes.map(normalizeNode) : [],
     links: Array.isArray(project.links) ? project.links : []
   };
+}
+
+function getProjectNodeTypes() {
+  if (!Array.isArray(state.project.nodeTypes)) {
+    state.project.nodeTypes = normalizeProjectNodeTypes(null, state.project.customNodeTypes);
+    state.project.customNodeTypes = [];
+  }
+  state.project.nodeTypes = normalizeNodeTypes(state.project.nodeTypes);
+  return state.project.nodeTypes;
+}
+
+function normalizeProjectNodeTypes(types, legacyCustomTypes) {
+  const hasProjectTypes = Array.isArray(types);
+  const normalized = normalizeNodeTypes(hasProjectTypes ? types : defaultNodeTypeList());
+  const legacyTypes = normalizeNodeTypes(legacyCustomTypes);
+  if (!legacyTypes.length) return normalized;
+  const seen = new Set(normalized.map((typeDef) => typeDef.type));
+  return [
+    ...normalized,
+    ...legacyTypes.filter((typeDef) => {
+      if (seen.has(typeDef.type)) return false;
+      seen.add(typeDef.type);
+      return true;
+    })
+  ];
+}
+
+function normalizeNodeTypes(types) {
+  if (!Array.isArray(types)) return [];
+  const seen = new Set();
+  return types
+    .map(normalizeCustomNodeType)
+    .filter((typeDef) => {
+      if (!typeDef || seen.has(typeDef.type)) return false;
+      seen.add(typeDef.type);
+      return true;
+    });
+}
+
+function normalizeCustomNodeType(typeDef) {
+  const label = String(typeDef?.label || typeDef?.type || "").trim().slice(0, 40);
+  if (!label) return null;
+  const type = String(typeDef?.type || customNodeTypeId(label)).trim() || customNodeTypeId(label);
+  return {
+    type,
+    label,
+    badge: normalizeCustomBadge(typeDef?.badge || label),
+    color: normalizeCustomColor(typeDef?.color),
+    width: clamp(Number(typeDef?.width) || 230, 160, 420),
+    custom: Boolean(typeDef?.custom)
+  };
+}
+
+function uniqueCustomNodeTypeId(label) {
+  const base = customNodeTypeId(label);
+  const existing = new Set(getProjectNodeTypes().map((typeDef) => typeDef.type));
+  let type = base;
+  let index = 2;
+  while (existing.has(type)) {
+    type = `${base}_${index}`;
+    index += 1;
+  }
+  return type;
+}
+
+function customNodeTypeId(label) {
+  return `Custom_${slugify(label).replace(/-/g, "_") || "node"}`;
+}
+
+function normalizeCustomBadge(value) {
+  const compact = String(value || "").trim().replace(/\s+/g, "").slice(0, 3).toUpperCase();
+  return compact || "N";
+}
+
+function normalizeCustomColor(value) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : DEFAULT_CUSTOM_NODE_COLOR;
 }
 
 function normalizeNode(node) {
@@ -1802,7 +2429,7 @@ function getProjectBounds() {
   if (!state.project.nodes.length) return { x: 0, y: 0, width: 800, height: 500 };
   const xs = state.project.nodes.map((node) => node.x);
   const ys = state.project.nodes.map((node) => node.y);
-  const rights = state.project.nodes.map((node) => node.x + (node.width || nodeTypes[node.type]?.width || 230));
+  const rights = state.project.nodes.map((node) => node.x + (node.width || getNodeMeta(node.type).width || 230));
   const bottoms = state.project.nodes.map((node) => node.y + nodeHeight(node));
   const minX = Math.min(...xs);
   const minY = Math.min(...ys);
@@ -1851,14 +2478,16 @@ function getEventBounds(eventNode) {
 
 function isNodeInsideBounds(node, bounds) {
   const center = {
-    x: node.x + (node.width || nodeTypes[node.type]?.width || 230) / 2,
+    x: node.x + (node.width || getNodeMeta(node.type).width || 230) / 2,
     y: node.y + nodeHeight(node) / 2
   };
   return center.x >= bounds.left && center.x <= bounds.right && center.y >= bounds.top && center.y <= bounds.bottom;
 }
 
 function formatEventElement(node) {
-  return `${node.type}: ${node.title || node.id} - ${displayBody(node)}`.trim();
+  const content = displayBody(node).trim();
+  const label = `[${node.type}] ${node.title || node.id}`;
+  return content ? `${label}\n${content}` : label;
 }
 
 function formatCsvCell(value) {
@@ -1872,7 +2501,7 @@ function buildExportSvg() {
   const width = Math.ceil(bounds.width + margin * 2);
   const height = Math.ceil(bounds.height + margin * 2);
   const offset = { x: margin - bounds.x, y: margin - bounds.y };
-  const nodes = [...state.project.nodes].sort((a, b) => (a.type === "Event" ? -1 : 0) - (b.type === "Event" ? -1 : 0));
+  const nodes = getCanvasRenderNodes();
 
   const links = state.project.links.map((link) => renderExportLink(link, offset)).join("");
   const nodeMarkup = nodes.map((node) => renderExportNode(node, offset)).join("");
@@ -1886,8 +2515,8 @@ function buildExportSvg() {
       <rect width="80" height="80" fill="url(#grid-small)"/>
       <path d="M 80 0 L 0 0 0 80" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="1"/>
     </pattern>
-    <marker id="export-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(220,221,222,0.78)"/>
+    <marker id="export-arrow" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="5" markerHeight="5" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="rgba(220,221,222,0.78)"/>
     </marker>
   </defs>
   <rect width="100%" height="100%" fill="#202020"/>
@@ -1899,7 +2528,7 @@ function buildExportSvg() {
 }
 
 function renderExportNode(node, offset) {
-  const meta = nodeTypes[node.type] || nodeTypes.Content;
+  const meta = getNodeMeta(node.type);
   const width = node.width || meta.width || 230;
   const height = exportNodeHeight(node);
   const x = node.x + offset.x;
@@ -1933,7 +2562,7 @@ function renderExportLink(link, offset) {
   const toPoint = exportInputPoint(to, offset);
   const path = linkPath(fromPoint, toPoint);
   const label = link.label ? renderExportLinkLabel(link.label, midpoint(fromPoint, toPoint)) : "";
-  return `<path d="${path}" fill="none" stroke="rgba(220,221,222,0.78)" stroke-width="3" stroke-linecap="round" marker-end="url(#export-arrow)"/>${label}`;
+  return `<path d="${path}" fill="none" stroke="rgba(220,221,222,0.78)" stroke-width="2" stroke-linecap="round" marker-end="url(#export-arrow)"/>${label}`;
 }
 
 function renderExportLinkLabel(label, point) {
@@ -1941,12 +2570,12 @@ function renderExportLinkLabel(label, point) {
 }
 
 function exportInputPoint(node, offset) {
-  return { x: node.x + offset.x, y: node.y + offset.y + exportNodeHeight(node) / 2 };
+  return { x: node.x + offset.x - LINK_PORT_ANCHOR_OFFSET, y: node.y + offset.y + exportNodeHeight(node) / 2 };
 }
 
 function exportOutputPoint(node, offset) {
-  const width = node.width || nodeTypes[node.type]?.width || 230;
-  return { x: node.x + offset.x + width, y: node.y + offset.y + exportNodeHeight(node) / 2 };
+  const width = node.width || getNodeMeta(node.type).width || 230;
+  return { x: node.x + offset.x + width + LINK_PORT_ANCHOR_OFFSET, y: node.y + offset.y + exportNodeHeight(node) / 2 };
 }
 
 function exportNodeHeight(node) {
@@ -2015,12 +2644,12 @@ function getOutgoing(id) {
 
 function getInputPoint(node) {
   const size = nodeSize(node);
-  return { x: node.x, y: node.y + size.height / 2 };
+  return { x: node.x - LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
 }
 
 function getOutputPoint(node) {
   const size = nodeSize(node);
-  return { x: node.x + size.width, y: node.y + size.height / 2 };
+  return { x: node.x + size.width + LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
 }
 
 function nodeHeight(node) {
@@ -2040,13 +2669,21 @@ function minNodeHeight(node) {
   return node.type === "Event" ? 160 : 96;
 }
 
+function maxNodeWidth(node) {
+  return node.type === "Event" ? Number.POSITIVE_INFINITY : 860;
+}
+
+function maxNodeHeight(node) {
+  return node.type === "Event" ? Number.POSITIVE_INFINITY : 620;
+}
+
 function nodeSize(node) {
-  const element = document.querySelector(`.node[data-node-id="${node.id}"]`);
+  const element = dom.nodeLayer?.querySelector(`.node[data-node-id="${node.id}"]`);
   if (element) {
     return { width: element.offsetWidth, height: element.offsetHeight };
   }
   return {
-    width: node.width || nodeTypes[node.type]?.width || 230,
+    width: node.width || getNodeMeta(node.type).width || 230,
     height: nodeHeight(node)
   };
 }
@@ -2078,6 +2715,25 @@ function nodeMatches(node, query) {
   return [node.type, node.title, node.body, node.condition, node.variable, node.value]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(query));
+}
+
+function getCanvasRenderNodes() {
+  return getCanvasLayerItems().map((item) => item.node);
+}
+
+function getCanvasLayerItems() {
+  return state.project.nodes
+    .map((node, index) => ({ node, index, order: getNodeLayerOrder(node, index) }))
+    .sort((a, b) => a.order - b.order || a.index - b.index);
+}
+
+function getNodeLayerOrder(node, index) {
+  if (Number.isFinite(node.layerOrder)) return node.layerOrder;
+  return (isEventFrame(node) ? EVENT_LAYER_BASE : REGULAR_LAYER_BASE) + index;
+}
+
+function isEventFrame(node) {
+  return node.type === "Event";
 }
 
 function nextId(prefix, items) {
