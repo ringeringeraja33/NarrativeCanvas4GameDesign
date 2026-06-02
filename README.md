@@ -2,6 +2,8 @@
 
 ## Screenshots
 
+![Narrative Canvas main canvas](assets/screenshots/main-canvas.png)
+
 ## English
 
 Narrative Canvas is a node-based planning canvas for branching stories, quests, dialogue, variables, and event sheets. It can run as a browser app or as a desktop-only Obsidian plugin.
