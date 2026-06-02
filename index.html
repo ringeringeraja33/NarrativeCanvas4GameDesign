@@ -153,6 +153,24 @@
       </form>
     </dialog>
 
+    <dialog id="nodeIconDialog" class="icon-dialog" aria-label="Edit node icon">
+      <form method="dialog" class="icon-shell">
+        <header>
+          <span class="pane-kicker">Node Icon</span>
+          <h2 id="nodeIconDialogTitle">Edit node icon</h2>
+        </header>
+        <label class="field">
+          <span>Icon</span>
+          <input id="nodeIconInput" maxlength="12" spellcheck="false" autocomplete="off">
+        </label>
+        <footer class="confirm-actions">
+          <button class="small-button" data-action="reset-node-icon" type="button">Use title initial</button>
+          <button class="small-button primary" value="confirm">Apply</button>
+          <button class="small-button confirm-cancel" value="cancel">Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
     <dialog id="nodeRequiredDialog" class="notice-dialog" aria-label="Node selection required">
       <section class="notice-shell">
         <span class="pane-kicker">Node Inspector</span>

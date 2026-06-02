@@ -467,6 +467,7 @@ button {
 }
 
 .toolbar-button.primary,
+.small-button.primary,
 .play-action.primary {
   border-color: var(--interactive-accent);
   background: var(--interactive-accent);
@@ -663,15 +664,42 @@ button {
 }
 
 .node-icon {
+  appearance: none;
   display: inline-grid;
   place-items: center;
   width: 22px;
   height: 22px;
+  min-width: 22px;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-s);
   background: var(--node-color);
   color: #101010;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.node-icon[data-icon-size="double"] {
+  font-size: 10px;
+}
+
+.node-icon[data-icon-size="wide"] {
+  font-size: 8px;
+}
+
+.node-icon:hover,
+.node-icon:focus-visible {
+  outline: 1px solid var(--interactive-accent-hover);
+  outline-offset: 2px;
+}
+
+.node:active .node-icon {
+  cursor: pointer;
 }
 
 .node-type {
@@ -1309,6 +1337,7 @@ select:focus {
 }
 
 .confirm-dialog,
+.icon-dialog,
 .notice-dialog {
   width: min(420px, calc(100vw - 32px));
   border: 1px solid var(--background-modifier-border);
@@ -1320,20 +1349,30 @@ select:focus {
 }
 
 .confirm-dialog::backdrop,
+.icon-dialog::backdrop,
 .notice-dialog::backdrop {
   background: rgba(0, 0, 0, 0.6);
 }
 
-.confirm-shell {
+.confirm-shell,
+.icon-shell {
   display: grid;
   gap: 18px;
   padding: 18px;
 }
 
-.confirm-shell h2 {
+.confirm-shell h2,
+.icon-shell h2 {
   margin: 4px 0 0;
   font-size: 16px;
   line-height: 1.45;
+}
+
+.icon-shell input {
+  height: 38px;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 800;
 }
 
 .notice-shell {
@@ -1352,6 +1391,7 @@ select:focus {
 .confirm-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

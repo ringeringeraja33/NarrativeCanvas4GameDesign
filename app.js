@@ -9,9 +9,13 @@ const EVENT_LAYER_BASE = 0;
 const REGULAR_LAYER_BASE = 1000000;
 const LINK_PORT_ANCHOR_OFFSET = 6;
 const DEFAULT_CUSTOM_NODE_COLOR = "#7fdbca";
+const NODE_ICON_MAX_GRAPHEMES = 3;
 const SAVED_STATE_VERSION = 1;
 const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
 const FALLBACK_NODE_META = { badge: "N", color: DEFAULT_CUSTOM_NODE_COLOR, width: 230, label: "Node" };
+const graphemeSegmenter = typeof Intl !== "undefined" && Intl.Segmenter
+  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+  : null;
 
 const nodeTypes = {
   Entry: { badge: "E", color: "#cdd6f4", width: 170 },
@@ -110,6 +114,7 @@ const state = {
   resizingNode: null,
   panning: null,
   contextNodeId: null,
+  iconDialogNodeId: null,
   playNodeId: null,
   playPath: [],
   search: ""
@@ -180,6 +185,9 @@ function bindDom() {
   dom.hint = dom.scope.querySelector("#selectionHint");
   dom.minimap = dom.scope.querySelector("#minimap");
   dom.nodeContextMenu = dom.scope.querySelector("#nodeContextMenu");
+  dom.nodeIconDialog = dom.scope.querySelector("#nodeIconDialog");
+  dom.nodeIconInput = dom.scope.querySelector("#nodeIconInput");
+  dom.nodeIconDialogTitle = dom.scope.querySelector("#nodeIconDialogTitle");
   dom.playDialog = dom.scope.querySelector("#playDialog");
   dom.confirmDialog = dom.scope.querySelector("#confirmDialog");
   dom.nodeRequiredDialog = dom.scope.querySelector("#nodeRequiredDialog");
@@ -236,6 +244,13 @@ function bindEvents() {
   dom.fileInput.addEventListener("change", importJsonFile, { signal });
   dom.confirmDialog.addEventListener("close", () => {
     if (dom.confirmDialog.returnValue === "confirm") newProject();
+  }, { signal });
+  dom.nodeIconDialog.addEventListener("close", () => {
+    if (dom.nodeIconDialog.returnValue === "confirm") applyNodeIconDialog();
+    state.iconDialogNodeId = null;
+  }, { signal });
+  dom.nodeIconDialog.addEventListener("click", (event) => {
+    if (event.target === dom.nodeIconDialog) dom.nodeIconDialog.close("cancel");
   }, { signal });
   dom.nodeRequiredDialog.addEventListener("click", (event) => {
     if (event.target === dom.nodeRequiredDialog) dom.nodeRequiredDialog.close();
@@ -516,11 +531,12 @@ function renderNodes() {
       const match = query && nodeMatches(node, query);
       const width = node.width || meta.width || 230;
       const height = nodeHeight(node);
+      const icon = getNodeIcon(node);
       return `
         <article class="node ${isFrame ? "frame" : ""} ${isSelected ? "selected" : ""}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px; width:${width}px; height:${height}px; --node-color:${meta.color}; ${match ? "outline:1px solid var(--accent-orange);" : ""}">
           <button class="port input" data-port="input" data-node-id="${node.id}" title="Input"></button>
           <div class="node-header" data-drag-handle="true" data-node-id="${node.id}">
-            <span class="node-icon">${meta.badge}</span>
+            <button class="node-icon" type="button" data-action="edit-node-icon" data-node-id="${node.id}" data-no-drag="true" data-icon-size="${getNodeIconSize(icon)}" title="Edit node icon" aria-label="Edit node icon for ${escapeAttr(node.title || getNodeTypeLabel(node.type))}">${escapeHtml(icon)}</button>
             <span class="node-type">${escapeHtml(getNodeTypeLabel(node.type))}</span>
             <span class="node-id">${node.id.replace("n", "#")}</span>
           </div>
@@ -934,6 +950,8 @@ function handleAction(target) {
   if (action === "add-node") addNode(target.dataset.type);
   if (action === "add-custom-node-type") addCustomNodeType();
   if (action === "delete-custom-node-type") deleteCustomNodeType(target.dataset.customNodeType);
+  if (action === "edit-node-icon") editNodeIcon(target.dataset.nodeId);
+  if (action === "reset-node-icon") resetNodeIconDialog();
   if (action === "save-project") saveCurrentState();
   if (action === "new-project") showNewProjectConfirm();
   if (action === "add-character") addCharacter();
@@ -1142,6 +1160,7 @@ function isNarrativeCanvasTarget(target) {
   return Boolean(
     dom.root?.contains(target)
     || dom.nodeContextMenu?.contains(target)
+    || dom.nodeIconDialog?.contains(target)
     || dom.playDialog?.contains(target)
     || dom.confirmDialog?.contains(target)
     || dom.nodeRequiredDialog?.contains(target)
@@ -1149,6 +1168,8 @@ function isNarrativeCanvasTarget(target) {
 }
 
 function handleViewportPointerDown(event) {
+  if (event.target.closest("[data-no-drag]")) return;
+
   const resizeHandle = event.target.closest("[data-resize-handle]");
   if (resizeHandle) {
     const node = getNode(resizeHandle.dataset.nodeId);
@@ -1473,6 +1494,79 @@ function selectNode(id, rerender = true) {
 function clearNodeSelection() {
   state.selectedNodeId = null;
   if (state.panel === "node") state.panel = "project";
+}
+
+function editNodeIcon(nodeId) {
+  const node = getNode(nodeId);
+  if (!node) return;
+  state.activeFileId = "adventure";
+  state.selectedNodeId = node.id;
+  state.selectedLinkId = null;
+  state.panel = "node";
+  state.iconDialogNodeId = node.id;
+
+  const fallbackIcon = getDefaultNodeIcon(node);
+  const existingIcon = normalizeNodeIcon(node.icon);
+  const currentIcon = existingIcon || fallbackIcon;
+
+  renderNodes();
+  renderInspector();
+  renderWorkspaceFile();
+  updateStatus();
+
+  if (dom.nodeIconDialog?.showModal) {
+    dom.nodeIconDialog.returnValue = "";
+    dom.nodeIconDialogTitle.textContent = `Edit icon for ${node.title || getNodeTypeLabel(node.type)}`;
+    dom.nodeIconInput.value = currentIcon;
+    dom.nodeIconDialog.showModal();
+    requestAnimationFrame(() => {
+      dom.nodeIconInput.focus();
+      dom.nodeIconInput.select();
+    });
+    return;
+  }
+
+  const nextValue = window.prompt?.("Node icon (leave blank to use title initial)", currentIcon);
+  if (nextValue == null) return;
+  applyNodeIconValue(node, nextValue);
+}
+
+function applyNodeIconDialog() {
+  const node = getNode(state.iconDialogNodeId);
+  if (!node) return;
+  applyNodeIconValue(node, dom.nodeIconInput.value);
+}
+
+function resetNodeIconDialog() {
+  const node = getNode(state.iconDialogNodeId);
+  if (!node) return;
+  delete node.icon;
+  if (dom.nodeIconDialog?.open) dom.nodeIconDialog.close("reset");
+  finishNodeIconEdit("Node icon reset.");
+}
+
+function applyNodeIconValue(node, value) {
+  const fallbackIcon = getDefaultNodeIcon(node);
+  const existingIcon = normalizeNodeIcon(node.icon);
+  const nextIcon = normalizeNodeIcon(value);
+  if (nextIcon) {
+    if (existingIcon || nextIcon !== fallbackIcon) {
+      node.icon = nextIcon;
+    } else {
+      delete node.icon;
+    }
+  } else {
+    delete node.icon;
+  }
+  finishNodeIconEdit(nextIcon ? "Node icon updated." : "Node icon reset.");
+}
+
+function finishNodeIconEdit(message) {
+  renderNodes();
+  renderInspector();
+  renderWorkspaceFile();
+  updateStatus();
+  setStatus(message);
 }
 
 function setProjectField(field, value) {
@@ -2225,6 +2319,12 @@ function normalizeCustomColor(value) {
 
 function normalizeNode(node) {
   const normalized = { ...node };
+  const icon = normalizeNodeIcon(normalized.icon);
+  if (icon) {
+    normalized.icon = icon;
+  } else {
+    delete normalized.icon;
+  }
   if (normalized.type === "Frame") {
     normalized.type = "Event";
     if (normalized.eventType === "Frame" || normalized.eventType === "Event") normalized.eventType = "";
@@ -2540,12 +2640,13 @@ function renderExportNode(node, offset) {
   const titleLines = wrapSvgText(node.title || "Untitled", Math.max(10, Math.floor((width - 76) / 8)), 2);
   const titleText = renderSvgLines(titleLines, x + 14, y + 58, 14, 13, "#dcddde", 700);
   const bodyText = renderSvgLines(bodyLines, x + 14, y + 88, 14, 12, "#dcddde", 400);
+  const icon = getNodeIcon(node);
 
   return `<g>
     <rect x="${x}" y="${y}" width="${width}" height="${height}" rx="7" fill="${fill}" stroke="${stroke}"/>
     <rect x="${x}" y="${y}" width="${width}" height="36" rx="7" fill="rgba(255,255,255,0.06)"/>
     <rect x="${x + 10}" y="${y + 8}" width="22" height="22" rx="4" fill="${meta.color}"/>
-    <text x="${x + 21}" y="${y + 24}" text-anchor="middle" fill="#101010" font-family="system-ui, sans-serif" font-size="12" font-weight="800">${escapeSvg(meta.badge)}</text>
+    <text x="${x + 21}" y="${y + 24}" text-anchor="middle" fill="#101010" font-family="system-ui, sans-serif" font-size="${getNodeIconFontSize(icon)}" font-weight="800">${escapeSvg(icon)}</text>
     <text x="${x + 40}" y="${y + 23}" fill="#a8a8a8" font-family="system-ui, sans-serif" font-size="12">${escapeSvg(getNodeTypeLabel(node.type))}</text>
     <text x="${x + width - 12}" y="${y + 23}" text-anchor="end" fill="#7a7a7a" font-family="system-ui, sans-serif" font-size="12">${escapeSvg(node.id.replace("n", "#"))}</text>
     ${titleText}
@@ -2709,6 +2810,50 @@ function displayBody(node) {
   if (node.type === "Set" && node.variable) return `${node.variable} = ${node.value ?? ""}`;
   if (node.type === "Condition" && node.condition) return node.condition;
   return node.body || "";
+}
+
+function getNodeIcon(node) {
+  return normalizeNodeIcon(node?.icon) || getDefaultNodeIcon(node);
+}
+
+function getDefaultNodeIcon(node) {
+  const source = node?.title || getNodeTypeLabel(node?.type) || node?.id || "Node";
+  const first = firstGrapheme(source);
+  return first ? uppercaseIconGrapheme(first) : "N";
+}
+
+function normalizeNodeIcon(value) {
+  const graphemes = getTextGraphemes(value);
+  return graphemes.slice(0, NODE_ICON_MAX_GRAPHEMES).join("");
+}
+
+function getNodeIconSize(icon) {
+  const length = getTextGraphemes(icon).length;
+  if (length <= 1) return "single";
+  return length === 2 ? "double" : "wide";
+}
+
+function getNodeIconFontSize(icon) {
+  const length = getTextGraphemes(icon).length;
+  if (length <= 1) return 12;
+  return length === 2 ? 10 : 8;
+}
+
+function firstGrapheme(value) {
+  return getTextGraphemes(value)[0] || "";
+}
+
+function uppercaseIconGrapheme(value) {
+  return firstGrapheme(String(value || "").toLocaleUpperCase()) || String(value || "");
+}
+
+function getTextGraphemes(value) {
+  const text = String(value || "").trim().replace(/\s+/g, "");
+  if (!text) return [];
+  if (graphemeSegmenter) {
+    return [...graphemeSegmenter.segment(text)].map((part) => part.segment).filter(Boolean);
+  }
+  return Array.from(text);
 }
 
 function nodeMatches(node, query) {
