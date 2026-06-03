@@ -27,23 +27,28 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   async onload() {
     await this.loadPluginData();
     this.registerView(VIEW_TYPE, (leaf) => new NarrativeCanvasView(leaf, this));
-    this.registerExtensions(PROJECT_EXTENSIONS, VIEW_TYPE);
+    try {
+      this.registerExtensions(PROJECT_EXTENSIONS, VIEW_TYPE);
+    } catch (error) {
+      console.error(error);
+      new Notice("Narrative Canvas file association could not be registered. The ribbon command will still work.");
+    }
     this.addSettingTab(new NarrativeCanvasSettingTab(this.app, this));
 
-    this.addRibbonIcon("network", "Open Narrative Canvas", () => {
-      this.openCanvas();
+    this.addRibbonIcon("git-branch", "Open Narrative Canvas", () => {
+      this.openCanvas().catch((error) => this.reportOpenError(error));
     });
 
     this.addCommand({
       id: "open-narrative-canvas",
       name: "Open Narrative Canvas",
-      callback: () => this.openCanvas()
+      callback: () => this.openCanvas().catch((error) => this.reportOpenError(error))
     });
 
     this.addCommand({
       id: "save-narrative-canvas-to-vault",
       name: "Save project file to vault",
-      callback: () => this.saveActiveCanvas()
+      callback: () => this.saveActiveCanvas().catch((error) => this.reportOpenError(error))
     });
 
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
@@ -85,16 +90,29 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
 
     if (!leaf) {
-      leaf = this.app.workspace.getLeaf(true);
+      leaf = this.app.workspace.getLeaf("tab") || this.app.workspace.getLeaf(true);
       await leaf.setViewState({
         type: VIEW_TYPE,
+        state: {},
         active: focus
       });
     }
 
+    const viewType = leaf.getViewState?.()?.type || leaf.view?.getViewType?.();
+    if (viewType !== VIEW_TYPE) {
+      throw new Error(`Obsidian opened ${viewType || "an empty leaf"} instead of Narrative Canvas.`);
+    }
+
     if (focus) {
+      this.app.workspace.setActiveLeaf?.(leaf, { focus: true });
       this.app.workspace.revealLeaf(leaf);
     }
+  }
+
+  reportOpenError(error) {
+    console.error(error);
+    const message = error?.message || String(error || "Unknown error");
+    new Notice(`Narrative Canvas could not open: ${message}`);
   }
 
   async loadCanvasAssets() {
@@ -373,7 +391,7 @@ class NarrativeCanvasView extends ItemView {
   }
 
   getIcon() {
-    return "network";
+    return "git-branch";
   }
 
   getState() {
