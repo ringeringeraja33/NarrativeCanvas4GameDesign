@@ -38,7 +38,7 @@ The plugin stores projects as `.ncanvas` files. New project files use a configur
 {{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
 ```
 
-The file name and the project title are independent after the file is created. Editing the project title does not rename the `.ncanvas` file, and renaming the file does not change the project title. Plugin settings include the vault-relative save folder, the new-file name template, and a token picker for common `{{...}}` replacements.
+The file name and the project title are independent after the file is created. Editing the project title does not rename the `.ncanvas` file, and renaming the file does not change the project title. Plugin settings include the vault-relative save folder and the new-file name template.
 
 ### Main Workflow
 
@@ -204,7 +204,7 @@ Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可
 {{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
 ```
 
-文件创建之后，文件名和 project title 互不影响。修改 project title 不会改 `.ncanvas` 文件名，重命名文件也不会改项目标题。插件设置里可以配置保存路径、新建文件名模板，并用 token 枚举插入常见 `{{...}}` 替换规则。
+文件创建之后，文件名和 project title 互不影响。修改 project title 不会改 `.ncanvas` 文件名，重命名文件也不会改项目标题。插件设置里可以配置保存路径、新建文件名模板。
 
 ### 基本流程
 
