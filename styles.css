@@ -11,6 +11,7 @@
   overflow: hidden;
 }
 
+.narrative-canvas-plugin-loading,
 .narrative-canvas-plugin-error {
   padding: 16px;
   color: var(--text-normal);

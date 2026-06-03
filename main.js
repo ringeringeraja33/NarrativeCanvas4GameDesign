@@ -35,9 +35,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     }
     this.addSettingTab(new NarrativeCanvasSettingTab(this.app, this));
 
-    this.addRibbonIcon("git-branch", "Open Narrative Canvas", () => {
-      this.openCanvas().catch((error) => this.reportOpenError(error));
-    });
+    this.addRibbonIcon("git-branch", "Open Narrative Canvas", () => this.openCanvas().catch((error) => this.reportOpenError(error)));
 
     this.addCommand({
       id: "open-narrative-canvas",
@@ -413,6 +411,10 @@ class NarrativeCanvasView extends ItemView {
   async onOpen() {
     this.contentEl.replaceChildren();
     this.contentEl.addClass("narrative-canvas-plugin-host");
+    this.contentEl.createEl("div", {
+      cls: "narrative-canvas-plugin-loading",
+      text: "Loading Narrative Canvas..."
+    });
 
     try {
       const { bodyHtml, css, appJs } = await this.plugin.loadCanvasAssets();
@@ -445,7 +447,7 @@ class NarrativeCanvasView extends ItemView {
       this.contentEl.replaceChildren();
       this.contentEl.createEl("div", {
         cls: "narrative-canvas-plugin-error",
-        text: "Narrative Canvas failed to load plugin assets. Check the developer console for details."
+        text: `Narrative Canvas failed to load: ${error?.message || "check the developer console for details."}`
       });
       new Notice("Narrative Canvas failed to load.");
     }
