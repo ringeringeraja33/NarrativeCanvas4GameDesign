@@ -335,4 +335,4 @@ condition: trust == high
 
 也可以在节点正文里输入 `@角色名` 创建自然引用。Characters 页面会按 Story 顺序列出角色相关节点，包括说话场景、在场场景、被提到的位置、拥有关系和事件框。
 
-Character focus 会高亮相关节点，让无关节点变淡；这样能看出角色分布，又不会把 canvas 画成一团线。
+Character focus 会高亮相关节点，让无关节点变淡。
