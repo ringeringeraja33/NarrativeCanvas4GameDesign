@@ -72,7 +72,11 @@ All default node types are editable templates. You can rename, hide, delete, res
 
 ![Playbook editor](assets/screenshots/playbook.png)
 
-`Playbook.json` controls variables and Play rules.
+Think of `Playbook.json` this way:
+
+**Node Library decides which fields a node type has. Node Inspector fills those fields. Playbook decides how Play reads those fields.**
+
+It is not a prose editor, and it is not a JavaScript script runner. It is a declarative rules table for the Play preview.
 
 Variables can be inserted into text with braces:
 
@@ -80,14 +84,52 @@ Variables can be inserted into text with braces:
 The {traveler} keeps the {watch}.
 ```
 
-Play rules can:
+The common uses are:
 
-- choose title/body templates for a node type or node id;
-- turn a field into Play choices;
-- write variables when a node is visited;
-- use a field as a condition gate.
+- `variables`: replace `{name}` tokens in node text.
+- `choices`: turn a node field into Play buttons.
+- `set`: write a variable when Play visits a node.
+- `condition`: choose the first outgoing link when true, or the second outgoing link when false.
 
 Use `Add variable` and `Add play rule` for starter entries, then open `Advanced JSON` for direct editing. When a rule is added, the JSON editor scrolls to the inserted rule line.
+
+Example:
+
+```json
+{
+  "variables": {
+    "trust": "unknown",
+    "watch": "Reyes's pocketwatch"
+  },
+  "nodeTypes": {
+    "Choice": {
+      "title": "{title}",
+      "body": "{body}",
+      "choices": "choices"
+    },
+    "Set": {
+      "body": "{variable} = {value}",
+      "set": {
+        "key": "variable",
+        "value": "value"
+      }
+    },
+    "Condition": {
+      "body": "{condition}",
+      "condition": "condition"
+    }
+  }
+}
+```
+
+With this setup, a Choice node can use a `choices` field like:
+
+```text
+Hand over {watch}
+Keep {watch} hidden
+```
+
+A Set node with `variable: trust` and `value: high` changes `trust` to `high` when Play reaches it. A Condition node with `condition: trust == high` checks that value and follows the matching route.
 
 ### Events Sheet
 
@@ -194,7 +236,11 @@ Sample.ncanvas
 
 ### Playbook
 
-`Playbook.json` 控制变量和 Play 规则。
+可以这样理解 `Playbook.json`：
+
+**Node Library 决定节点有哪些字段，Node Inspector 填这些字段，Playbook 决定 Play 预览时怎么读取这些字段。**
+
+它不是正文编辑器，也不是 JavaScript 脚本。它更像一张给 Play 预览使用的运行规则表。
 
 变量可以用花括号插入正文：
 
@@ -202,14 +248,52 @@ Sample.ncanvas
 The {traveler} keeps the {watch}.
 ```
 
-Play 规则可以：
+最常用的是：
 
-- 指定某种节点或某个节点的标题、正文模板；
-- 把某个字段变成 Play 里的选项；
-- 节点被访问时写入变量；
-- 把某个字段作为条件判断。
+- `variables`：替换节点文本里的 `{name}`。
+- `choices`：把节点里的某个字段变成 Play 按钮。
+- `set`：Play 经过某个节点时写入变量。
+- `condition`：判断为 true 走第一条出线，false 走第二条出线。
 
 可以先用 `Add variable` 和 `Add play rule` 创建起始配置，再打开 `Advanced JSON` 直接编辑。新增 rule 后，JSON 编辑区会自动滚到刚添加的那一行。
+
+例子：
+
+```json
+{
+  "variables": {
+    "trust": "unknown",
+    "watch": "Reyes's pocketwatch"
+  },
+  "nodeTypes": {
+    "Choice": {
+      "title": "{title}",
+      "body": "{body}",
+      "choices": "choices"
+    },
+    "Set": {
+      "body": "{variable} = {value}",
+      "set": {
+        "key": "variable",
+        "value": "value"
+      }
+    },
+    "Condition": {
+      "body": "{condition}",
+      "condition": "condition"
+    }
+  }
+}
+```
+
+这样设置后，Choice 节点可以在 `choices` 字段里写：
+
+```text
+Hand over {watch}
+Keep {watch} hidden
+```
+
+Set 节点填 `variable: trust`、`value: high` 时，Play 经过它就会把 `trust` 改成 `high`。Condition 节点填 `condition: trust == high` 时，Play 会检查这个变量，并按结果选择路线。
 
 ### Events Sheet
 
