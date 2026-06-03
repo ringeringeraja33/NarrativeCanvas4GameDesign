@@ -136,16 +136,23 @@ Use Character focus to highlight related nodes without drawing a web of lines ac
 
 ## Release Files
 
-An Obsidian release should include:
+For Obsidian Community Plugins, attach the standard release files:
 
 ```text
 manifest.json
 main.js
 styles.css
+```
+
+`main.js` includes embedded fallbacks for the canvas HTML, canvas CSS, and browser app script so community installs do not depend on extra downloaded files.
+
+For manual installation, the full release zip also includes:
+
+```text
 index.html
 app.js
 canvas.css
 assets/
 ```
 
-`manifest.json` and `versions.json` should match the release version.
+`manifest.json`, `versions.json`, and the GitHub release tag should match the release version.
