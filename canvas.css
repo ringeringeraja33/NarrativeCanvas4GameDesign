@@ -1,5 +1,5 @@
 :root {
-  --font-interface: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-interface: system-ui, "Segoe UI", sans-serif;
   --font-text: Georgia, Cambria, "Times New Roman", serif;
   --background-primary: #1f1f1f;
   --background-secondary: #252525;
@@ -1892,7 +1892,7 @@ select:focus {
   margin: 0;
   overflow: hidden;
   color: var(--text-normal);
-  font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-family: monospace;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1901,7 +1901,7 @@ select:focus {
 .json-field textarea {
   min-height: 520px;
   overflow-y: hidden;
-  font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-family: monospace;
   font-size: 13px;
 }
 
@@ -2531,7 +2531,7 @@ select:focus {
 
 .playbook-help-grid code,
 .playbook-example {
-  font-family: SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-family: monospace;
 }
 
 .playbook-example {
