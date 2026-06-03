@@ -5,8 +5,18 @@ const PLUGIN_ID = "narrative-canvas";
 const PROJECT_EXTENSIONS = ["ncanvas", "narrativecanvas"];
 const LEGACY_JSON_EXTENSION = "json";
 const DEFAULT_PROJECT_EXTENSION = "ncanvas";
+const DEFAULT_FILENAME_TEMPLATE = "{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas";
+const FILENAME_TEMPLATE_TOKENS = [
+  "{{project title}}",
+  "{{YYYY-MM-DD}}",
+  "{{YYYY-MM-DD HHmmss}}",
+  "{{YYYYMMDD}}",
+  "{{YYYYMMDD-HHmmss}}",
+  "{{HHmmss}}"
+];
 const DEFAULT_SETTINGS = {
   saveFolder: "",
+  filenameTemplate: DEFAULT_FILENAME_TEMPLATE,
   currentProjectPath: "",
   lastProjectPath: ""
 };
@@ -208,50 +218,30 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   }
 
   async ensureWritableProjectPath(savedStateJson, options = {}) {
-    const adapter = this.app.vault.adapter;
     const folder = normalizeSaveFolder(this.settings.saveFolder);
     await this.ensureFolder(folder);
-    const desiredPath = joinVaultPath(folder, this.renderProjectFilename(savedStateJson));
-    const current = options.forceNew ? "" : await this.resolveProjectPathForSave(savedStateJson);
+
+    const current = options.forceNew ? "" : await this.resolveProjectPathForSave();
     if (!options.forceNew && current) {
-      if (current === desiredPath) {
-        await this.ensureSaveFolderForPath(current);
-        return current;
-      }
-      const targetPath = await this.uniqueProjectPath(desiredPath, current);
-      if (await adapter.exists(current)) {
-        if (typeof adapter.rename === "function") {
-          await adapter.rename(current, targetPath);
-        } else {
-          const existing = await adapter.read(current);
-          await adapter.write(targetPath, existing);
-          if (typeof adapter.remove === "function") await adapter.remove(current);
-        }
-      }
-      return targetPath;
+      await this.ensureSaveFolderForPath(current);
+      return current;
     }
 
+    const desiredPath = joinVaultPath(folder, this.renderProjectFilename(savedStateJson));
     return this.uniqueProjectPath(desiredPath);
   }
 
-  async resolveProjectPathForSave(savedStateJson) {
+  async resolveProjectPathForSave() {
     const adapter = this.app.vault.adapter;
     const candidates = [
       normalizeVaultPath(this.settings.currentProjectPath),
-      normalizeVaultPath(this.settings.lastProjectPath),
-      this.getProjectPathFromOpenView()
+      this.getProjectPathFromOpenView(),
+      normalizeVaultPath(this.settings.lastProjectPath)
     ];
 
     for (const candidate of candidates) {
       if (candidate && await adapter.exists(candidate)) return candidate;
     }
-
-    const sessionPath = await this.findProjectFileForSessionState();
-    if (sessionPath) return sessionPath;
-
-    const latest = await this.findLatestNarrativeCanvasProjectFile();
-    if (latest) return latest;
-
     return "";
   }
 
@@ -274,8 +264,8 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   }
 
   renderProjectFilename(savedStateJson) {
-    const projectName = getProjectNameFromSavedState(savedStateJson);
-    return ensureProjectExtension(sanitizeFileName(projectName || "Sample"));
+    const rendered = renderFilenameTemplate(this.settings.filenameTemplate, savedStateJson);
+    return ensureProjectExtension(sanitizeFileName(rendered));
   }
 
   async uniqueProjectPath(path, ignorePath = "") {
@@ -477,10 +467,40 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
           });
       });
 
-    containerEl.createEl("p", {
-      cls: "setting-item-description",
-      text: "Project files are named after the project title, for example Sample.ncanvas. Rename the project title and save to rename the vault file."
-    });
+    new Setting(containerEl)
+      .setName("New project file name")
+      .addText((text) => {
+        text
+          .setPlaceholder(DEFAULT_FILENAME_TEMPLATE)
+          .setValue(this.plugin.settings.filenameTemplate || DEFAULT_FILENAME_TEMPLATE)
+          .onChange(async (value) => {
+            this.plugin.settings.filenameTemplate = normalizeFilenameTemplate(value);
+            await this.plugin.savePluginData();
+          });
+      })
+      .addButton((button) => {
+        button
+          .setButtonText("Reset")
+          .onClick(async () => {
+            this.plugin.settings.filenameTemplate = DEFAULT_FILENAME_TEMPLATE;
+            await this.plugin.savePluginData();
+            this.display();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Available filename tokens")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("", "Insert token...");
+        FILENAME_TEMPLATE_TOKENS.forEach((token) => dropdown.addOption(token, token));
+        dropdown.setValue("");
+        dropdown.onChange(async (token) => {
+          if (!token) return;
+          this.plugin.settings.filenameTemplate = appendFilenameTemplateToken(this.plugin.settings.filenameTemplate, token);
+          await this.plugin.savePluginData();
+          this.display();
+        });
+      });
 
     new Setting(containerEl)
       .setName("Current project")
@@ -502,9 +522,22 @@ function normalizeSettings(rawSettings) {
   const source = rawSettings && typeof rawSettings === "object" && !Array.isArray(rawSettings) ? rawSettings : {};
   return {
     saveFolder: normalizeSaveFolder(source.saveFolder),
+    filenameTemplate: normalizeFilenameTemplate(source.filenameTemplate),
     currentProjectPath: normalizeVaultPath(source.currentProjectPath),
     lastProjectPath: normalizeVaultPath(source.lastProjectPath)
   };
+}
+
+function normalizeFilenameTemplate(value) {
+  const template = String(value || "").trim();
+  return template || DEFAULT_FILENAME_TEMPLATE;
+}
+
+function appendFilenameTemplateToken(template, token) {
+  const current = normalizeFilenameTemplate(template);
+  const extensionPattern = /\.(ncanvas|narrativecanvas)$/i;
+  if (extensionPattern.test(current)) return current.replace(extensionPattern, `${token}$&`);
+  return `${current}${token}`;
 }
 
 function normalizeSaveFolder(value) {
@@ -527,23 +560,54 @@ function joinVaultPath(folder, fileName) {
   return normalizedFolder ? `${normalizedFolder}/${fileName}` : fileName;
 }
 
-function getProjectNameFromSavedState(savedStateJson) {
+function getProjectNameFromSavedState(savedStateJson, fallback = "Untitled") {
   try {
     const payload = JSON.parse(savedStateJson || "{}");
     const project = payload.project || payload;
-    return sanitizeProjectName(project.title || "Sample");
+    return sanitizeProjectName(project.title || fallback, fallback);
   } catch (error) {
-    return "Sample";
+    return fallback;
   }
 }
 
-function sanitizeProjectName(value) {
-  return sanitizeFileName(String(value || "Sample")).replace(/\.(json|ncanvas|narrativecanvas)$/i, "") || "Sample";
+function sanitizeProjectName(value, fallback = "Untitled") {
+  return sanitizeFileName(String(value || fallback)).replace(/\.(json|ncanvas|narrativecanvas)$/i, "") || fallback;
+}
+
+function renderFilenameTemplate(template, savedStateJson, date = new Date()) {
+  const projectTitle = getProjectNameFromSavedState(savedStateJson, "Untitled");
+  const values = {
+    "project title": projectTitle,
+    Projectname: projectTitle,
+    ProjectName: projectTitle,
+    "YYYY-MM-DD": formatDateToken(date, "YYYY-MM-DD"),
+    "YYYY-MM-DD HHmmss": formatDateToken(date, "YYYY-MM-DD HHmmss"),
+    YYYYMMDD: formatDateToken(date, "YYYYMMDD"),
+    "YYYYMMDD-HHmmss": formatDateToken(date, "YYYYMMDD-HHmmss"),
+    HHmmss: formatDateToken(date, "HHmmss")
+  };
+  const rendered = normalizeFilenameTemplate(template).replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (match, key) => {
+    return values[key] != null ? values[key] : match;
+  });
+  return rendered || `${projectTitle}-${formatDateToken(date, "YYYY-MM-DD HHmmss")}.${DEFAULT_PROJECT_EXTENSION}`;
+}
+
+function formatDateToken(date, format) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const parts = {
+    YYYY: String(date.getFullYear()),
+    MM: pad(date.getMonth() + 1),
+    DD: pad(date.getDate()),
+    HH: pad(date.getHours()),
+    mm: pad(date.getMinutes()),
+    ss: pad(date.getSeconds())
+  };
+  return format.replace(/YYYY|MM|DD|HH|mm|ss/g, (token) => parts[token]);
 }
 
 function sanitizeFileName(value) {
   return String(value || "")
-    .replace(/[\\/\n\r\t]/g, "-")
+    .replace(/[\\/\n\r\t:*?"<>|]/g, "-")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 180);

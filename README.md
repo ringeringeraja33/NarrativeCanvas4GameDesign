@@ -32,13 +32,13 @@ For manual installation, copy the plugin files into:
 
 Then reload Obsidian and enable `Narrative Canvas` in Community plugins.
 
-The plugin stores projects as `.ncanvas` files. By default the file name follows the project title, such as:
+The plugin stores projects as `.ncanvas` files. New project files use a configurable template. The default is:
 
 ```text
-Sample.ncanvas
+{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
 ```
 
-If you rename the project title and click Save, the vault file is renamed to match. The plugin settings currently expose only the vault-relative save folder.
+The file name and the project title are independent after the file is created. Editing the project title does not rename the `.ncanvas` file, and renaming the file does not change the project title. Plugin settings include the vault-relative save folder, the new-file name template, and a token picker for common `{{...}}` replacements.
 
 ### Main Workflow
 
@@ -75,8 +75,6 @@ All default node types are editable templates. You can rename, hide, delete, res
 Think of `Playbook.json` this way:
 
 **Node Library decides which fields a node type has. Node Inspector fills those fields. Playbook decides how Play reads those fields.**
-
-It is not a prose editor, and it is not a JavaScript script runner. It is a declarative rules table for the Play preview.
 
 Variables can be inserted into text with braces:
 
@@ -200,13 +198,13 @@ Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可
 
 然后重新加载 Obsidian，在 Community plugins 里启用 `Narrative Canvas`。
 
-插件会把项目保存成 `.ncanvas` 文件。默认文件名跟随项目标题，例如：
+插件会把项目保存成 `.ncanvas` 文件。新项目文件名使用可配置模板，默认是：
 
 ```text
-Sample.ncanvas
+{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
 ```
 
-修改项目标题后点击 Save，vault 内的项目文件会随之改名。插件设置里目前只保留项目保存路径，可以填写相对 vault 根目录的文件夹。
+文件创建之后，文件名和 project title 互不影响。修改 project title 不会改 `.ncanvas` 文件名，重命名文件也不会改项目标题。插件设置里可以配置保存路径、新建文件名模板，并用 token 枚举插入常见 `{{...}}` 替换规则。
 
 ### 基本流程
 
@@ -239,8 +237,6 @@ Sample.ncanvas
 可以这样理解 `Playbook.json`：
 
 **Node Library 决定节点有哪些字段，Node Inspector 填这些字段，Playbook 决定 Play 预览时怎么读取这些字段。**
-
-它不是正文编辑器，也不是 JavaScript 脚本。它更像一张给 Play 预览使用的运行规则表。
 
 变量可以用花括号插入正文：
 
