@@ -76,22 +76,13 @@ Think of `Playbook.json` this way:
 
 **Node Library decides which fields a node type has. Node Inspector fills those fields. Playbook decides how Play reads those fields.**
 
-Variables can be inserted into text with braces:
+It is not a prose editor or a JavaScript runner. It is a rule table for Play preview.
 
-```text
-The {traveler} keeps the {watch}.
-```
+Complete example:
 
-The common uses are:
+You want a choice: hand over the watch, raise trust, otherwise continue on another route.
 
-- `variables`: replace `{name}` tokens in node text.
-- `choices`: turn a node field into Play buttons.
-- `set`: write a variable when Play visits a node.
-- `condition`: choose the first outgoing link when true, or the second outgoing link when false.
-
-Use `Add variable` and `Add play rule` for starter entries, then open `Advanced JSON` for direct editing. When a rule is added, the JSON editor scrolls to the inserted rule line.
-
-Example:
+Playbook:
 
 ```json
 {
@@ -120,14 +111,29 @@ Example:
 }
 ```
 
-With this setup, a Choice node can use a `choices` field like:
+Fill the nodes this way:
+
+Choice node `choices`:
 
 ```text
 Hand over {watch}
 Keep {watch} hidden
 ```
 
-A Set node with `variable: trust` and `value: high` changes `trust` to `high` when Play reaches it. A Condition node with `condition: trust == high` checks that value and follows the matching route.
+Set node:
+
+```text
+variable: trust
+value: high
+```
+
+Condition node:
+
+```text
+condition: trust == high
+```
+
+Result: Play shows buttons with variable replacement, Set changes the variable, and Condition follows different links based on that variable.
 
 ### Events Sheet
 
@@ -238,22 +244,13 @@ Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可
 
 **Node Library 决定节点有哪些字段，Node Inspector 填这些字段，Playbook 决定 Play 预览时怎么读取这些字段。**
 
-变量可以用花括号插入正文：
+它不是正文编辑器，也不是 JavaScript 运行器。它是一张给 Play 预览使用的规则表。
 
-```text
-The {traveler} keeps the {watch}.
-```
+一个完整例子：
 
-最常用的是：
+你想做一个选择：交出怀表后信任变高，否则走另一条路。
 
-- `variables`：替换节点文本里的 `{name}`。
-- `choices`：把节点里的某个字段变成 Play 按钮。
-- `set`：Play 经过某个节点时写入变量。
-- `condition`：判断为 true 走第一条出线，false 走第二条出线。
-
-可以先用 `Add variable` 和 `Add play rule` 创建起始配置，再打开 `Advanced JSON` 直接编辑。新增 rule 后，JSON 编辑区会自动滚到刚添加的那一行。
-
-例子：
+Playbook：
 
 ```json
 {
@@ -282,14 +279,29 @@ The {traveler} keeps the {watch}.
 }
 ```
 
-这样设置后，Choice 节点可以在 `choices` 字段里写：
+节点这样填：
+
+Choice 节点 `choices`：
 
 ```text
 Hand over {watch}
 Keep {watch} hidden
 ```
 
-Set 节点填 `variable: trust`、`value: high` 时，Play 经过它就会把 `trust` 改成 `high`。Condition 节点填 `condition: trust == high` 时，Play 会检查这个变量，并按结果选择路线。
+Set 节点：
+
+```text
+variable: trust
+value: high
+```
+
+Condition 节点：
+
+```text
+condition: trust == high
+```
+
+结果：Play 里按钮能显示变量，经过 Set 会改变量，Condition 会按变量走不同连线。
 
 ### Events Sheet
 
