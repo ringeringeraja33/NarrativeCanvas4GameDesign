@@ -126,7 +126,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   }
 
   getCurrentProjectPath() {
-    return this.settings?.currentProjectPath || this.settings?.lastProjectPath || "";
+    return this.settings?.currentProjectPath || this.settings?.lastProjectPath || this.getProjectPathFromOpenView() || "";
   }
 
   async setCurrentProjectPath(path) {
@@ -212,7 +212,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     const folder = normalizeSaveFolder(this.settings.saveFolder);
     await this.ensureFolder(folder);
     const desiredPath = joinVaultPath(folder, this.renderProjectFilename(savedStateJson));
-    const current = normalizeVaultPath(this.settings.currentProjectPath);
+    const current = options.forceNew ? "" : await this.resolveProjectPathForSave(savedStateJson);
     if (!options.forceNew && current) {
       if (current === desiredPath) {
         await this.ensureSaveFolderForPath(current);
@@ -232,6 +232,45 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     }
 
     return this.uniqueProjectPath(desiredPath);
+  }
+
+  async resolveProjectPathForSave(savedStateJson) {
+    const adapter = this.app.vault.adapter;
+    const candidates = [
+      normalizeVaultPath(this.settings.currentProjectPath),
+      normalizeVaultPath(this.settings.lastProjectPath),
+      this.getProjectPathFromOpenView()
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate && await adapter.exists(candidate)) return candidate;
+    }
+
+    const sessionPath = await this.findProjectFileForSessionState();
+    if (sessionPath) return sessionPath;
+
+    const latest = await this.findLatestNarrativeCanvasProjectFile();
+    if (latest) return latest;
+
+    return "";
+  }
+
+  getProjectPathFromOpenView() {
+    const leaves = this.app.workspace?.getLeavesOfType?.(VIEW_TYPE) || [];
+    for (const leaf of leaves) {
+      const viewState = leaf.getViewState?.();
+      const file = normalizeVaultPath(viewState?.state?.file || viewState?.state?.path);
+      if (file && isProjectFileExtension(getVaultPathExtension(file))) return file;
+    }
+    return "";
+  }
+
+  async findProjectFileForSessionState() {
+    if (!this.sessionState) return "";
+    const folder = normalizeSaveFolder(this.settings.saveFolder);
+    const expected = joinVaultPath(folder, this.renderProjectFilename(JSON.stringify(this.sessionState)));
+    if (expected && await this.app.vault.adapter.exists(expected)) return expected;
+    return "";
   }
 
   renderProjectFilename(savedStateJson) {
@@ -513,7 +552,7 @@ function sanitizeFileName(value) {
 function ensureProjectExtension(value) {
   const fileName = value || `NarrativeCanvas.${DEFAULT_PROJECT_EXTENSION}`;
   const extension = getVaultPathExtension(fileName);
-  return extension ? fileName : `${fileName}.${DEFAULT_PROJECT_EXTENSION}`;
+  return PROJECT_EXTENSIONS.includes(extension) ? fileName : `${fileName}.${DEFAULT_PROJECT_EXTENSION}`;
 }
 
 function getVaultPathExtension(path) {
