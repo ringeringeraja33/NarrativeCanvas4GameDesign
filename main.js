@@ -96,7 +96,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       });
     }
 
-    const viewType = leaf.getViewState?.()?.type || leaf.view?.getViewType?.();
+    const viewType = leaf.view?.getViewType?.() || leaf.getViewState?.()?.type;
     if (viewType !== VIEW_TYPE) {
       throw new Error(`Obsidian opened ${viewType || "an empty leaf"} instead of Narrative Canvas.`);
     }
@@ -151,7 +151,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   }
 
   getCurrentProjectPath() {
-    return this.settings?.currentProjectPath || this.settings?.lastProjectPath || this.getProjectPathFromOpenView() || "";
+    return this.settings?.currentProjectPath || this.settings?.lastProjectPath || "";
   }
 
   async setCurrentProjectPath(path) {
@@ -261,11 +261,17 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   }
 
   getProjectPathFromOpenView() {
+    if (this.readingOpenViewPath) return "";
+    this.readingOpenViewPath = true;
     const leaves = this.app.workspace?.getLeavesOfType?.(VIEW_TYPE) || [];
-    for (const leaf of leaves) {
-      const viewState = leaf.getViewState?.();
-      const file = normalizeVaultPath(viewState?.state?.file || viewState?.state?.path);
-      if (file && isProjectFileExtension(getVaultPathExtension(file))) return file;
+    try {
+      for (const leaf of leaves) {
+        const viewState = leaf.getViewState?.();
+        const file = normalizeVaultPath(viewState?.state?.file || viewState?.state?.path);
+        if (file && isProjectFileExtension(getVaultPathExtension(file))) return file;
+      }
+    } finally {
+      this.readingOpenViewPath = false;
     }
     return "";
   }

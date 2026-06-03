@@ -68,6 +68,17 @@ Undo and Redo are floating buttons in the upper-left of the canvas. The minimap 
 
 All default node types are editable templates. You can rename, hide, delete, restore, recolor, and change their fields.
 
+### Canvas Operations
+
+- Drag nodes by their header.
+- Resize nodes from the lower-right handle.
+- Click an output port, then an input port, to connect nodes.
+- Double-click blank canvas to cancel a pending connection.
+- Right-click a link to reconnect or delete it.
+- Use `Layout H` or `Layout V` for automatic layout.
+- Drag Story rows to change story order or move nodes into and out of frames.
+- Story `Focus` selects the node, opens the Node inspector, centers it on canvas, and uses 50% zoom.
+
 ### Playbook
 
 ![Playbook editor](assets/screenshots/playbook.png)
@@ -162,17 +173,6 @@ You can also type `@Character Name` inside node text to create a natural referen
 
 Use Character focus to highlight related nodes without drawing a web of lines across the canvas.
 
-### Canvas Operations
-
-- Drag nodes by their header.
-- Resize nodes from the lower-right handle.
-- Click an output port, then an input port, to connect nodes.
-- Double-click blank canvas to cancel a pending connection.
-- Right-click a link to reconnect or delete it.
-- Use `Layout H` or `Layout V` for automatic layout.
-- Drag Story rows to change story order or move nodes into and out of frames.
-- Story `Focus` selects the node, opens the Node inspector, centers it on canvas, and uses 50% zoom.
-
 ## 中文
 
 Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可以把剧情段落、角色对白、选择分支、条件判断、变量变化、跳转、角色和笔记整理成可连接、可预览的互动流程。它适用于游戏、互动小说、分支剧本、任务链和其他非线性叙事结构。
@@ -237,6 +237,17 @@ Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可
 - **Event Frame** 用来归组故事节拍，并在 Events Sheet 里生成一行。
 
 示例里的所有 node type 都是默认模板，可以重命名、隐藏、删除、恢复、改颜色，也可以调整字段。
+
+### Canvas 操作
+
+- 拖动节点头部可以移动节点。
+- 从右下角手柄可以调整节点大小。
+- 点击输出端口，再点击输入端口，可以建立连线。
+- 连线过程中双击空白画布，可以取消待建立的连线。
+- 右键已有连线，可以选择重连或删除。
+- `Layout H` 和 `Layout V` 可以自动横排或竖排。
+- 在 Story 里拖动条目，可以改变故事顺序，或把节点移入、移出某个 frame。
+- Story 里的 `Focus` 会选中节点，打开 Node inspector，把节点以 50% 缩放居中到 canvas。
 
 ### Playbook
 
@@ -325,14 +336,3 @@ condition: trust == high
 也可以在节点正文里输入 `@角色名` 创建自然引用。Characters 页面会按 Story 顺序列出角色相关节点，包括说话场景、在场场景、被提到的位置、拥有关系和事件框。
 
 Character focus 会高亮相关节点，让无关节点变淡；这样能看出角色分布，又不会把 canvas 画成一团线。
-
-### Canvas 操作
-
-- 拖动节点头部可以移动节点。
-- 从右下角手柄可以调整节点大小。
-- 点击输出端口，再点击输入端口，可以建立连线。
-- 连线过程中双击空白画布，可以取消待建立的连线。
-- 右键已有连线，可以选择重连或删除。
-- `Layout H` 和 `Layout V` 可以自动横排或竖排。
-- 在 Story 里拖动条目，可以改变故事顺序，或把节点移入、移出某个 frame。
-- Story 里的 `Focus` 会选中节点，打开 Node inspector，把节点以 50% 缩放居中到 canvas。
