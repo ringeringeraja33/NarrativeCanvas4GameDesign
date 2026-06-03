@@ -1,9 +1,9 @@
 {
   "id": "narrative-canvas",
   "name": "Narrative Canvas",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "minAppVersion": "1.5.0",
-  "description": "A node-based workspace for designing complex narratives.",
+  "description": "A node-based writing workspace for planning complex narratives, branching stories, and game plots in Obsidian and the browser.",
   "author": "ringeringeraja33",
   "isDesktopOnly": true
 }

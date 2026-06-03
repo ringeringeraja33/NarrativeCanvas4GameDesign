@@ -1188,6 +1188,10 @@ button {
   box-shadow: var(--shadow-soft);
 }
 
+.node-context-menu[hidden] {
+  display: none !important;
+}
+
 .node-context-menu .context-menu-label {
   padding: 4px 10px 6px;
   margin-bottom: 2px;
@@ -2014,21 +2018,6 @@ select:focus {
   max-width: none;
 }
 
-.event-sheet-shell .document-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.event-sheet-shell .document-actions {
-  display: flex;
-  justify-content: flex-start;
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-}
-
 .event-sheet-shell .document-actions .small-button {
   flex: 0 1 auto;
 }
@@ -2036,18 +2025,12 @@ select:focus {
 .event-search-box {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex: 0 1 320px;
-  min-width: min(100%, 240px);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 700;
+  flex: 0 1 220px;
+  min-width: 160px;
 }
 
 .event-search-box input {
-  min-width: 0;
   width: 100%;
-  height: 30px;
 }
 
 .event-sheet-groups {

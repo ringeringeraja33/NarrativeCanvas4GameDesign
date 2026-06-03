@@ -157,7 +157,7 @@ const sampleProject = {
 };
 
 const fileViews = {
-  adventure: "Sample.canvas",
+  adventure: "Narrative.canvas",
   characters: "Characters.md",
   events: "Events Sheet.csv",
   variables: PLAYBOOK_FILE_NAME
@@ -361,10 +361,18 @@ function bindEvents() {
   eventRoot.addEventListener("focusout", handleEditFocusOut, { signal });
   eventRoot.addEventListener("keydown", handleKeyDown, { signal });
   eventRoot.addEventListener("pointerdown", handleStoryPointerDown, { signal });
+  document.addEventListener("pointerdown", handleGlobalMenuDismiss, { capture: true, signal });
+  document.addEventListener("mousedown", handleGlobalMenuDismiss, { capture: true, signal });
+  document.addEventListener("click", handleGlobalMenuDismiss, { capture: true, signal });
+  document.addEventListener("contextmenu", handleGlobalMenuDismiss, { capture: true, signal });
+  document.addEventListener("keydown", handleGlobalMenuKeyDown, { capture: true, signal });
   window.addEventListener("pointermove", handleStoryPointerMove, { signal });
   window.addEventListener("pointerup", handleStoryPointerUp, { signal });
+  window.addEventListener("blur", hideNodeContextMenu, { signal });
   window.addEventListener("resize", handleWindowResize, { signal });
 
+  dom.nodeContextMenu.addEventListener("pointerdown", handleNodeContextMenuPointerDown, { signal });
+  dom.nodeContextMenu.addEventListener("click", handleNodeContextMenuClick, { signal });
   dom.viewport.addEventListener("scroll", handleViewportScroll, { signal });
   dom.viewport.addEventListener("pointerdown", handleViewportPointerDown, { signal });
   dom.viewport.addEventListener("pointermove", handleViewportPointerMove, { signal });
@@ -1015,7 +1023,7 @@ function renderEventsSheetPage() {
         </div>
         <div class="document-actions">
           <label class="event-search-box">
-            <span>Find event</span>
+            <span class="visually-hidden">Find event</span>
             <input type="search" data-event-search placeholder="Find event" value="${escapeAttr(state.eventSearch || "")}" spellcheck="false">
           </label>
           <button class="small-button" data-action="add-node" data-type="Event">Add event frame</button>
@@ -2234,6 +2242,59 @@ function handleDocumentClick(event) {
   }
 }
 
+function handleGlobalMenuDismiss(event) {
+  if (!isNodeContextMenuOpen()) return;
+  if (dom.nodeContextMenu.contains(event.target)) return;
+  hideNodeContextMenu();
+}
+
+function handleGlobalMenuKeyDown(event) {
+  if (event.key !== "Escape" || !isNodeContextMenuOpen()) return;
+  hideNodeContextMenu();
+}
+
+function isNodeContextMenuOpen() {
+  return Boolean(dom.nodeContextMenu && !dom.nodeContextMenu.hidden);
+}
+
+function handleNodeContextMenuPointerDown(event) {
+  if (handleNodeContextMenuCommand(event)) return;
+  event.stopPropagation();
+}
+
+function handleNodeContextMenuClick(event) {
+  if (handleNodeContextMenuCommand(event)) return;
+  event.stopPropagation();
+}
+
+function handleNodeContextMenuCommand(event) {
+  if (!dom.nodeContextMenu || dom.nodeContextMenu.hidden || !dom.nodeContextMenu.contains(event.target)) return false;
+  const layerTarget = event.target.closest("[data-layer-action]");
+  const actionTarget = event.target.closest("[data-action]");
+  if (!layerTarget && !actionTarget) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+
+  if (layerTarget) {
+    if (state.contextGroup) {
+      moveContextSelection(layerTarget.dataset.layerAction);
+    } else {
+      moveContextNode(layerTarget.dataset.layerAction);
+    }
+    hideNodeContextMenu();
+    return true;
+  }
+
+  try {
+    handleAction(actionTarget);
+  } finally {
+    hideNodeContextMenu();
+  }
+  return true;
+}
+
 function handleContextMenu(event) {
   if (!isNarrativeCanvasTarget(event.target)) return;
   const linkElement = event.target.closest("[data-link-id]");
@@ -2435,7 +2496,9 @@ function positionContextMenu(clientX, clientY) {
   if (!dom.nodeContextMenu) return;
   dom.nodeContextMenu.style.left = "0px";
   dom.nodeContextMenu.style.top = "0px";
+  dom.nodeContextMenu.style.display = "grid";
   dom.nodeContextMenu.hidden = false;
+  dom.nodeContextMenu.setAttribute("aria-hidden", "false");
   const menuRect = dom.nodeContextMenu.getBoundingClientRect();
   const containerRect = getContextMenuContainerRect();
   const pointerX = clientX - containerRect.left;
@@ -2458,6 +2521,8 @@ function hideNodeContextMenu() {
   state.contextGroup = false;
   if (!dom.nodeContextMenu) return;
   dom.nodeContextMenu.hidden = true;
+  dom.nodeContextMenu.style.display = "none";
+  dom.nodeContextMenu.setAttribute("aria-hidden", "true");
 }
 
 function moveContextNode(action) {

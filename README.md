@@ -1,7 +1,7 @@
 # Narrative Canvas
 ## English
 
-Narrative Canvas is a visual planning workspace for complex stories. It helps you break a narrative into scenes, choices, conditions, variables, event frames, and character references, then connect them into a playable flow.
+Narrative Canvas is a visual writing and planning workspace for complex stories. It helps you break a narrative into scenes, choices, conditions, variables, event frames, and character references, then connect them into a playable flow.
 
 It is best used for organizing ideas, checking branching logic, preparing pitches, and demonstrating how a story or questline works. It is not meant to replace prose drafting tools. Write the actual manuscript, script, or dialogue polish in your usual editor; use Narrative Canvas to keep the structure understandable.
 
@@ -38,11 +38,11 @@ The plugin stores projects as `.ncanvas` files. New project files use a configur
 {{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
 ```
 
-The file name and the project title are independent after the file is created. Editing the project title does not rename the `.ncanvas` file, and renaming the file does not change the project title. Plugin settings include the vault-relative save folder and the new-file name template.
+The file name and the project title are independent after the file is created. Editing the project title does not rename the `.ncanvas` file, and renaming the file does not change the project title. The left Files entry is a fixed workspace label, `Narrative.canvas`, not the saved project file name. Plugin settings include the vault-relative save folder and the new-file name template.
 
 ### Main Workflow
 
-1. Open `Sample.canvas`.
+1. Open `Narrative.canvas`.
 2. Add nodes from the Node Library.
 3. Connect an output port to an input port.
 4. Use frames to group related nodes. Use Event Frames when the group should appear in Events Sheet.
@@ -175,7 +175,7 @@ Use Character focus to highlight related nodes without drawing a web of lines ac
 
 ## 中文
 
-Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可以把剧情段落、角色对白、选择分支、条件判断、变量变化、跳转、角色和笔记整理成可连接、可预览的互动流程。它适用于游戏、互动小说、分支剧本、任务链和其他非线性叙事结构。
+Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区。它可以把剧情段落、角色对白、选择分支、条件判断、变量变化、跳转、角色和笔记整理成可连接、可预览的互动流程。它适用于游戏、互动小说、分支剧本、任务链和其他非线性叙事结构。
 
 更推荐把它用于整理思路、检查分支、准备展示和说明复杂叙事结构。正文、对白润色、剧本定稿仍建议放在你常用的写作工具里完成。
 
@@ -210,11 +210,11 @@ Narrative Canvas 是一个用于复杂叙事设计的节点式工作区。它可
 {{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
 ```
 
-文件创建之后，文件名和 project title 互不影响。修改 project title 不会改 `.ncanvas` 文件名，重命名文件也不会改项目标题。插件设置里可以配置保存路径、新建文件名模板。
+文件创建之后，文件名和 project title 互不影响。修改 project title 不会改 `.ncanvas` 文件名，重命名文件也不会改项目标题。左侧 Files 里的 `Narrative.canvas` 是固定白板入口名，不是保存出来的项目文件名。插件设置里可以配置保存路径、新建文件名模板。
 
 ### 基本流程
 
-1. 打开 `Sample.canvas`。
+1. 打开 `Narrative.canvas`。
 2. 从 Node Library 添加节点。
 3. 从一个节点的输出端口连到另一个节点的输入端口。
 4. 用 Frame 归组节点。需要进入 Events Sheet 的内容使用 Event Frame。

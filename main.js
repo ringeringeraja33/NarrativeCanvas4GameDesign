@@ -518,17 +518,7 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Available filename tokens")
-      .addDropdown((dropdown) => {
-        dropdown.addOption("", "Insert token...");
-        FILENAME_TEMPLATE_TOKENS.forEach((token) => dropdown.addOption(token, token));
-        dropdown.setValue("");
-        dropdown.onChange(async (token) => {
-          if (!token) return;
-          this.plugin.settings.filenameTemplate = appendFilenameTemplateToken(this.plugin.settings.filenameTemplate, token);
-          await this.plugin.savePluginData();
-          this.display();
-        });
-      });
+      .setDesc(FILENAME_TEMPLATE_TOKENS.join(", "));
 
     new Setting(containerEl)
       .setName("Current project")
@@ -559,13 +549,6 @@ function normalizeSettings(rawSettings) {
 function normalizeFilenameTemplate(value) {
   const template = String(value || "").trim();
   return template || DEFAULT_FILENAME_TEMPLATE;
-}
-
-function appendFilenameTemplateToken(template, token) {
-  const current = normalizeFilenameTemplate(template);
-  const extensionPattern = /\.(ncanvas|narrativecanvas)$/i;
-  if (extensionPattern.test(current)) return current.replace(extensionPattern, `${token}$&`);
-  return `${current}${token}`;
 }
 
 function normalizeSaveFolder(value) {
