@@ -17,6 +17,14 @@ const NODE_TYPE_ICON_MAX_UNITS = 3;
 const SAVED_STATE_VERSION = 1;
 const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
 const PLAYBOOK_FILE_NAME = "Playbook.json";
+const SIDEBAR_RESIZER_WIDTH = 6;
+const SIDEBAR_COLLAPSED_WIDTH = 36;
+const SIDEBAR_MIN_WORKSPACE_WIDTH = 420;
+const SIDEBAR_CONFIG = {
+  left: { defaultWidth: 280, minWidth: 240, maxWidth: 520 },
+  right: { defaultWidth: 340, minWidth: 300, maxWidth: 560 }
+};
+const SIDEBAR_SIDES = new Set(Object.keys(SIDEBAR_CONFIG));
 const EVENT_ELEMENTS_COLUMN_KEY = "eventElements";
 const STORY_ROW_GAP = 132;
 const STORY_FRAME_PADDING = 32;
@@ -199,7 +207,14 @@ const state = {
   playPath: [],
   search: "",
   eventRowDrag: null,
-  mention: null
+  mention: null,
+  sidebar: {
+    leftWidth: SIDEBAR_CONFIG.left.defaultWidth,
+    rightWidth: SIDEBAR_CONFIG.right.defaultWidth,
+    leftCollapsed: false,
+    rightCollapsed: false,
+    resizing: null
+  }
 };
 
 const dom = {};
@@ -253,6 +268,10 @@ function bindDom() {
   dom.scope = resolveDomScope();
   dom.root = dom.scope.querySelector(".app-shell");
   dom.themeHost = dom.root?.closest(".narrative-canvas-plugin-host") || document.documentElement;
+  dom.sidebarLeft = dom.scope.querySelector("[data-sidebar='left']");
+  dom.sidebarRight = dom.scope.querySelector("[data-sidebar='right']");
+  dom.sidebarToggles = [...dom.scope.querySelectorAll("[data-sidebar-toggle]")];
+  dom.sidebarResizers = [...dom.scope.querySelectorAll("[data-sidebar-resizer]")];
   dom.viewport = dom.scope.querySelector("#canvasViewport");
   dom.canvasPanel = dom.scope.querySelector("#canvasPanel");
   dom.charactersPanel = dom.scope.querySelector("#charactersPanel");
@@ -353,6 +372,10 @@ function bindEvents() {
   const { signal } = eventController;
   const eventRoot = dom.scope || document;
 
+  eventRoot.addEventListener("pointerdown", handleFormControlPointerEvent, { signal });
+  eventRoot.addEventListener("mousedown", handleFormControlPointerEvent, { signal });
+  eventRoot.addEventListener("click", handleFormControlClickEvent, { signal });
+  eventRoot.addEventListener("pointerdown", handleSidebarPointerDown, { signal });
   eventRoot.addEventListener("click", handleDocumentClick, { signal });
   eventRoot.addEventListener("contextmenu", handleContextMenu, { signal });
   eventRoot.addEventListener("input", handleInput, { signal });
@@ -366,6 +389,8 @@ function bindEvents() {
   document.addEventListener("click", handleGlobalMenuDismiss, { capture: true, signal });
   document.addEventListener("contextmenu", handleGlobalMenuDismiss, { capture: true, signal });
   document.addEventListener("keydown", handleGlobalMenuKeyDown, { capture: true, signal });
+  window.addEventListener("pointermove", handleSidebarPointerMove, { signal });
+  window.addEventListener("pointerup", handleSidebarPointerUp, { signal });
   window.addEventListener("pointermove", handleStoryPointerMove, { signal });
   window.addEventListener("pointerup", handleStoryPointerUp, { signal });
   window.addEventListener("blur", hideNodeContextMenu, { signal });
@@ -437,6 +462,9 @@ function bindEvents() {
 function destroyNarrativeCanvas() {
   eventController?.abort();
   eventController = null;
+  state.sidebar.resizing = null;
+  dom.root?.classList.remove("sidebar-resizing");
+  dom.root?.removeAttribute("data-sidebar-resizing");
   hideNodeContextMenu();
   initialized = false;
 }
@@ -444,6 +472,169 @@ function destroyNarrativeCanvas() {
 function handleWindowResize() {
   hideNodeContextMenu();
   renderLinks();
+}
+
+function renderSidebarState() {
+  if (!dom.root) return;
+  const normalized = normalizeSidebarState(state.sidebar);
+  state.sidebar.leftWidth = normalized.leftWidth;
+  state.sidebar.rightWidth = normalized.rightWidth;
+  state.sidebar.leftCollapsed = normalized.leftCollapsed;
+  state.sidebar.rightCollapsed = normalized.rightCollapsed;
+
+  dom.root.style.setProperty("--sidebar-left-width", `${normalized.leftWidth}px`);
+  dom.root.style.setProperty("--sidebar-right-width", `${normalized.rightWidth}px`);
+  dom.root.setAttribute("data-sidebar-left", normalized.leftCollapsed ? "collapsed" : "expanded");
+  dom.root.setAttribute("data-sidebar-right", normalized.rightCollapsed ? "collapsed" : "expanded");
+
+  dom.sidebarToggles?.forEach((button) => {
+    const side = getValidSidebarSide(button.dataset.sidebarToggle);
+    if (!side) return;
+    const collapsed = side === "left" ? normalized.leftCollapsed : normalized.rightCollapsed;
+    const action = collapsed ? "Expand" : "Collapse";
+    const label = `${action} ${side} sidebar`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-expanded", String(!collapsed));
+  });
+}
+
+function normalizeSidebarState(sidebar) {
+  const source = sidebar && typeof sidebar === "object" ? sidebar : {};
+  return {
+    leftWidth: normalizeSidebarWidth("left", source.leftWidth),
+    rightWidth: normalizeSidebarWidth("right", source.rightWidth),
+    leftCollapsed: Boolean(source.leftCollapsed),
+    rightCollapsed: Boolean(source.rightCollapsed)
+  };
+}
+
+function normalizeSidebarWidth(side, width) {
+  const config = SIDEBAR_CONFIG[side];
+  const value = Number(width);
+  const fallback = config.defaultWidth;
+  return Math.round(clamp(Number.isFinite(value) ? value : fallback, config.minWidth, config.maxWidth));
+}
+
+function getValidSidebarSide(side) {
+  return SIDEBAR_SIDES.has(side) ? side : "";
+}
+
+function getSidebarWidth(side) {
+  const validSide = getValidSidebarSide(side);
+  if (!validSide) return 0;
+  return normalizeSidebarWidth(validSide, state.sidebar?.[`${validSide}Width`]);
+}
+
+function isSidebarCollapsed(side) {
+  const validSide = getValidSidebarSide(side);
+  return validSide ? Boolean(state.sidebar?.[`${validSide}Collapsed`]) : false;
+}
+
+function setSidebarWidth(side, width) {
+  const validSide = getValidSidebarSide(side);
+  if (!validSide) return;
+  const config = SIDEBAR_CONFIG[validSide];
+  const maxWidth = getSidebarResizeMaxWidth(validSide);
+  state.sidebar[`${validSide}Width`] = Math.round(clamp(width, config.minWidth, maxWidth));
+}
+
+function getSidebarResizeMaxWidth(side) {
+  const config = SIDEBAR_CONFIG[side];
+  const shellWidth = dom.root?.clientWidth || 0;
+  if (!shellWidth) return config.maxWidth;
+  const oppositeSide = side === "left" ? "right" : "left";
+  const oppositeWidth = isSidebarCollapsed(oppositeSide)
+    ? SIDEBAR_COLLAPSED_WIDTH
+    : getSidebarWidth(oppositeSide);
+  const activeResizerWidth = SIDEBAR_RESIZER_WIDTH + (isSidebarCollapsed(oppositeSide) ? 0 : SIDEBAR_RESIZER_WIDTH);
+  const availableWidth = shellWidth - oppositeWidth - activeResizerWidth - SIDEBAR_MIN_WORKSPACE_WIDTH;
+  return Math.max(config.minWidth, Math.min(config.maxWidth, availableWidth));
+}
+
+function getSavedSidebarState() {
+  const sidebar = normalizeSidebarState(state.sidebar);
+  return {
+    leftWidth: sidebar.leftWidth,
+    rightWidth: sidebar.rightWidth,
+    leftCollapsed: sidebar.leftCollapsed,
+    rightCollapsed: sidebar.rightCollapsed
+  };
+}
+
+function applySavedSidebarState(sidebar) {
+  const normalized = normalizeSidebarState(sidebar);
+  state.sidebar.leftWidth = normalized.leftWidth;
+  state.sidebar.rightWidth = normalized.rightWidth;
+  state.sidebar.leftCollapsed = normalized.leftCollapsed;
+  state.sidebar.rightCollapsed = normalized.rightCollapsed;
+  state.sidebar.resizing = null;
+}
+
+function toggleSidebar(side) {
+  const validSide = getValidSidebarSide(side);
+  if (!validSide) return;
+  const collapsedKey = `${validSide}Collapsed`;
+  state.sidebar[collapsedKey] = !state.sidebar[collapsedKey];
+  renderSidebarState();
+  handleWindowResize();
+  setStatus(`${titleCase(validSide)} sidebar ${state.sidebar[collapsedKey] ? "collapsed" : "expanded"}.`);
+}
+
+function handleSidebarPointerDown(event) {
+  if (event.button !== 0) return;
+  const resizer = event.target?.closest?.("[data-sidebar-resizer]");
+  if (!resizer || !dom.root?.contains(resizer)) return;
+  const side = getValidSidebarSide(resizer.dataset.sidebarResizer);
+  if (!side || isSidebarCollapsed(side)) return;
+
+  state.sidebar.resizing = {
+    side,
+    startX: event.clientX,
+    startWidth: getSidebarWidth(side),
+    pointerId: event.pointerId,
+    resizer
+  };
+  dom.root.classList.add("sidebar-resizing");
+  dom.root.setAttribute("data-sidebar-resizing", side);
+  hideNodeContextMenu();
+  try {
+    resizer.setPointerCapture(event.pointerId);
+  } catch (error) {
+    // Pointer capture is unavailable.
+  }
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+function handleSidebarPointerMove(event) {
+  const resizing = state.sidebar?.resizing;
+  if (!resizing) return;
+  const deltaX = event.clientX - resizing.startX;
+  const nextWidth = resizing.side === "left"
+    ? resizing.startWidth + deltaX
+    : resizing.startWidth - deltaX;
+  setSidebarWidth(resizing.side, nextWidth);
+  renderSidebarState();
+  handleWindowResize();
+  event.preventDefault();
+}
+
+function handleSidebarPointerUp(event) {
+  const resizing = state.sidebar?.resizing;
+  if (!resizing) return;
+  try {
+    resizing.resizer?.releasePointerCapture(resizing.pointerId ?? event.pointerId);
+  } catch (error) {
+    // Pointer capture is already gone.
+  }
+  const side = resizing.side;
+  state.sidebar.resizing = null;
+  dom.root?.classList.remove("sidebar-resizing");
+  dom.root?.removeAttribute("data-sidebar-resizing");
+  renderSidebarState();
+  handleWindowResize();
+  setStatus(`${titleCase(side)} sidebar resized.`);
 }
 
 function cloneProject(project) {
@@ -657,6 +848,7 @@ function renderPlaybookSurfaces(options = {}) {
 function renderShellState() {
   dom.root?.setAttribute("data-theme", state.theme);
   dom.themeHost?.setAttribute("data-theme", state.theme);
+  renderSidebarState();
   if (dom.themeToggle) {
     const isLight = state.theme === "light";
     dom.themeToggle.textContent = isLight ? "Dark" : "Light";
@@ -2179,6 +2371,7 @@ function handleDocumentClick(event) {
   }
 
   const layerTarget = event.target.closest("[data-layer-action]");
+  const sidebarToggle = event.target.closest("[data-sidebar-toggle]");
   const actionTarget = event.target.closest("[data-action]");
   const fileTarget = event.target.closest("[data-file-id]");
   const panelTarget = event.target.closest("[data-panel]");
@@ -2192,6 +2385,11 @@ function handleDocumentClick(event) {
     } else {
       moveContextNode(layerTarget.dataset.layerAction);
     }
+    return;
+  }
+
+  if (sidebarToggle && dom.root?.contains(sidebarToggle)) {
+    toggleSidebar(sidebarToggle.dataset.sidebarToggle);
     return;
   }
 
@@ -2240,6 +2438,27 @@ function handleDocumentClick(event) {
   if (node) {
     selectNode(node.dataset.nodeId);
   }
+}
+
+function getFormControlTarget(target) {
+  const control = target?.closest?.("input, textarea, select, [contenteditable='true']");
+  return control && dom.root?.contains(control) ? control : null;
+}
+
+function handleFormControlPointerEvent(event) {
+  const control = getFormControlTarget(event.target);
+  if (!control) return;
+  event.stopPropagation();
+  if (typeof control.focus === "function") {
+    requestAnimationFrame(() => {
+      if (document.activeElement !== control) control.focus({ preventScroll: true });
+    });
+  }
+}
+
+function handleFormControlClickEvent(event) {
+  if (!getFormControlTarget(event.target)) return;
+  event.stopPropagation();
 }
 
 function handleGlobalMenuDismiss(event) {
@@ -4885,6 +5104,7 @@ function buildSavedState() {
       activeFileId: state.activeFileId,
       theme: state.theme,
       view: { ...state.view },
+      sidebar: getSavedSidebarState(),
       search: state.search,
       eventSearch: state.eventSearch,
       playbookJsonOpen: state.playbookJsonOpen
@@ -4904,6 +5124,7 @@ function applySavedState(saved) {
   state.panel = getValidSavedPanel(ui.panel, state.selectedNodeId);
   state.activeFileId = fileViews[ui.activeFileId] ? ui.activeFileId : "adventure";
   state.theme = ui.theme === "light" ? "light" : "dark";
+  applySavedSidebarState(ui.sidebar);
   state.search = typeof ui.search === "string" ? ui.search : "";
   state.eventSearch = typeof ui.eventSearch === "string" ? ui.eventSearch : "";
   state.playbookJsonOpen = Boolean(ui.playbookJsonOpen);

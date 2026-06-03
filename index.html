@@ -8,15 +8,18 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar sidebar-left">
+      <aside class="sidebar sidebar-left" data-sidebar="left">
         <header class="pane-header">
-          <div>
+          <div class="pane-title">
             <span class="pane-kicker">Narrative Canvas</span>
             <h1 id="vaultProjectTitle">Sample</h1>
           </div>
           <div class="header-actions">
             <button class="icon-button save-project-button" title="Save project state" data-action="save-project" type="button">Save</button>
             <button class="icon-button new-project-button" title="New project" data-action="new-project" type="button">New</button>
+            <button class="icon-button sidebar-toggle-button" title="Collapse left sidebar" aria-label="Collapse left sidebar" data-sidebar-toggle="left" type="button">
+              <span class="sidebar-toggle-icon sidebar-toggle-icon-left" aria-hidden="true"></span>
+            </button>
           </div>
         </header>
 
@@ -24,19 +27,19 @@
           <h2>Files</h2>
           <button class="tree-item active" data-file-id="adventure">
             <span class="file-dot"></span>
-            Narrative.canvas
+            <span class="tree-item-label">Narrative.canvas</span>
           </button>
           <button class="tree-item" data-file-id="events">
             <span class="file-dot muted"></span>
-            Events Sheet.csv
+            <span class="tree-item-label">Events Sheet.csv</span>
           </button>
           <button class="tree-item" data-file-id="characters">
             <span class="file-dot muted"></span>
-            Characters.md
+            <span class="tree-item-label">Characters.md</span>
           </button>
           <button class="tree-item" data-file-id="variables">
             <span class="file-dot muted"></span>
-            Playbook.json
+            <span class="tree-item-label">Playbook.json</span>
           </button>
         </section>
 
@@ -58,9 +61,10 @@
           </div>
         </section>
       </aside>
+      <div class="sidebar-resizer sidebar-resizer-left" data-sidebar-resizer="left" role="separator" aria-orientation="vertical" aria-label="Resize left sidebar"></div>
 
-      <main class="workspace">
-        <header id="workspaceToolbar" class="workspace-tabs">
+      <main class="canvas-workspace">
+        <header id="workspaceToolbar" class="canvas-workspace-tabs">
           <div class="toolbar-group">
             <span class="auto-layout-controls" data-files="adventure" role="group" aria-label="Auto layout">
               <button class="toolbar-button compact-button" data-action="auto-layout" data-layout-orientation="horizontal" title="Auto layout left to right">Layout H</button>
@@ -78,7 +82,7 @@
           <input id="fileInput" type="file" accept="application/json,.json,.ncanvas,.narrativecanvas" hidden>
         </header>
 
-        <section id="canvasPanel" class="workspace-view canvas-panel active">
+        <section id="canvasPanel" class="canvas-workspace-view canvas-panel active">
           <div class="canvas-frame">
             <div class="canvas-history" role="group" aria-label="History">
               <button id="undoButton" class="canvas-history-button" data-action="undo" type="button" title="Undo (Cmd/Ctrl+Z)" aria-label="Undo" disabled>↶</button>
@@ -95,13 +99,13 @@
             <div id="minimap" class="minimap" role="button" aria-label="Move canvas viewport"></div>
           </div>
         </section>
-        <section id="charactersPanel" class="workspace-view document-panel" aria-label="Characters"></section>
-        <section id="variablesPanel" class="workspace-view document-panel" aria-label="Variables"></section>
-        <section id="eventsPanel" class="workspace-view document-panel event-sheet-panel" aria-label="Events Sheet"></section>
+        <section id="charactersPanel" class="canvas-workspace-view document-panel" aria-label="Characters"></section>
+        <section id="variablesPanel" class="canvas-workspace-view document-panel" aria-label="Variables"></section>
+        <section id="eventsPanel" class="canvas-workspace-view document-panel event-sheet-panel" aria-label="Events Sheet"></section>
 
         <footer class="status-bar">
           <div id="statusText">Ready</div>
-          <label class="search-box">
+          <label class="canvas-search-box">
             Query
             <input id="queryInput" type="search" placeholder="Find nodes">
           </label>
@@ -109,13 +113,17 @@
         </footer>
       </main>
 
-      <aside class="sidebar sidebar-right">
+      <div class="sidebar-resizer sidebar-resizer-right" data-sidebar-resizer="right" role="separator" aria-orientation="vertical" aria-label="Resize right sidebar"></div>
+      <aside class="sidebar sidebar-right" data-sidebar="right">
         <header class="pane-header compact">
-          <div>
+          <div class="pane-title">
             <span class="pane-kicker">Inspector</span>
             <h1 id="inspectorTitle">Project</h1>
           </div>
           <div class="header-actions">
+            <button class="icon-button sidebar-toggle-button" title="Collapse right sidebar" aria-label="Collapse right sidebar" data-sidebar-toggle="right" type="button">
+              <span class="sidebar-toggle-icon sidebar-toggle-icon-right" aria-hidden="true"></span>
+            </button>
             <button id="themeToggle" class="icon-button theme-toggle-button" title="Switch theme" data-action="toggle-theme" type="button" aria-pressed="false">Light</button>
           </div>
         </header>
