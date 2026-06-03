@@ -3,7 +3,7 @@
   "name": "Narrative Canvas",
   "version": "1.0.0",
   "minAppVersion": "1.5.0",
-  "description": "A node-based workspace for designing complex narratives in Obsidian and the browser.",
+  "description": "A node-based workspace for designing complex narratives.",
   "author": "ringeringeraja33",
   "isDesktopOnly": true
 }
