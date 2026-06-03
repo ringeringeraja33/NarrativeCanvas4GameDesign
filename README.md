@@ -1,169 +1,151 @@
 # Narrative Canvas
 
-## Screenshots
+Narrative Canvas is a visual planning workspace for complex stories. It helps you break a narrative into scenes, choices, conditions, variables, event frames, and character references, then connect them into a playable flow.
+
+It is best used for organizing ideas, checking branching logic, preparing pitches, and demonstrating how a story or questline works. It is not meant to replace prose drafting tools. Write the actual manuscript, script, or dialogue polish in your usual editor; use Narrative Canvas to keep the structure understandable.
 
 ![Narrative Canvas main canvas](assets/screenshots/main-canvas.png)
 
-## English
+## Use Cases
 
-Narrative Canvas is a node-based planning canvas for branching stories, quests, dialogue, variables, and event sheets. It can run as a browser app or as a desktop-only Obsidian plugin.
+- Branching fiction, game quests, RPG scenes, VN routes, and interactive scripts.
+- Story maps where you need to see conditions, choices, jumps, and state changes.
+- Event sheets for production planning: act, chapter, beat, event type, description, and characters.
+- Character indexing: see where a character speaks, appears, is mentioned, owns something, or belongs to an event frame.
+- Demos: run the flow from the Entry node and show the story path without exposing draft notes.
 
-### Use It
+## Safety Notes
 
-- Browser app: open `index.html`, or use <https://ringeringeraja33.github.io/NarrativeCanvas/>.
-- Obsidian plugin: install the release files into `.obsidian/plugins/narrative-canvas/`, enable `Narrative Canvas`, then run `Open Narrative Canvas` from the command palette.
+- `Playbook.json` is declarative. It can format Play output, define choice buttons, read simple conditions, and write variables. It does not run arbitrary JavaScript.
+- Hide keeps Events Sheet data. Delete removes a column from the schema and clears matching values from Event Frame nodes.
+- Deleted nodes are archived outside the runtime path so accidental deletion is less destructive, but you should still save versions of important work.
+- Browser Save writes to browser local storage. Obsidian Save writes the current `.ncanvas` project file in your vault.
 
-The Obsidian plugin is desktop-only because `manifest.json` sets `isDesktopOnly: true`.
+## Web App
 
-### Install From Release
+Open `index.html` directly or use:
 
-1. Download the latest release package from GitHub Releases.
-2. Extract the package to:
+<https://ringeringeraja33.github.io/NarrativeCanvas/>
 
-   ```text
-   .obsidian/plugins/narrative-canvas/
-   ```
+The web app is useful for quick planning and demos. Use `Export JSON`, `Image`, `HTML`, `Characters.md`, `Events Sheet.csv`, or `Playbook.json` when you need portable files.
 
-3. Confirm the folder contains:
+## Obsidian Plugin
 
-   ```text
-   app.js
-   canvas.css
-   index.html
-   main.js
-   manifest.json
-   styles.css
-   ```
+For manual installation, copy the plugin files into:
 
-4. Restart Obsidian or reload Community plugins.
-5. Enable `Narrative Canvas`.
+```text
+.obsidian/plugins/narrative-canvas/
+```
 
-### Manual Install
+Then reload Obsidian and enable `Narrative Canvas` in Community plugins.
 
-Clone or download this repository, then copy the complete repository folder to `.obsidian/plugins/narrative-canvas/`.
+The plugin stores projects as `.ncanvas` files. By default the file name follows the project title, such as:
 
-### Core Workflow
+```text
+Sample.ncanvas
+```
 
-1. Add nodes from **Node Library**.
-2. Drag from an output port to another node's input port to connect flow.
-3. Edit the selected node in the right inspector.
-4. Use **Play** to preview from the Entry node.
-5. Use **Export JSON** or **Export all** for backup and handoff.
+If you rename the project title and click Save, the vault file is renamed to match. The plugin settings currently expose only the vault-relative save folder.
 
-### Save And Backup
+## Main Workflow
 
-The first project is the built-in sample, `The Adventure`.
+1. Open `Sample.canvas`.
+2. Add nodes from the Node Library.
+3. Connect an output port to an input port.
+4. Use frames to group related nodes. Use Event Frames when the group should appear in Events Sheet.
+5. Select a node and edit it in the Inspector.
+6. Use Story to inspect the reachable flow from Entry.
+7. Click Play to run the current narrative route.
+8. Save or export when the structure is ready to share.
 
-**Save** is local session recovery, not a portable backup:
+Undo and Redo are floating buttons in the upper-left of the canvas. The minimap floats in the lower-right; click it to move the main canvas.
 
-- Browser app: saves to browser `localStorage`.
-- Obsidian plugin: saves plugin data inside the current vault.
+## Node Types
 
-Use **Export JSON** for project backup and transfer. Use **Export all** for JSON, event CSV, character Markdown, variables JSON, image, and HTML outputs.
+- **Entry** starts the playable path.
+- **Content** holds narration or scene text.
+- **Dialog** is a character line. A Dialog title matching a character name is treated as Speaker.
+- **Choice** shows one Play button per choice line.
+- **Condition** reads a variable condition such as `trust == high`.
+- **Set** writes a variable value.
+- **Jump** marks a route transition or named destination. It does not teleport on its own; connect it to the next node you want the graph to visit.
+- **Marker** is a planning note.
+- **Frame** groups nodes visually.
+- **Event Frame** groups story beats and becomes a row in Events Sheet.
 
-### Features
+All default node types are editable templates. You can rename, hide, delete, restore, recolor, and change their fields.
 
-- Node canvas with drag, resize, links, zoom, minimap, search, and light/dark themes.
-- Entry, Content, Dialog, Choice, Condition, Set, Jump, Marker, Frame, and Event Frame node types.
-- Runtime preview with choices, variable writes, simple conditions, and `{variable}` interpolation.
-- Character sheet with Markdown export.
-- Variable editor with JSON export.
-- Event Sheet view with CSV export.
-- Project-customizable node types with editable icons, colors, behavior, hidden state, and custom properties.
+## Playbook
 
-### Frames
+![Playbook editor](assets/screenshots/playbook.png)
 
-- **Frame** is a transparent gray visual grouping box. It does not appear in the Event Sheet.
-- **Event Frame** is a purple event grouping box. It creates one row in `Events Sheet.csv`.
+`Playbook.json` controls variables and Play rules.
 
-Hidden node types can be restored from the **Hidden** area at the top of Node Library.
+Variables can be inserted into text with braces:
 
-### Limits
+```text
+The {traveler} keeps the {watch}.
+```
 
-- Obsidian mobile is not supported.
-- Save is not a cross-device backup.
-- Conditions currently support simple `==` and `!=` expressions.
-- The plugin is not listed in Obsidian Community Plugins yet.
+Play rules can:
 
----
+- choose title/body templates for a node type or node id;
+- turn a field into Play choices;
+- write variables when a node is visited;
+- use a field as a condition gate.
 
-## 中文
+Use `Add variable` and `Add play rule` for starter entries, then open `Advanced JSON` for direct editing. When a rule is added, the JSON editor scrolls to the inserted rule line.
 
-Narrative Canvas 是一个节点式叙事规划画布，用于设计分支故事、任务、对白、变量和事件表。它可以作为网页应用使用，也可以作为桌面端 Obsidian 插件使用。
+## Events Sheet
 
-### 使用方式
+![Events Sheet](assets/screenshots/events-sheet.png)
 
-- 网页端：打开 `index.html`，或访问 <https://ringeringeraja33.github.io/NarrativeCanvas/>。
-- Obsidian 插件端：把 release 文件安装到 `.obsidian/plugins/narrative-canvas/`，启用 `Narrative Canvas`，再从命令面板运行 `Open Narrative Canvas`。
+Only Event Frame nodes appear in Events Sheet. Different Event Frame types are grouped into separate tables.
 
-由于 `manifest.json` 设置了 `isDesktopOnly: true`，Obsidian 插件只支持桌面端。
+You can rename, hide, or delete columns. Hidden columns appear in the sticky `Hidden` column at the right edge of each table so they can be restored. Deleted schema fields are removed from Event Frame type definitions and matching values are cleared from existing Event Frame nodes.
 
-### 从 Release 安装
+`Re-sort by graph` clears manual row ordering and sorts event rows by the current canvas graph.
 
-1. 从 GitHub Releases 下载最新 release 包。
-2. 解压到：
+## Characters
 
-   ```text
-   .obsidian/plugins/narrative-canvas/
-   ```
+![Characters page](assets/screenshots/characters.png)
 
-3. 确认文件夹内包含：
+Characters can be linked to nodes with Cast chips:
 
-   ```text
-   app.js
-   canvas.css
-   index.html
-   main.js
-   manifest.json
-   styles.css
-   ```
+- `POV`
+- `Speaker`
+- `Present`
+- `Mentioned`
+- `Target`
+- `Owner`
 
-4. 重启 Obsidian，或重新加载 Community plugins。
-5. 启用 `Narrative Canvas`。
+You can also type `@Character Name` inside node text to create a natural reference. Character pages list backlinks by story order, including speaker scenes, present scenes, mentions, owned nodes, and event frames.
 
-### 手动安装
+Use Character focus to highlight related nodes without drawing a web of lines across the canvas.
 
-克隆或下载本仓库，然后把完整仓库文件夹复制到 `.obsidian/plugins/narrative-canvas/`。
+## Canvas Operations
 
-### 基本流程
+- Drag nodes by their header.
+- Resize nodes from the lower-right handle.
+- Click an output port, then an input port, to connect nodes.
+- Double-click blank canvas to cancel a pending connection.
+- Right-click a link to reconnect or delete it.
+- Use `Layout H` or `Layout V` for automatic layout.
+- Drag Story rows to change story order or move nodes into and out of frames.
+- Story `Focus` selects the node, opens the Node inspector, centers it on canvas, and uses 50% zoom.
 
-1. 从 **Node Library** 添加节点。
-2. 从输出端口拖到另一个节点的输入端口，建立流程连线。
-3. 在右侧 inspector 编辑选中的节点。
-4. 用 **Play** 从 Entry 节点开始预览。
-5. 用 **Export JSON** 或 **Export all** 做备份和交接。
+## Release Files
 
-### 保存和备份
+An Obsidian release should include:
 
-首次打开看到的是内置示例项目 `The Adventure`。
+```text
+manifest.json
+main.js
+styles.css
+index.html
+app.js
+canvas.css
+assets/
+```
 
-**Save** 只用于本地续写，不是可迁移备份：
-
-- 网页端：保存到浏览器 `localStorage`。
-- Obsidian 插件端：保存到当前 vault 的插件数据。
-
-项目备份和迁移请用 **Export JSON**。需要交付多种格式时用 **Export all**，它会导出 JSON、事件 CSV、角色 Markdown、变量 JSON、图片和 HTML。
-
-### 功能
-
-- 节点画布：拖拽、缩放、连线、小地图、搜索、深浅色主题。
-- Entry、Content、Dialog、Choice、Condition、Set、Jump、Marker、Frame、Event Frame 节点类型。
-- 运行预览：支持选择、变量写入、简单条件和 `{变量}` 文本替换。
-- 角色表和 Markdown 导出。
-- 变量编辑和 JSON 导出。
-- 事件表和 CSV 导出。
-- 可按项目自定义节点类型：图标、颜色、行为、隐藏状态和自定义属性。
-
-### Frame
-
-- **Frame** 是透明灰色视觉分组框，不进入事件表。
-- **Event Frame** 是紫色事件分组框，会在 `Events Sheet.csv` 中生成一行。
-
-隐藏后的节点类型可以在 Node Library 顶部的 **Hidden** 区恢复。
-
-### 限制
-
-- 不支持 Obsidian 移动端。
-- Save 不是跨设备备份。
-- Condition 目前支持简单 `==` 和 `!=` 表达式。
-- 目前还没有上架 Obsidian 官方 Community Plugins。
+`manifest.json` and `versions.json` should match the release version.

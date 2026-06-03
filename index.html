@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Narrative Canvas</title>
-    <link rel="stylesheet" href="./canvas.css?v=20260602-frames">
+    <link rel="stylesheet" href="./canvas.css?v=20260603-release">
   </head>
   <body>
     <div class="app-shell">
@@ -12,7 +12,7 @@
         <header class="pane-header">
           <div>
             <span class="pane-kicker">Narrative Canvas</span>
-            <h1 id="vaultProjectTitle">The Adventure</h1>
+            <h1 id="vaultProjectTitle">Sample</h1>
           </div>
           <div class="header-actions">
             <button class="icon-button save-project-button" title="Save project state" data-action="save-project" type="button">Save</button>
@@ -24,19 +24,19 @@
           <h2>Files</h2>
           <button class="tree-item active" data-file-id="adventure">
             <span class="file-dot"></span>
-            The Adventure.canvas
-          </button>
-          <button class="tree-item" data-file-id="characters">
-            <span class="file-dot muted"></span>
-            Characters.md
+            Sample.canvas
           </button>
           <button class="tree-item" data-file-id="events">
             <span class="file-dot muted"></span>
             Events Sheet.csv
           </button>
+          <button class="tree-item" data-file-id="characters">
+            <span class="file-dot muted"></span>
+            Characters.md
+          </button>
           <button class="tree-item" data-file-id="variables">
             <span class="file-dot muted"></span>
-            Variables.json
+            Playbook.json
           </button>
         </section>
 
@@ -44,18 +44,17 @@
           <h2>Node Library</h2>
           <div id="nodePalette" class="palette-list"></div>
           <div class="custom-node-form node-type-form">
-            <input id="customNodeName" placeholder="Type name" spellcheck="false">
+            <div class="custom-node-row">
+              <input id="customNodeName" placeholder="Name" spellcheck="false">
+              <input id="customNodeColor" type="color" value="#7fdbca" title="Node color">
+              <button class="small-button" data-action="add-custom-node-type" type="button">Add</button>
+            </div>
             <select id="customNodeKind" title="Node behavior">
               <option value="node">Node</option>
               <option value="frame">Frame</option>
               <option value="eventFrame">Event Frame</option>
             </select>
-            <textarea id="customNodeFields" class="custom-node-fields" rows="3" placeholder="Properties, one per line" spellcheck="false"></textarea>
-            <div class="custom-node-row">
-              <input id="customNodeBadge" placeholder="Badge" maxlength="3" spellcheck="false">
-              <input id="customNodeColor" type="color" value="#7fdbca" title="Node color">
-              <button class="small-button" data-action="add-custom-node-type" type="button">Add</button>
-            </div>
+            <textarea id="customNodeFields" class="custom-node-fields" rows="3" placeholder="Fields, one per line" spellcheck="false"></textarea>
           </div>
         </section>
       </aside>
@@ -63,6 +62,10 @@
       <main class="workspace">
         <header id="workspaceToolbar" class="workspace-tabs">
           <div class="toolbar-group">
+            <span class="auto-layout-controls" data-files="adventure" role="group" aria-label="Auto layout">
+              <button class="toolbar-button compact-button" data-action="auto-layout" data-layout-orientation="horizontal" title="Auto layout left to right">Layout H</button>
+              <button class="toolbar-button compact-button" data-action="auto-layout" data-layout-orientation="vertical" title="Auto layout top to bottom">Layout V</button>
+            </span>
             <button class="toolbar-button" data-action="zoom-out" data-files="adventure" title="Zoom out">-</button>
             <span id="zoomReadout" class="zoom-readout" data-files="adventure">100%</span>
             <button class="toolbar-button" data-action="zoom-in" data-files="adventure" title="Zoom in">+</button>
@@ -71,21 +74,25 @@
             <button class="toolbar-button" data-action="export-json" data-files="adventure" title="Export full project JSON">Export JSON</button>
             <button class="toolbar-button" data-action="export-image" data-files="adventure" title="Export canvas as PNG">Image</button>
             <button class="toolbar-button" data-action="export-html" data-files="adventure" title="Export printable HTML">HTML</button>
-            <button class="toolbar-button" data-action="import-json" data-files="adventure" title="Import project JSON">Import JSON</button>
           </div>
-          <input id="fileInput" type="file" accept="application/json,.json" hidden>
+          <input id="fileInput" type="file" accept="application/json,.json,.ncanvas,.narrativecanvas" hidden>
         </header>
 
         <section id="canvasPanel" class="workspace-view canvas-panel active">
           <div class="canvas-frame">
+            <div class="canvas-history" role="group" aria-label="History">
+              <button id="undoButton" class="canvas-history-button" data-action="undo" type="button" title="Undo (Cmd/Ctrl+Z)" aria-label="Undo" disabled>↶</button>
+              <button id="redoButton" class="canvas-history-button" data-action="redo" type="button" title="Redo (Cmd/Ctrl+Shift+Z)" aria-label="Redo" disabled>↷</button>
+            </div>
             <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
               <div id="canvasContent" class="canvas-content">
                 <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
                 <div id="nodeLayer" class="node-layer"></div>
+                <div id="marqueeLayer" class="marquee-layer"><div id="marqueeRect" class="marquee-rect" hidden></div></div>
               </div>
             </div>
             <div id="selectionHint" class="selection-hint">Click an output port, then an input port to connect nodes.</div>
-            <div id="minimap" class="minimap" aria-hidden="true"></div>
+            <div id="minimap" class="minimap" role="button" aria-label="Move canvas viewport"></div>
           </div>
         </section>
         <section id="charactersPanel" class="workspace-view document-panel" aria-label="Characters"></section>
@@ -125,11 +132,14 @@
       </aside>
     </div>
 
+    <div id="mentionPopover" class="mention-popover" hidden role="listbox" aria-label="Character mentions"></div>
+
     <div id="nodeContextMenu" class="node-context-menu" hidden>
       <button data-layer-action="front">Bring to front</button>
       <button data-layer-action="forward">Bring forward</button>
       <button data-layer-action="backward">Send backward</button>
       <button data-layer-action="back">Send to back</button>
+      <button class="context-menu-danger" data-action="delete-node">Delete node</button>
     </div>
 
     <dialog id="playDialog" class="play-dialog">
@@ -154,6 +164,115 @@
         </header>
         <footer class="confirm-actions">
           <button class="small-button confirm-muted" value="confirm">Create</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="eventColumnDeleteDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span class="pane-kicker">Event Column</span>
+          <h2 id="eventColumnDeleteTitle">Delete column?</h2>
+          <p id="eventColumnDeleteBody" class="confirm-body"></p>
+        </header>
+        <footer class="confirm-actions">
+          <button class="small-button danger-button" value="confirm">Delete</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="eventColumnsResetDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span class="pane-kicker">Events Sheet</span>
+          <h2>Reset sheet columns?</h2>
+          <p class="confirm-body">
+            This restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Event Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.
+          </p>
+        </header>
+        <footer class="confirm-actions">
+          <button class="small-button danger-button" value="confirm">Reset columns</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="playbookHelpDialog" class="notice-dialog playbook-help-dialog" aria-label="Playbook help">
+      <form method="dialog" class="notice-shell playbook-help-shell">
+        <header>
+          <span class="pane-kicker">Playbook</span>
+          <h2>What Playbook.json controls</h2>
+        </header>
+        <div class="playbook-help-grid">
+          <section>
+            <h3>Can do</h3>
+            <ul>
+              <li>Store project variables for text like <code>{traveler}</code>.</li>
+              <li>Tell Play which node field becomes title, body, or choice buttons.</li>
+              <li>Write variables when a node is visited.</li>
+              <li>Read simple condition fields such as <code>flag == true</code>.</li>
+              <li>Insert starter rules with the toolbar, then edit the JSON directly.</li>
+            </ul>
+          </section>
+          <section>
+            <h3>Cannot do</h3>
+            <ul>
+              <li>Run arbitrary JavaScript.</li>
+              <li>Create canvas links, move nodes, or change layout.</li>
+              <li>Add or delete node fields directly. Use Node Library for schema changes.</li>
+              <li>Evaluate complex code expressions.</li>
+            </ul>
+          </section>
+        </div>
+        <pre class="playbook-example"><code>{
+  "variables": { "flag": false },
+  "nodeTypes": {
+    "Choice": { "body": "{body}", "choices": "choices" },
+    "Set": { "set": { "key": "variable", "value": "value" } },
+    "Condition": { "condition": "condition" }
+  }
+}</code></pre>
+        <footer class="confirm-actions">
+          <button class="small-button primary" value="confirm">Got it</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="playRuleDialog" class="notice-dialog playbook-rule-dialog" aria-label="Add play rule">
+      <form method="dialog" class="notice-shell playbook-rule-shell">
+        <header>
+          <span class="pane-kicker">Playbook</span>
+          <h2>Add play rule</h2>
+        </header>
+        <label class="field">
+          <span>Apply to (node type, label, or node id)</span>
+          <input id="playRuleTargetInput" spellcheck="false" autocomplete="off" placeholder="Content">
+        </label>
+        <div class="playbook-rule-options">
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="text">
+            <strong>Text template</strong>
+            <span>Title and body for a node type.</span>
+          </button>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="choices">
+            <strong>Choices</strong>
+            <span>Turn a field into Play buttons.</span>
+          </button>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="set">
+            <strong>Set variable</strong>
+            <span>Write state when a node is visited.</span>
+          </button>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="condition">
+            <strong>Condition gate</strong>
+            <span>Use a field to decide if a node can run.</span>
+          </button>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="selected">
+            <strong>From selected node</strong>
+            <span>Infer a rule from the selected node.</span>
+          </button>
+        </div>
+        <footer class="confirm-actions">
           <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
         </footer>
       </form>
@@ -196,8 +315,8 @@
           </select>
         </label>
         <label class="field">
-          <span>Properties</span>
-          <textarea id="nodeTypeFieldsInput" rows="5" spellcheck="false" placeholder="Properties, one per line"></textarea>
+          <span>Fields</span>
+          <textarea id="nodeTypeFieldsInput" rows="5" spellcheck="false" placeholder="Fields, one per line"></textarea>
         </label>
         <div class="type-dialog-row">
           <label class="field">
@@ -223,6 +342,6 @@
       </section>
     </dialog>
 
-    <script src="./app.js?v=20260602-frames"></script>
+    <script src="./app.js?v=20260603-release"></script>
   </body>
 </html>
