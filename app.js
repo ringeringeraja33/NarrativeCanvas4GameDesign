@@ -4666,7 +4666,7 @@ function resetCanvasScroll() {
 
 function newProject() {
   state.project = {
-    title: "Sample",
+    title: "Untitled",
     notes: "",
     variables: defaultVariables(),
     nodeTypes: defaultNodeTypeList(),
