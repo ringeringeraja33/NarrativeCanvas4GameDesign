@@ -79,6 +79,34 @@ All default node types are editable templates. You can rename, hide, delete, res
 - Drag Story rows to change story order or move nodes into and out of frames.
 - Story `Focus` selects the node, opens the Node inspector, centers it on canvas, and uses 50% zoom.
 
+### Events Sheet
+
+![Events Sheet](assets/screenshots/events-sheet.png)
+
+Only Event Frame nodes appear in Events Sheet. Different Event Frame types are grouped into separate tables.
+
+You can rename, hide, or delete columns. Hidden columns appear in the sticky `Hidden` column at the right edge of each table so they can be restored. Deleted schema fields are removed from Event Frame type definitions and matching values are cleared from existing Event Frame nodes.
+
+`Re-sort by graph` clears manual row ordering and sorts event rows by the current canvas graph.
+
+### Characters
+
+![Characters page](assets/screenshots/characters.png)
+
+Characters can be linked to nodes with Cast chips:
+
+- `POV`
+- `Speaker`
+- `Present`
+- `Mentioned`
+- `Target`
+- `Owner`
+
+You can also type `@Character Name` inside node text to create a natural reference. Character pages list backlinks by story order, including speaker scenes, present scenes, mentions, owned nodes, and event frames.
+
+Use Character focus to highlight related nodes without drawing a web of lines across the canvas.
+
+
 ### Playbook
 
 ![Playbook editor](assets/screenshots/playbook.png)
@@ -89,7 +117,7 @@ Think of `Playbook.json` this way:
 
 It is not a prose editor or a JavaScript runner. It is a rule table for Play preview.
 
-Complete example:
+#### An example
 
 You want a choice: hand over the watch, raise trust, otherwise continue on another route.
 
@@ -145,33 +173,6 @@ condition: trust == high
 ```
 
 Result: Play shows buttons with variable replacement, Set changes the variable, and Condition follows different links based on that variable.
-
-### Events Sheet
-
-![Events Sheet](assets/screenshots/events-sheet.png)
-
-Only Event Frame nodes appear in Events Sheet. Different Event Frame types are grouped into separate tables.
-
-You can rename, hide, or delete columns. Hidden columns appear in the sticky `Hidden` column at the right edge of each table so they can be restored. Deleted schema fields are removed from Event Frame type definitions and matching values are cleared from existing Event Frame nodes.
-
-`Re-sort by graph` clears manual row ordering and sorts event rows by the current canvas graph.
-
-### Characters
-
-![Characters page](assets/screenshots/characters.png)
-
-Characters can be linked to nodes with Cast chips:
-
-- `POV`
-- `Speaker`
-- `Present`
-- `Mentioned`
-- `Target`
-- `Owner`
-
-You can also type `@Character Name` inside node text to create a natural reference. Character pages list backlinks by story order, including speaker scenes, present scenes, mentions, owned nodes, and event frames.
-
-Use Character focus to highlight related nodes without drawing a web of lines across the canvas.
 
 ## 中文
 
@@ -249,6 +250,30 @@ Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区
 - 在 Story 里拖动条目，可以改变故事顺序，或把节点移入、移出某个 frame。
 - Story 里的 `Focus` 会选中节点，打开 Node inspector，把节点以 50% 缩放居中到 canvas。
 
+### Events Sheet
+
+只有 Event Frame 节点会进入 Events Sheet。用户自定义出多种 Event Frame 类型时，不同类型会分成不同表格。
+
+列可以重命名、隐藏或删除。隐藏的列会集中显示在每张表右侧固定的 `Hidden` 列里，方便恢复。删除 schema 字段时，会从 Event Frame 类型定义里移除该字段，并清掉已有 Event Frame 节点上的对应值。
+
+`Re-sort by graph` 会清掉手动行顺序，按当前 canvas 连线关系重新排序。
+
+### Characters
+
+角色可以通过 Cast chips 关联到节点：
+
+- `POV`
+- `Speaker`
+- `Present`
+- `Mentioned`
+- `Target`
+- `Owner`
+
+也可以在节点正文里输入 `@角色名` 创建自然引用。Characters 页面会按 Story 顺序列出角色相关节点，包括说话场景、在场场景、被提到的位置、拥有关系和事件框。
+
+Character focus 会高亮相关节点，让无关节点变淡。
+
+
 ### Playbook
 
 可以这样理解 `Playbook.json`：
@@ -257,7 +282,7 @@ Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区
 
 它不是正文编辑器，也不是 JavaScript 运行器。它是一张给 Play 预览使用的规则表。
 
-一个完整例子：
+#### 一个示例
 
 你想做一个选择：交出怀表后信任变高，否则走另一条路。
 
@@ -290,7 +315,7 @@ Playbook：
 }
 ```
 
-节点这样填：
+节点填写：
 
 Choice 节点 `choices`：
 
@@ -306,33 +331,10 @@ variable: trust
 value: high
 ```
 
-Condition 节点：
+Condition：
 
 ```text
 condition: trust == high
 ```
 
 结果：Play 里按钮能显示变量，经过 Set 会改变量，Condition 会按变量走不同连线。
-
-### Events Sheet
-
-只有 Event Frame 节点会进入 Events Sheet。用户自定义出多种 Event Frame 类型时，不同类型会分成不同表格。
-
-列可以重命名、隐藏或删除。隐藏的列会集中显示在每张表右侧固定的 `Hidden` 列里，方便恢复。删除 schema 字段时，会从 Event Frame 类型定义里移除该字段，并清掉已有 Event Frame 节点上的对应值。
-
-`Re-sort by graph` 会清掉手动行顺序，按当前 canvas 连线关系重新排序。
-
-### Characters
-
-角色可以通过 Cast chips 关联到节点：
-
-- `POV`
-- `Speaker`
-- `Present`
-- `Mentioned`
-- `Target`
-- `Owner`
-
-也可以在节点正文里输入 `@角色名` 创建自然引用。Characters 页面会按 Story 顺序列出角色相关节点，包括说话场景、在场场景、被提到的位置、拥有关系和事件框。
-
-Character focus 会高亮相关节点，让无关节点变淡。
