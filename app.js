@@ -216,27 +216,37 @@ window.NarrativeCanvasApp = {
 
 let eventController = null;
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initNarrativeCanvas, { once: true });
-} else if (document.querySelector(".app-shell")) {
-  initNarrativeCanvas();
+if (!window.NarrativeCanvasHost) {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initNarrativeCanvas, { once: true });
+  } else if (document.querySelector(".app-shell")) {
+    initNarrativeCanvas();
+  }
 }
 
 async function initNarrativeCanvas() {
-  if (initialized) return;
-  bindDom();
-  const missingElements = getMissingDomElements();
-  if (missingElements.length) {
-    showStartupError(`Narrative Canvas is missing required UI elements: ${missingElements.join(", ")}`);
-    return;
+  if (initialized) return true;
+  try {
+    bindDom();
+    const missingElements = getMissingDomElements();
+    if (missingElements.length) {
+      showStartupError(`Narrative Canvas is missing required UI elements: ${missingElements.join(", ")}`);
+      return false;
+    }
+    initialized = true;
+    const restoredView = await loadSavedState(false);
+    resetHistory();
+    renderAll();
+    bindEvents();
+    if (!restoredView) settleInitialCanvasView();
+    await ensureVaultProjectFile();
+    return true;
+  } catch (error) {
+    initialized = false;
+    console.error(error);
+    showStartupError(`Narrative Canvas could not start: ${getStartupErrorMessage(error)}`);
+    return false;
   }
-  initialized = true;
-  const restoredView = await loadSavedState(false);
-  resetHistory();
-  renderAll();
-  bindEvents();
-  if (!restoredView) settleInitialCanvasView();
-  await ensureVaultProjectFile();
 }
 
 function bindDom() {
@@ -319,13 +329,22 @@ function getMissingDomElements() {
 
 function showStartupError(message) {
   console.error(message);
-  const target = dom.scope === document ? document.body : dom.scope;
+  const target = dom.scope && dom.scope !== document
+    ? dom.scope
+    : window.NarrativeCanvasHost?.root || document.body || document.documentElement;
+  if (!target) return;
   target.innerHTML = `
     <main class="startup-error">
       <h1>Narrative Canvas failed to load</h1>
       <p>${escapeHtml(message)}</p>
     </main>
   `;
+}
+
+function getStartupErrorMessage(error) {
+  if (!error) return "unknown error";
+  if (typeof error === "string") return error;
+  return error.message || String(error);
 }
 
 function bindEvents() {
