@@ -197,7 +197,11 @@
       <form method="dialog" class="confirm-shell">
         <header>
           <span class="pane-kicker">New Canvas</span>
-          <h2>Discard the current canvas and create a blank one?</h2>
+          <h2>Name the new project</h2>
+          <label class="field confirm-field">
+            <span>Project name</span>
+            <input id="newProjectNameInput" type="text" value="Untitled" spellcheck="false" autocomplete="off">
+          </label>
           <p id="newProjectPathPreview" class="confirm-body">A new project file will be created when possible.</p>
         </header>
         <footer class="confirm-actions">

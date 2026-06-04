@@ -1,7 +1,7 @@
 const BOARD_WIDTH = 4000;
 const BOARD_HEIGHT = 2600;
 const CANVAS_VIEW_PADDING = 48;
-const CANVAS_MIN_ZOOM = 0.1;
+const CANVAS_MIN_ZOOM = 0.025;
 const CANVAS_MAX_ZOOM = 3;
 const DEFAULT_CANVAS_ZOOM = 0.5;
 const CANVAS_MIN_AUTO_SCALE = CANVAS_MIN_ZOOM;
@@ -68,6 +68,13 @@ const CHARACTER_BACKLINK_PREVIEW_LIMIT = 6;
 const DOCUMENT_RENDER_INITIAL_LIMIT = 80;
 const DOCUMENT_RENDER_INCREMENT = 80;
 const CANVAS_RENDER_PADDING = 420;
+const NODE_AUTO_MIN_WIDTH = 170;
+const NODE_AUTO_MAX_WIDTH = 460;
+const NODE_AUTO_FRAME_MAX_WIDTH = 760;
+const NODE_AUTO_MIN_BODY_LINES = 2;
+const NODE_AUTO_MAX_BODY_LINES = 6;
+const NODE_AUTO_FRAME_MAX_BODY_LINES = 10;
+const nodeLayoutSizeCache = new WeakMap();
 const graphemeSegmenter = typeof Intl !== "undefined" && Intl.Segmenter
   ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
   : null;
@@ -389,6 +396,10 @@ const state = {
   saveError: false,
   dirtyVersion: 0,
   structureVersion: 0,
+  canvasRenderVersion: 1,
+  canvasRenderedVersion: 0,
+  documentRenderVersion: 1,
+  documentRenderedVersions: { characters: 0, events: 0, variables: 0 },
   autoSaveTimer: null,
   characterBacklinkExpandedIds: new Set(),
   history: { undo: [], redo: [], current: "", pending: null, applying: false },
@@ -428,6 +439,7 @@ window.NarrativeCanvasApp = {
   destroy: destroyNarrativeCanvas,
   save: saveCurrentState,
   configureAutoSave,
+  createSampleProjectFile,
   ensureVaultFile: ensureVaultProjectFile,
   loadVaultProject: loadCurrentVaultProject
 };
@@ -457,7 +469,6 @@ async function initNarrativeCanvas() {
     renderAll();
     bindEvents();
     if (!restoredView) settleInitialCanvasView();
-    await ensureVaultProjectFile();
     configureAutoSave();
     return true;
   } catch (error) {
@@ -500,6 +511,7 @@ function bindDom() {
   dom.projectFileName = dom.scope.querySelector("#projectFileName");
   dom.projectFilePath = dom.scope.querySelector("#projectFilePath");
   dom.projectDirtyIndicator = dom.scope.querySelector("#projectDirtyIndicator");
+  dom.newProjectNameInput = dom.scope.querySelector("#newProjectNameInput");
   dom.newProjectPathPreview = dom.scope.querySelector("#newProjectPathPreview");
   dom.workspaceToolbar = dom.scope.querySelector("#workspaceToolbar");
   dom.projectPanel = dom.scope.querySelector("#projectPanel");
@@ -619,6 +631,14 @@ function bindEvents() {
   dom.fileInput.addEventListener("change", importJsonFile, { signal });
   dom.confirmDialog.addEventListener("close", () => {
     if (dom.confirmDialog.returnValue === "confirm") void newProject();
+  }, { signal });
+  dom.newProjectNameInput?.addEventListener("input", () => {
+    void updateNewProjectPathPreview();
+  }, { signal });
+  dom.newProjectNameInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    confirmNewProject();
   }, { signal });
   dom.eventColumnDeleteDialog.addEventListener("close", () => {
     if (dom.eventColumnDeleteDialog.returnValue === "confirm") {
@@ -1138,14 +1158,10 @@ function renderAll() {
   renderShellState();
   renderPalette();
   if (isCanvasFileActive()) {
-    const canvasRenderContext = getCanvasRenderContext();
-    renderTransform();
-    renderNodes(canvasRenderContext);
-    renderLinks(canvasRenderContext);
+    renderCanvasSurface({ force: true });
   }
   renderWorkspaceFile();
   renderInspector();
-  if (isCanvasFileActive()) renderMinimap();
   updateStatus();
   renderHistoryButtons();
 }
@@ -1154,11 +1170,46 @@ function isCanvasFileActive() {
   return state.activeFileId === "adventure";
 }
 
+function renderCanvasSurface(options = {}) {
+  if (!dom.canvasPanel || !dom.nodeLayer || !dom.linkLayer) return;
+  const shouldRender = options.force
+    || state.canvasRenderedVersion !== state.canvasRenderVersion
+    || !dom.nodeLayer.childElementCount;
+  renderTransform();
+  if (shouldRender) {
+    const canvasRenderContext = options.renderContext || getCanvasRenderContext();
+    renderNodes(canvasRenderContext);
+    renderLinks(canvasRenderContext);
+    markCanvasSurfaceRendered();
+  }
+  renderMinimap();
+}
+
+function invalidateCanvasSurface() {
+  state.canvasRenderVersion += 1;
+}
+
+function markCanvasSurfaceRendered() {
+  state.canvasRenderedVersion = state.canvasRenderVersion;
+}
+
+function markCanvasSurfaceRenderedIfActive() {
+  if (isCanvasFileActive()) markCanvasSurfaceRendered();
+}
+
+function invalidateDocumentSurfaces(fileId = null) {
+  state.documentRenderVersion += 1;
+  if (fileId && state.documentRenderedVersions) {
+    state.documentRenderedVersions[fileId] = 0;
+  }
+}
+
 function renderPlaybookSurfaces(options = {}) {
   hideNodeContextMenu();
   renderShellState();
   if (state.activeFileId === "variables") {
     renderVariablesPage(options);
+    markDocumentSurfaceRendered("variables");
   } else {
     renderWorkspaceFile();
   }
@@ -1268,6 +1319,8 @@ function getProjectFileBasename(path) {
 function setProjectDirty(value) {
   const nextValue = Boolean(value);
   if (nextValue) {
+    invalidateCanvasSurface();
+    invalidateDocumentSurfaces();
     state.dirtyVersion += 1;
     state.hasUnsavedChanges = true;
     state.saveError = false;
@@ -1288,6 +1341,8 @@ function setProjectDirty(value) {
 
 function markProjectStructureChanged(options = {}) {
   state.structureVersion += 1;
+  invalidateCanvasSurface();
+  invalidateDocumentSurfaces();
   if (!state.derived) return;
   state.derived.flowOrder = null;
   state.derived.displayId = null;
@@ -1343,14 +1398,50 @@ function normalizeAutoSaveIntervalMs(value) {
 
 function renderWorkspaceFile() {
   const activeFile = state.activeFileId || "adventure";
-  dom.canvasPanel.classList.toggle("active", activeFile === "adventure");
-  dom.charactersPanel.classList.toggle("active", activeFile === "characters");
-  dom.variablesPanel.classList.toggle("active", activeFile === "variables");
-  dom.eventsPanel.classList.toggle("active", activeFile === "events");
+  setWorkspacePanelActive(dom.canvasPanel, activeFile === "adventure");
+  setWorkspacePanelActive(dom.charactersPanel, activeFile === "characters");
+  setWorkspacePanelActive(dom.variablesPanel, activeFile === "variables");
+  setWorkspacePanelActive(dom.eventsPanel, activeFile === "events");
 
-  if (activeFile === "characters") renderCharactersPage();
-  if (activeFile === "variables") renderVariablesPage();
-  if (activeFile === "events") renderEventsSheetPage();
+  if (activeFile === "adventure") renderCanvasSurface();
+  if (activeFile === "characters") renderDocumentSurface("characters");
+  if (activeFile === "variables") renderDocumentSurface("variables");
+  if (activeFile === "events") renderDocumentSurface("events");
+}
+
+function setWorkspacePanelActive(panel, active) {
+  if (!panel) return;
+  panel.classList.toggle("active", active);
+  panel.setAttribute("aria-hidden", String(!active));
+}
+
+function renderDocumentSurface(fileId, options = {}) {
+  if (!fileViews[fileId]) return;
+  const renderedVersion = state.documentRenderedVersions?.[fileId] || 0;
+  const panel = getDocumentPanel(fileId);
+  const shouldRender = options.force
+    || options.focusJsonToken
+    || renderedVersion !== state.documentRenderVersion
+    || !panel?.childElementCount;
+  if (!shouldRender) return;
+  if (fileId === "characters") renderCharactersPage();
+  if (fileId === "variables") renderVariablesPage(options);
+  if (fileId === "events") renderEventsSheetPage();
+  markDocumentSurfaceRendered(fileId);
+}
+
+function markDocumentSurfaceRendered(fileId) {
+  if (!state.documentRenderedVersions || typeof state.documentRenderedVersions !== "object") {
+    state.documentRenderedVersions = {};
+  }
+  state.documentRenderedVersions[fileId] = state.documentRenderVersion;
+}
+
+function getDocumentPanel(fileId) {
+  if (fileId === "characters") return dom.charactersPanel;
+  if (fileId === "variables") return dom.variablesPanel;
+  if (fileId === "events") return dom.eventsPanel;
+  return null;
 }
 
 function getDocumentRenderLimit(fileId) {
@@ -1374,7 +1465,7 @@ function showMoreDocument(fileId) {
   if (!fileViews[fileId]) return;
   const current = getDocumentRenderLimit(fileId);
   state.documentRenderLimits[fileId] = current + DOCUMENT_RENDER_INCREMENT;
-  renderWorkspaceFile();
+  renderDocumentSurface(fileId, { force: true });
   setStatus(`Showing more ${fileViews[fileId]}.`);
 }
 
@@ -2426,8 +2517,9 @@ function renderNodes(renderContext = getCanvasRenderContext()) {
       const characterFocusClass = focusedCharacterId
         ? (isNodeRelatedToCharacter(node, focusedCharacterId) ? "character-focus-match" : "character-focus-muted")
         : "";
-      const width = node.width || meta.width || 230;
-      const height = nodeHeight(node);
+      const size = nodeLayoutSize(node);
+      const width = size.width;
+      const height = size.height;
       const icon = getNodeIcon(node);
       const nodeClasses = [
         "node",
@@ -2478,6 +2570,7 @@ function scheduleCanvasViewportRender() {
     const canvasRenderContext = getCanvasRenderContext();
     renderNodes(canvasRenderContext);
     renderLinks(canvasRenderContext);
+    markCanvasSurfaceRendered();
   });
 }
 
@@ -2745,16 +2838,6 @@ function renderNodePanel(node) {
       ${renderTypeFields(node)}
       ${renderCustomFields(node)}
       ${isEventSheetNode(node) ? renderEventFields(node) : ""}
-      <div class="field-row">
-        <label class="field">
-          <span>X</span>
-          <input type="number" data-node-field="x" value="${Math.round(node.x)}">
-        </label>
-        <label class="field">
-          <span>Y</span>
-          <input type="number" data-node-field="y" value="${Math.round(node.y)}">
-        </label>
-      </div>
       <div class="button-row">
         <button class="small-button" data-action="duplicate-node">Duplicate</button>
         <button class="small-button danger-button" data-action="delete-node">Delete node</button>
@@ -3087,11 +3170,11 @@ function getNodeElementById(id) {
 
 function patchNodeElementGeometry(node, element = getNodeElementById(node.id)) {
   if (!element) return false;
-  const width = node.width || getNodeMeta(node.type).width || 230;
+  const size = nodeLayoutSize(node);
   element.style.left = `${node.x}px`;
   element.style.top = `${node.y}px`;
-  element.style.width = `${width}px`;
-  element.style.height = `${nodeHeight(node)}px`;
+  element.style.width = `${size.width}px`;
+  element.style.height = `${size.height}px`;
   return true;
 }
 
@@ -3733,7 +3816,7 @@ function selectFile(fileId) {
 
   if (fileId === "adventure") {
     state.panel = state.selectedNodeId ? "node" : "project";
-    renderAll();
+    renderCanvasFileSwitch();
     setStatus(`${fileViews.adventure} opened.`);
     return;
   }
@@ -3762,6 +3845,15 @@ function renderDocumentFileSwitch() {
   renderShellState();
   renderWorkspaceFile();
   renderInspectorTabs();
+  updateStatus();
+  renderHistoryButtons();
+}
+
+function renderCanvasFileSwitch() {
+  hideNodeContextMenu();
+  renderShellState();
+  renderWorkspaceFile();
+  renderInspector();
   updateStatus();
   renderHistoryButtons();
 }
@@ -4399,12 +4491,11 @@ function getMarqueeBoardRect() {
 }
 
 function nodeIntersectsRect(node, rect) {
-  const width = node.width || getNodeMeta(node.type).width || 230;
-  const height = nodeHeight(node);
+  const size = nodeLayoutSize(node);
   return node.x < rect.right
-    && node.x + width > rect.left
+    && node.x + size.width > rect.left
     && node.y < rect.bottom
-    && node.y + height > rect.top;
+    && node.y + size.height > rect.top;
 }
 
 function updateMarqueeSelection() {
@@ -4667,13 +4758,12 @@ function addNode(type) {
   renderWorkspaceFile();
   const rect = dom.viewport.getBoundingClientRect();
   const center = screenToBoard(rect.left + rect.width / 2, rect.top + rect.height / 2);
-  const meta = getNodeMeta(type);
   const node = {
     id: nextId("n", state.project.nodes),
     type,
     title: type === "Entry" ? "Start" : getNodeTypeLabel(type),
     body: defaultBody(type),
-    x: Math.round(center.x - (meta.width || 230) / 2),
+    x: 0,
     y: Math.round(center.y - 70)
   };
   if (type === "Choice") node.choices = ["Continue", "Turn back"];
@@ -4683,6 +4773,7 @@ function addNode(type) {
   }
   if (type === "Condition") node.condition = "flag == true";
   applyNodeTypeDefaults(node);
+  node.x = Math.round(center.x - nodeLayoutSize(node).width / 2);
   state.project.nodes.push(normalizeNode(node));
   markProjectStructureChanged();
   selectNode(node.id);
@@ -4812,7 +4903,7 @@ function applyNodeTypeDefaults(node) {
   if (isEventSheetNode(node)) ensureEventDefaults(node);
   if (isFrameNode(node)) {
     node.width = node.width || meta.width || 420;
-    node.height = node.height || defaultNodeHeight(node);
+    node.height = node.height || defaultNodeHeight(node, node.width);
   }
 }
 
@@ -4867,7 +4958,11 @@ function setCharacterField(id, field, value, rerender) {
       }
     });
     if (rerender) {
-      if (isCanvasFileActive()) renderNodes();
+      if (isCanvasFileActive()) {
+        renderNodes();
+        renderLinks();
+        markCanvasSurfaceRendered();
+      }
       renderStoryPanel();
     }
   } else {
@@ -4971,6 +5066,7 @@ function renderCharacterAwareSurfaces(nodeForPanel = null) {
   if (isCanvasFileActive()) {
     renderNodes();
     renderLinks();
+    markCanvasSurfaceRendered();
   }
   renderStoryPanel();
   renderProjectPanel();
@@ -5477,6 +5573,7 @@ function setNodeField(field, value) {
   // of on every keystroke.
   renderNodes();
   patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
+  markCanvasSurfaceRenderedIfActive();
   if (field === "x" || field === "y") renderMinimap();
   if (field === "type") {
     renderInspector();
@@ -5503,6 +5600,7 @@ function setNodeCustomField(key, value, rerender) {
   setProjectDirty(true);
   renderNodes();
   patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
+  markCanvasSurfaceRenderedIfActive();
   scheduleStoryPanelRender();
   renderProjectPanel();
   updateStatus();
@@ -5525,6 +5623,10 @@ function setEventField(nodeId, field, value, rerender) {
   if (field === "eventDescription" && !node.body) node.body = value;
   setProjectDirty(true);
   renderNodes();
+  if (isCanvasFileActive()) {
+    renderLinks();
+    markCanvasSurfaceRendered();
+  }
   renderStoryPanel();
   renderProjectPanel();
   updateStatus();
@@ -5956,9 +6058,10 @@ function resetCanvasScroll() {
   dom.viewport.scrollTop = 0;
 }
 
-function createBlankProject() {
+function createBlankProject(title = "Untitled") {
+  const projectTitle = normalizeNewProjectTitle(title);
   return {
-    title: "Untitled",
+    title: projectTitle,
     notes: "",
     variables: defaultVariables(),
     nodeTypes: defaultNodeTypeList(),
@@ -5969,8 +6072,17 @@ function createBlankProject() {
   };
 }
 
-async function newProject() {
-  state.project = createBlankProject();
+function normalizeNewProjectTitle(value) {
+  return String(value || "").trim() || "Untitled";
+}
+
+function getNewProjectTitleInput() {
+  return normalizeNewProjectTitle(dom.newProjectNameInput?.value);
+}
+
+async function newProject(title = "Untitled") {
+  const projectTitle = normalizeNewProjectTitle(title);
+  state.project = createBlankProject(projectTitle);
   markProjectStructureChanged({ nodeTypes: true });
   state.selectedNodeId = "n0";
   state.selectedLinkId = null;
@@ -5991,13 +6103,20 @@ async function newProject() {
 }
 
 function showNewProjectConfirm() {
+  if (dom.newProjectNameInput) {
+    dom.newProjectNameInput.value = "Untitled";
+  }
   updateNewProjectPathPreview();
   if (dom.confirmDialog?.showModal) {
     dom.confirmDialog.returnValue = "";
     dom.confirmDialog.showModal();
+    requestAnimationFrame(() => {
+      dom.newProjectNameInput?.focus();
+      dom.newProjectNameInput?.select();
+    });
     return;
   }
-  if (window.confirm("Discard the current canvas and create a blank one?")) void newProject();
+  if (window.confirm("Discard the current canvas and create a blank one?")) void newProject("Untitled");
 }
 
 function confirmNewProject() {
@@ -6005,7 +6124,7 @@ function confirmNewProject() {
     dom.confirmDialog.returnValue = "handled";
     dom.confirmDialog.close("handled");
   }
-  void newProject();
+  void newProject(getNewProjectTitleInput());
 }
 
 function closeNewProjectConfirm() {
@@ -6018,6 +6137,8 @@ function closeNewProjectConfirm() {
 async function updateNewProjectPathPreview() {
   if (!dom.newProjectPathPreview) return;
   const host = window.NarrativeCanvasHost;
+  const projectTitle = getNewProjectTitleInput();
+  const project = createBlankProject(projectTitle);
   if (!host?.previewNewProjectFile) {
     dom.newProjectPathPreview.textContent = host
       ? "A new .ncanvas file will be created from the plugin save settings."
@@ -6025,7 +6146,9 @@ async function updateNewProjectPathPreview() {
     return;
   }
   try {
-    const target = await host.previewNewProjectFile(JSON.stringify(buildSavedStateForProject(createBlankProject()), null, 2));
+    const target = await host.previewNewProjectFile(JSON.stringify(buildSavedStateForProject(project), null, 2), {
+      filenameProjectTitle: projectTitle
+    });
     dom.newProjectPathPreview.textContent = target
       ? `New file: ${target}`
       : "A new .ncanvas file will be created from the plugin save settings.";
@@ -6099,7 +6222,10 @@ async function createVaultProjectForNewProject() {
   const host = window.NarrativeCanvasHost;
   if (!host?.createProjectFile) return "";
   try {
-    const target = await host.createProjectFile(JSON.stringify(buildSavedState(), null, 2));
+    const projectTitle = state.project?.title || "Untitled";
+    const target = await host.createProjectFile(JSON.stringify(buildSavedState(), null, 2), {
+      filenameProjectTitle: projectTitle
+    });
     if (target) {
       setProjectDirty(false);
       renderProjectFileStatus();
@@ -6111,6 +6237,44 @@ async function createVaultProjectForNewProject() {
     setStatus("New project created, but vault JSON creation failed.");
     renderProjectFileStatus();
     return "";
+  }
+}
+
+async function createSampleProjectFile() {
+  state.project = cloneProject(sampleProject);
+  markProjectStructureChanged({ nodeTypes: true });
+  state.selectedNodeId = state.project.nodes[0]?.id || null;
+  state.selectedLinkId = null;
+  state.panel = "project";
+  state.activeFileId = "adventure";
+  centerViewAtScale(DEFAULT_CANVAS_ZOOM, false);
+  resetHistory();
+  setProjectDirty(true);
+  renderAll();
+
+  const host = window.NarrativeCanvasHost;
+  if (!host?.createProjectFile) {
+    saveWebState(buildSavedState());
+    setProjectDirty(false);
+    setStatus("Sample project loaded in browser storage.");
+    return true;
+  }
+
+  try {
+    setStatus("Creating sample project...");
+    const target = await host.createProjectFile(JSON.stringify(buildSavedState(), null, 2), {
+      filenameOverride: SAMPLE_PROJECT_FILENAME,
+      filenameProjectTitle: sampleProject.title
+    });
+    setProjectDirty(false);
+    renderProjectFileStatus();
+    setStatus(target ? `Sample project created at ${target}.` : "Sample project opened.");
+    return true;
+  } catch (error) {
+    console.error(error);
+    setStatus("Sample project creation failed.");
+    renderProjectFileStatus();
+    return false;
   }
 }
 
@@ -7833,8 +7997,8 @@ function getNodeBounds(node) {
   // Pure arithmetic size: never touch the DOM here. getNodeBounds is called for
   // every node on every viewport cull (and inside frame-containment scans), so
   // reading offsetWidth/offsetHeight here caused N forced reflows per render
-  // (layout thrashing). The rendered height equals nodeLayoutSize() because
-  // renderNodes writes that exact height into the element's inline style.
+  // (layout thrashing). The rendered size equals nodeLayoutSize() because
+  // renderNodes writes that exact box into the element's inline style.
   const size = nodeLayoutSize(node);
   return {
     left: node.x,
@@ -7845,10 +8009,19 @@ function getNodeBounds(node) {
 }
 
 function nodeLayoutSize(node) {
-  return {
-    width: node.width || getNodeMeta(node.type).width || 230,
-    height: nodeHeight(node)
-  };
+  if (!node || typeof node !== "object") {
+    return { width: FALLBACK_NODE_META.width, height: minNodeHeight(null) };
+  }
+  const manualWidth = getManualNodeWidth(node);
+  const manualHeight = getManualNodeHeight(node);
+  const signature = getNodeLayoutSignature(node, manualWidth, manualHeight);
+  const cached = nodeLayoutSizeCache.get(node);
+  if (cached && cached.signature === signature) return cached.size;
+  const width = manualWidth || defaultNodeWidth(node);
+  const height = manualHeight || defaultNodeHeight(node, width);
+  const size = { width, height };
+  nodeLayoutSizeCache.set(node, { signature, size });
+  return size;
 }
 
 function boundsContainBounds(container, child) {
@@ -8057,17 +8230,22 @@ function getRootStoryY() {
 
 function getProjectBounds() {
   if (!state.project.nodes.length) return { x: 0, y: 0, width: 800, height: 500 };
-  const xs = state.project.nodes.map((node) => node.x);
-  const ys = state.project.nodes.map((node) => node.y);
-  const rights = state.project.nodes.map((node) => node.x + (node.width || getNodeMeta(node.type).width || 230));
-  const bottoms = state.project.nodes.map((node) => node.y + nodeHeight(node));
-  const minX = Math.min(...xs);
-  const minY = Math.min(...ys);
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxRight = Number.NEGATIVE_INFINITY;
+  let maxBottom = Number.NEGATIVE_INFINITY;
+  state.project.nodes.forEach((node) => {
+    const size = nodeLayoutSize(node);
+    minX = Math.min(minX, node.x);
+    minY = Math.min(minY, node.y);
+    maxRight = Math.max(maxRight, node.x + size.width);
+    maxBottom = Math.max(maxBottom, node.y + size.height);
+  });
   return {
     x: minX,
     y: minY,
-    width: Math.max(...rights) - minX,
-    height: Math.max(...bottoms) - minY
+    width: maxRight - minX,
+    height: maxBottom - minY
   };
 }
 
@@ -8221,22 +8399,21 @@ function getEventContainedNodes(eventNode) {
 }
 
 function getEventBounds(eventNode) {
-  const meta = getNodeMeta(eventNode?.type);
+  const size = nodeLayoutSize(eventNode);
   return {
     left: eventNode.x,
     top: eventNode.y,
-    right: eventNode.x + (eventNode.width || meta.width || nodeTypes.Event.width),
-    bottom: eventNode.y + nodeHeight(eventNode)
+    right: eventNode.x + size.width,
+    bottom: eventNode.y + size.height
   };
 }
 
 function isNodeInsideBounds(node, bounds) {
-  const width = node.width || getNodeMeta(node.type).width || 230;
-  const height = nodeHeight(node);
+  const size = nodeLayoutSize(node);
   return node.x >= bounds.left
     && node.y >= bounds.top
-    && node.x + width <= bounds.right
-    && node.y + height <= bounds.bottom;
+    && node.x + size.width <= bounds.right
+    && node.y + size.height <= bounds.bottom;
 }
 
 function formatEventElement(node) {
@@ -8284,8 +8461,9 @@ function buildExportSvg() {
 
 function renderExportNode(node, offset) {
   const meta = getNodeMeta(node.type);
-  const width = node.width || meta.width || 230;
-  const height = exportNodeHeight(node);
+  const size = nodeLayoutSize(node);
+  const width = size.width;
+  const height = size.height;
   const x = node.x + offset.x;
   const y = node.y + offset.y;
   const isFrame = isFrameNode(node);
@@ -8333,16 +8511,17 @@ function renderExportLinkLabel(label, point) {
 }
 
 function exportInputPoint(node, offset) {
-  return { x: node.x + offset.x - LINK_PORT_ANCHOR_OFFSET, y: node.y + offset.y + exportNodeHeight(node) / 2 };
+  const size = nodeLayoutSize(node);
+  return { x: node.x + offset.x - LINK_PORT_ANCHOR_OFFSET, y: node.y + offset.y + size.height / 2 };
 }
 
 function exportOutputPoint(node, offset) {
-  const width = node.width || getNodeMeta(node.type).width || 230;
-  return { x: node.x + offset.x + width + LINK_PORT_ANCHOR_OFFSET, y: node.y + offset.y + exportNodeHeight(node) / 2 };
+  const size = nodeLayoutSize(node);
+  return { x: node.x + offset.x + size.width + LINK_PORT_ANCHOR_OFFSET, y: node.y + offset.y + size.height / 2 };
 }
 
 function exportNodeHeight(node) {
-  return node.height || defaultNodeHeight(node);
+  return nodeLayoutSize(node).height;
 }
 
 function renderSvgLines(lines, x, y, lineHeight, fontSize, fill, weight) {
@@ -8527,13 +8706,112 @@ function getOutputPoint(node) {
   return { x: node.x + size.width + LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
 }
 
-function nodeHeight(node) {
-  return node.height || defaultNodeHeight(node);
+function nodeWidth(node) {
+  return nodeLayoutSize(node).width;
 }
 
-function defaultNodeHeight(node) {
-  const contentHeight = Math.max(126, 80 + Math.min(120, String(displayBody(node) || "").length * 0.35));
-  return isFrameNode(node) ? Math.max(250, contentHeight) : contentHeight;
+function nodeHeight(node) {
+  return nodeLayoutSize(node).height;
+}
+
+function defaultNodeWidth(node) {
+  const meta = getNodeMeta(node?.type);
+  const baseWidth = meta.width || (isFrameNode(node) ? nodeTypes.Event.width : FALLBACK_NODE_META.width);
+  const maxWidth = isFrameNode(node) ? NODE_AUTO_FRAME_MAX_WIDTH : Math.min(maxNodeWidth(node), NODE_AUTO_MAX_WIDTH);
+  const minWidth = isFrameNode(node) ? minNodeWidth(node) : Math.max(minNodeWidth(node), NODE_AUTO_MIN_WIDTH);
+  const widestTextUnits = getNodeAutoSizeTextParts(node)
+    .reduce((widest, part) => Math.max(widest, maxTextLineUnits(part)), 0);
+  const contentWidth = Math.ceil(108 + widestTextUnits * 6.8);
+  return Math.round(clamp(Math.max(baseWidth, contentWidth), minWidth, maxWidth));
+}
+
+function defaultNodeHeight(node, width = defaultNodeWidth(node)) {
+  const titleLines = Math.min(2, Math.max(1, estimateWrappedLineCount(getNodeDisplayTitle(node, "Untitled"), width - 76, 8)));
+  const body = displayBody(node);
+  const maxBodyLines = isFrameNode(node) ? NODE_AUTO_FRAME_MAX_BODY_LINES : NODE_AUTO_MAX_BODY_LINES;
+  const bodyLines = body
+    ? Math.min(maxBodyLines, Math.max(NODE_AUTO_MIN_BODY_LINES, estimateWrappedLineCount(body, width - 28, 7.2)))
+    : 0;
+  const castLine = normalizeNodeCast(node?.cast).length ? 1 : 0;
+  const choicesLine = hasNodeChoices(node) ? 1 : 0;
+  const contentHeight = 34 + 26 + titleLines * 17 + bodyLines * 17 + castLine * 24 + choicesLine * 24;
+  return Math.round(clamp(contentHeight, minNodeHeight(node), maxNodeHeight(node)));
+}
+
+function getManualNodeWidth(node) {
+  const value = Number(node?.width);
+  return Number.isFinite(value) && value > 0 ? Math.round(clamp(value, minNodeWidth(node), maxNodeWidth(node))) : null;
+}
+
+function getManualNodeHeight(node) {
+  const value = Number(node?.height);
+  return Number.isFinite(value) && value > 0 ? Math.round(clamp(value, minNodeHeight(node), maxNodeHeight(node))) : null;
+}
+
+function getNodeLayoutSignature(node, manualWidth, manualHeight) {
+  return [
+    state.structureVersion,
+    manualWidth || "",
+    manualHeight || "",
+    node?.type || "",
+    getNodeTypeLabel(node?.type),
+    getNodeDisplayTitle(node, "Untitled"),
+    displayBody(node),
+    parseChoiceLines(node?.choices).join("\n"),
+    normalizeNodeCast(node?.cast).map((entry) => `${entry.role}:${entry.characterId}`).join("|"),
+    getNodeCustomFieldEntries(node).map((field) => `${field.key}:${field.value}`).join("|")
+  ].join("\u001f");
+}
+
+function getNodeAutoSizeTextParts(node) {
+  const customFields = getNodeCustomFieldEntries(node)
+    .filter((field) => field.value !== "")
+    .map((field) => `${field.label}: ${field.value}`);
+  const cast = normalizeNodeCast(node?.cast).map((entry) => `${entry.characterId} ${entry.role}`);
+  return [
+    getNodeTypeLabel(node?.type),
+    getNodeDisplayTitle(node, "Untitled"),
+    displayBody(node),
+    ...parseChoiceLines(node?.choices),
+    ...customFields,
+    ...cast
+  ].filter((part) => String(part || "").trim() !== "");
+}
+
+function maxTextLineUnits(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .reduce((widest, line) => Math.max(widest, estimateTextUnits(line)), 0);
+}
+
+function estimateWrappedLineCount(value, width, unitPx) {
+  const text = String(value || "");
+  if (!text) return 0;
+  const unitsPerLine = Math.max(8, Math.floor(Math.max(80, width) / unitPx));
+  return text.split(/\r?\n/).reduce((count, line) => {
+    const units = Math.max(1, estimateTextUnits(line));
+    return count + Math.max(1, Math.ceil(units / unitsPerLine));
+  }, 0);
+}
+
+function estimateTextUnits(value) {
+  let units = 0;
+  for (const char of String(value || "")) {
+    if (char === "\t") {
+      units += 4;
+      continue;
+    }
+    const code = char.codePointAt(0);
+    units += code > 0xffff || isWideTextCodePoint(code) ? 1.75 : 1;
+  }
+  return units;
+}
+
+function isWideTextCodePoint(code) {
+  return (code >= 0x2e80 && code <= 0xa4cf)
+    || (code >= 0xac00 && code <= 0xd7a3)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0xff01 && code <= 0xff60);
 }
 
 function getNodeExportBody(node) {
