@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Narrative Canvas Performance Benchmark</title>
+    <style>
+      body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; background: #111; color: #eee; }
+      iframe { width: 1280px; height: 800px; border: 1px solid #555; }
+      #perf-report { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body data-perf-status="running">
+    <h1>Narrative Canvas Performance Benchmark</h1>
+    <pre id="perf-report">running</pre>
+    <script>
+      // Reports real wall-clock timings. MUST be run WITHOUT Chrome's
+      // --virtual-time-budget (that virtualizes performance.now() and would
+      // report ~0ms for synchronous work). The PowerShell driver collects
+      // results via an Image() beacon to a local HttpListener.
+
+      const params = new URLSearchParams(window.location.search);
+      const beaconPort = params.get("port") || "";
+      const sizes = (params.get("sizes") || "30,3000,30000")
+        .split(",").map((value) => Number.parseInt(value.trim(), 10)).filter((value) => value > 0);
+      const reps = Number.parseInt(params.get("reps") || "12", 10);
+      const skip = (params.get("skip") || "").split(",").map((s) => s.trim());
+
+      const report = { startedAt: new Date().toISOString(), reps, runs: [], error: null };
+
+      function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+      // Headless pages are "hidden", so requestAnimationFrame can be paused. Resolve
+      // on rAF if it fires, otherwise fall back to a timer so control flow never hangs.
+      function nextFrame() {
+        return new Promise((resolve) => {
+          let done = false;
+          const finish = () => { if (!done) { done = true; resolve(); } };
+          requestAnimationFrame(finish);
+          setTimeout(finish, 60);
+        });
+      }
+
+      async function waitFor(predicate, timeout = 30000) {
+        const started = performance.now();
+        while (performance.now() - started < timeout) {
+          if (predicate()) return true;
+          await wait(20);
+        }
+        return false;
+      }
+
+      function median(values) {
+        if (!values.length) return 0;
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      }
+      function round(value) { return Math.round(value * 100) / 100; }
+
+      function phase(name) {
+        if (!beaconPort) return;
+        try { const i = new Image(); i.src = `http://127.0.0.1:${beaconPort}/phase?data=${encodeURIComponent(name)}`; } catch (e) {}
+      }
+
+      const projectBaseUrl = new URL("../", window.location.href);
+      function assetUrl(path) { return new URL(path, projectBaseUrl).href; }
+
+      function extractBodyHtml(html) {
+        const match = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        const bodyHtml = match ? match[1] : html;
+        return bodyHtml
+          .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+          .replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, "");
+      }
+
+      function scopeCanvasCss(source) {
+        const keyframes = [];
+        let css = source
+          .replace(/:root/g, ".narrative-canvas-plugin-host")
+          .replace(/(^|})\s*html\s*,\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {")
+          .replace(/(^|})\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {");
+        css = css.replace(/@keyframes\s+[-_a-zA-Z0-9]+\s*{(?:[^{}]|{[^{}]*})*}/g, (match) => {
+          const token = `__NARRATIVE_CANVAS_KEYFRAMES_${keyframes.length}__`;
+          keyframes.push(match);
+          return token;
+        });
+        css = css.replace(/(^|[{}])\s*([^@{}][^{]+)\s*{/g, (match, boundary, selectorText) => {
+          const selectors = selectorText.split(",").map((s) => s.trim()).filter(Boolean)
+            .map((s) => s.startsWith(".narrative-canvas-plugin-host") ? s : `.narrative-canvas-plugin-host ${s}`);
+          return `${boundary}\n${selectors.join(", ")} {`;
+        });
+        return css.replace(/__NARRATIVE_CANVAS_KEYFRAMES_(\d+)__/g, (_m, index) => keyframes[Number(index)] || "");
+      }
+
+      // Build a saved-state payload with N nodes laid out in a grid plus a chain
+      // of links and some cross links, so the graph resembles a large real project.
+      function generateProject(n) {
+        const types = ["Content", "Dialog", "Choice", "Condition", "Set", "Jump", "Marker"];
+        const columns = Math.max(1, Math.round(Math.sqrt(n)));
+        const spacingX = 320;
+        const spacingY = 200;
+        const nodes = [];
+        const links = [];
+        for (let index = 0; index < n; index += 1) {
+          const type = index === 0 ? "Entry" : types[index % types.length];
+          const col = index % columns;
+          const row = Math.floor(index / columns);
+          nodes.push({
+            id: `n${index}`,
+            type,
+            title: `Node ${index}`,
+            body: `Body text for node ${index}. Some narrative content to give the node realistic size.`,
+            x: 120 + col * spacingX,
+            y: 120 + row * spacingY,
+            ...(type === "Choice" ? { choices: ["Continue", "Turn back"] } : {}),
+            ...(type === "Set" ? { variable: "flag", value: "true" } : {}),
+            ...(type === "Condition" ? { condition: "flag == true" } : {})
+          });
+          // Bound the longest directed path to ~O(sqrt(n)) so a branching graph is
+          // exercised without a single deep chain (which would overflow the recursive
+          // flow-order DFS). Chain within each row, plus a vertical spine between rows.
+          if (col < columns - 1 && index + 1 < n) links.push({ id: `l${links.length}`, from: `n${index}`, to: `n${index + 1}` });
+          if (col === 0 && index + columns < n) links.push({ id: `l${links.length}`, from: `n${index}`, to: `n${index + columns}` });
+          if (col > 1 && index % 4 === 0) links.push({ id: `l${links.length}`, from: `n${index - 2}`, to: `n${index}` });
+        }
+        return {
+          version: 1,
+          savedAt: new Date().toISOString(),
+          project: { title: `Perf ${n}`, notes: "", variables: {}, nodes, links },
+          ui: { activeFileId: "adventure", theme: "dark" }
+        };
+      }
+
+      async function loadPluginFrame(savedState) {
+        const [html, css, appJs] = await Promise.all([
+          fetch(assetUrl("index.html")).then((r) => r.text()),
+          fetch(assetUrl("canvas.css")).then((r) => r.text()),
+          fetch(assetUrl("app.js")).then((r) => r.text())
+        ]);
+        const frame = document.createElement("iframe");
+        frame.title = "perf target";
+        document.body.append(frame);
+        const doc = frame.contentDocument;
+        const win = frame.contentWindow;
+        doc.open();
+        doc.write("<!doctype html><html><head><meta charset=\"utf-8\"><title>Perf Host</title></head><body></body></html>");
+        doc.close();
+
+        const style = doc.createElement("style");
+        style.textContent = scopeCanvasCss(css);
+        doc.head.append(style);
+
+        const host = doc.createElement("div");
+        host.className = "narrative-canvas-plugin-host";
+        host.innerHTML = extractBodyHtml(html);
+        doc.body.append(host);
+
+        win.NarrativeCanvasHost = {
+          root: host,
+          loadProject: async () => savedState,
+          saveProject: async () => "Perf.ncanvas",
+          getAutoSaveIntervalMs: () => 1000000,
+          ensureProjectFile: async () => "Perf.ncanvas",
+          createProjectFile: async () => "Perf.ncanvas",
+          previewNewProjectFile: async () => "Perf.ncanvas",
+          getProjectFile: () => "Perf.ncanvas"
+        };
+
+        const script = doc.createElement("script");
+        script.textContent = appJs;
+        doc.body.append(script);
+        return { frame, win, doc };
+      }
+
+      function makePointer(win, type, target, clientX, clientY, extra = {}) {
+        return target.dispatchEvent(new win.PointerEvent(type, {
+          bubbles: true, cancelable: true, composed: true, view: win,
+          pointerId: 7, pointerType: "mouse", isPrimary: true,
+          button: 0, buttons: type === "pointerup" ? 0 : 1,
+          clientX, clientY, ...extra
+        }));
+      }
+
+      async function benchSize(n) {
+        const savedState = generateProject(n);
+        const linkCount = savedState.project.links.length;
+
+        // Open cost: time only the synchronous load + renderAll inside init().
+        // init() awaits host promises (microtasks, not throttled timers), so this
+        // captures real CPU without depending on rAF/setTimeout in a hidden page.
+        phase(`${n}:loadFrame`);
+        const target = await loadPluginFrame(savedState);
+        const { win, doc } = target;
+        phase(`${n}:init`);
+        const openStart = performance.now();
+        await win.NarrativeCanvasApp.init();
+        const openMs = performance.now() - openStart;
+        phase(`${n}:openDone`);
+        const viewport = doc.querySelector("#viewport") || doc.querySelector(".canvas-viewport");
+        if (!doc.querySelector(".narrative-canvas-plugin-host .node[data-node-id]")) {
+          throw new Error(`size ${n}: nodes never rendered`);
+        }
+        const visibleNodes = doc.querySelectorAll(".node[data-node-id]").length;
+
+        // Headless performance.now() is clamped (~1ms), so amortize each op over K reps.
+        const K = Math.max(4, reps);
+
+        // ---- Drag bench: pointermove must be dispatched ON the viewport (a descendant
+        // of which received pointerdown); dispatching on an ancestor would not reach it. ----
+        let dragAvgMs = 0;
+        let dragMaxMs = 0;
+        let commitMs = 0;
+        phase(`${n}:dragStart`);
+        const handle = doc.querySelector(".node[data-node-id] .node-header[data-drag-handle]");
+        if (handle && viewport && !skip.includes("drag")) {
+          const rect = handle.getBoundingClientRect();
+          let cx = rect.left + rect.width / 2;
+          let cy = rect.top + rect.height / 2;
+          makePointer(win, "pointerdown", handle, cx, cy);
+          makePointer(win, "pointermove", viewport, cx + 1, cy + 1); // warmup
+          const dragStart = performance.now();
+          for (let i = 0; i < K; i += 1) {
+            cx += (i % 2 ? 2 : -2); cy += 1;
+            const t0 = performance.now();
+            makePointer(win, "pointermove", viewport, cx, cy);
+            dragMaxMs = Math.max(dragMaxMs, performance.now() - t0);
+          }
+          dragAvgMs = (performance.now() - dragStart) / K;
+          const commitStart = performance.now();
+          makePointer(win, "pointerup", viewport, cx, cy);
+          commitMs = performance.now() - commitStart;
+        }
+
+        phase(`${n}:inputStart`);
+        // ---- Input bench: edit the selected node's field, time K synchronous renders ----
+        // Ensure a node is selected (selection normally happens via the drag bench;
+        // select explicitly so input can be measured independently of drag).
+        if (!doc.querySelector("[data-node-field]")) {
+          const nodeEl = doc.querySelector(".node[data-node-id]");
+          if (nodeEl) nodeEl.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true, view: win }));
+        }
+        let inputAvgMs = 0;
+        const field = doc.querySelector("[data-node-field='body'], [data-node-field='title'], [data-node-field]");
+        if (field && !skip.includes("input")) {
+          field.focus();
+          const inputSamples = [];
+          // Yield + beacon per iteration so a slow setNodeField is visible (and a
+          // hang reveals how many iterations completed).
+          for (let i = 0; i < K; i += 1) {
+            field.value = `edited ${i} ${Math.random().toString(36).slice(2, 8)}`;
+            const t0 = performance.now();
+            field.dispatchEvent(new win.Event("input", { bubbles: true }));
+            const dt = performance.now() - t0;
+            if (i > 0) inputSamples.push(dt);
+            phase(`${n}:input${i}=${round(dt)}`);
+            await wait(0);
+          }
+          inputAvgMs = median(inputSamples);
+        }
+        phase(`${n}:sizeDone`);
+
+        target.frame.remove();
+
+        return {
+          n,
+          links: linkCount,
+          visibleNodes,
+          openMs: round(openMs),
+          dragAvgMs: round(dragAvgMs),
+          dragMaxMs: round(dragMaxMs),
+          inputAvgMs: round(inputAvgMs),
+          commitMs: round(commitMs)
+        };
+      }
+
+      function sendBeacon() {
+        report.finishedAt = new Date().toISOString();
+        report.status = report.error ? "fail" : "pass";
+        document.body.setAttribute("data-perf-status", report.error ? "fail" : "done");
+        document.querySelector("#perf-report").textContent = JSON.stringify(report, null, 2);
+        if (beaconPort) {
+          try {
+            const url = `http://127.0.0.1:${beaconPort}/done?data=${encodeURIComponent(JSON.stringify(report))}`;
+            const img = new Image();
+            img.src = url;
+          } catch (error) { /* ignore */ }
+        }
+      }
+
+      async function run() {
+        try {
+          for (const n of sizes) {
+            const result = await benchSize(n);
+            report.runs.push(result);
+            document.querySelector("#perf-report").textContent = JSON.stringify(report, null, 2);
+          }
+        } catch (error) {
+          report.error = error && error.stack ? error.stack : String(error);
+        } finally {
+          sendBeacon();
+        }
+      }
+
+      window.addEventListener("load", run, { once: true });
+    </script>
+  </body>
+</html>

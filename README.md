@@ -1,4 +1,9 @@
 # Narrative Canvas
+
+Latest release notes: [1.0.4](https://github.com/ringeringeraja33/NarrativeCanvas/releases/tag/1.0.4)
+
+当前最新版本 Release note：[1.0.4](https://github.com/ringeringeraja33/NarrativeCanvas/releases/tag/1.0.4)
+
 ## English
 
 Narrative Canvas is a visual writing and planning workspace for complex stories. It helps you break a narrative into scenes, choices, conditions, variables, event frames, and character references, then connect them into a playable flow.

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "savedAt": "2026-06-04T00:00:00.000Z",
+  "project": {
+    "title": "Legacy No UI Sidebar",
+    "notes": "Old save package without sidebar UI state.",
+    "variables": {
+      "route": "north"
+    },
+    "nodes": [
+      {
+        "id": "n0",
+        "type": "Entry",
+        "title": "Start",
+        "body": "Begin here.",
+        "x": 120,
+        "y": 120
+      },
+      {
+        "id": "n1",
+        "type": "Scene",
+        "title": "Old Scene",
+        "body": "Scene from a legacy project.",
+        "x": 420,
+        "y": 120
+      }
+    ],
+    "links": [
+      {
+        "id": "l0",
+        "from": "n0",
+        "to": "n1"
+      }
+    ]
+  },
+  "ui": {
+    "selectedNodeId": "n0",
+    "panel": "project",
+    "activeFileId": "adventure",
+    "theme": "dark",
+    "view": {
+      "x": 0,
+      "y": 0,
+      "scale": 0.86
+    }
+  }
+}

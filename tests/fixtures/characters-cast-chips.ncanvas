@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "savedAt": "2026-06-04T00:00:00.000Z",
+  "project": {
+    "title": "Characters Cast Chips",
+    "notes": "Characters page and cast chips should survive roundtrip.",
+    "characters": [
+      {
+        "id": "c0",
+        "name": "Mara",
+        "role": "Lead",
+        "voice": "Precise",
+        "notes": "Keeps the route ledger."
+      },
+      {
+        "id": "c1",
+        "name": "Ivo",
+        "role": "Guide",
+        "voice": "Dry",
+        "notes": "Knows the tunnels."
+      }
+    ],
+    "nodes": [
+      {
+        "id": "n0",
+        "type": "Entry",
+        "title": "Start",
+        "body": "Begin here.",
+        "x": 80,
+        "y": 80
+      },
+      {
+        "id": "n1",
+        "type": "Dialog",
+        "title": "Mara",
+        "body": "The ledger is missing.",
+        "x": 360,
+        "y": 120,
+        "cast": [
+          {
+            "characterId": "c0",
+            "role": "Speaker"
+          },
+          {
+            "characterId": "c1",
+            "role": "Present"
+          }
+        ]
+      }
+    ],
+    "links": [
+      {
+        "id": "l0",
+        "from": "n0",
+        "to": "n1"
+      }
+    ]
+  },
+  "ui": {
+    "activeFileId": "characters",
+    "characterSearch": "Mara"
+  }
+}

@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Narrative Canvas Fixture Roundtrip</title>
+    <style>
+      body {
+        margin: 0;
+        background: #101418;
+        color: #e6edf3;
+        font-family: system-ui, sans-serif;
+      }
+
+      iframe {
+        width: 1280px;
+        height: 900px;
+        border: 0;
+      }
+
+      #fixture-report {
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body data-fixture-status="running">
+    <pre id="fixture-report">Running fixture roundtrip...</pre>
+    <script>
+      const fixtures = [
+        {
+          name: "legacy-no-ui-sidebar",
+          file: "fixtures/legacy-no-ui-sidebar.ncanvas",
+          checks(doc, saved, downloads) {
+            assert("legacy: sidebar defaults saved", saved.ui.sidebar && saved.ui.sidebar.leftWidth > 0 && saved.ui.sidebar.rightWidth > 0);
+            assert("legacy: project nodes preserved", saved.project.nodes.length === 2);
+            assert("legacy: current file card rendered", Boolean(doc.querySelector("#projectFileName")));
+            assert("legacy: project export downloaded", downloads.some((item) => item.filename === "legacy-no-ui-sidebar.json"));
+          },
+          exports: ["export-json"]
+        },
+        {
+          name: "legacy-events-columns",
+          file: "fixtures/legacy-events-columns.ncanvas",
+          checks(doc, saved, downloads) {
+            const eventSheet = saved.project.eventSheet;
+            assert("events: hidden columns migrated", eventSheet.hiddenColumns.includes("notes"));
+            assert("events: event row visible", doc.body.textContent.includes("Boarding"));
+            assert("events: filter state visible", doc.querySelector("[data-event-filter-bar]")?.textContent.includes("boarding"));
+            assert("events: csv export downloaded", downloads.some((item) => item.filename.endsWith("-events.csv")));
+            assert("events: json export downloaded", downloads.some((item) => item.filename.endsWith("-events.json")));
+          },
+          exports: ["export-event-sheet", "export-event-sheet-json"]
+        },
+        {
+          name: "custom-node-types",
+          file: "fixtures/custom-node-types.ncanvas",
+          checks(doc, saved, downloads) {
+            const clueType = saved.project.nodeTypes.find((type) => type.type === "Clue");
+            const clueNode = saved.project.nodes.find((node) => node.type === "Clue");
+            assert("custom: legacy customNodeTypes migrated", Boolean(clueType));
+            assert("custom: custom fields preserved", clueNode?.customFields?.evidence === "Moonlit edge");
+            assert("custom: full json export downloaded", downloads.some((item) => item.filename === "custom-node-types.json"));
+          },
+          exports: ["export-json"]
+        },
+        {
+          name: "characters-cast-chips",
+          file: "fixtures/characters-cast-chips.ncanvas",
+          checks(doc, saved, downloads) {
+            const dialog = saved.project.nodes.find((node) => node.id === "n1");
+            assert("characters: cast entries preserved", Array.isArray(dialog?.cast) && dialog.cast.length === 2);
+            assert("characters: search restored", doc.querySelector("[data-character-search]")?.value === "Mara");
+            assert("characters: backlink rendered", doc.body.textContent.includes("Dialog"));
+            assert("characters: md export downloaded", downloads.some((item) => item.filename === "Characters.md"));
+            assert("characters: json export downloaded", downloads.some((item) => item.filename === "Characters.json"));
+          },
+          exports: ["export-characters-md", "export-characters-json"]
+        }
+      ];
+
+      const report = {
+        status: "running",
+        tests: [],
+        failures: []
+      };
+
+      function record(name, status, detail = "") {
+        report.tests.push({ name, status, detail });
+        if (status === "fail") report.failures.push(`${name}${detail ? `: ${detail}` : ""}`);
+        renderReport();
+      }
+
+      function assert(name, condition, detail = "") {
+        if (!condition) throw new Error(`${name}${detail ? `: ${detail}` : ""}`);
+        record(name, "pass");
+      }
+
+      function renderReport() {
+        const node = document.querySelector("#fixture-report");
+        node.textContent = JSON.stringify(report, null, 2);
+      }
+
+      async function waitFor(name, predicate, timeout = 5000) {
+        const started = performance.now();
+        while (performance.now() - started < timeout) {
+          if (predicate()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        throw new Error(`${name} timed out`);
+      }
+
+      function assetUrl(path) {
+        return new URL(`../${path}`, window.location.href).href;
+      }
+
+      async function loadAssets() {
+        const [html, css, appJs] = await Promise.all([
+          fetch(assetUrl("index.html")).then((response) => response.text()),
+          fetch(assetUrl("canvas.css")).then((response) => response.text()),
+          fetch(assetUrl("app.js")).then((response) => response.text())
+        ]);
+        return { html, css, appJs };
+      }
+
+      function extractBodyHtml(html) {
+        const match = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        return match ? match[1].replace(/<script[\s\S]*?<\/script>/gi, "") : html;
+      }
+
+      function scopeCss(css) {
+        return css
+          .replace(/:root/g, ".narrative-canvas-plugin-host")
+          .replace(/(^|})\s*html\s*,\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {")
+          .replace(/(^|})\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {");
+      }
+
+      async function loadFixtureFrame(fixture, assets) {
+        const fixtureText = await fetch(new URL(fixture.file, window.location.href)).then((response) => response.text());
+        const frame = document.createElement("iframe");
+        document.body.append(frame);
+        const doc = frame.contentDocument;
+        const win = frame.contentWindow;
+        doc.open();
+        doc.write("<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>");
+        doc.close();
+
+        const style = doc.createElement("style");
+        style.textContent = scopeCss(assets.css);
+        doc.head.append(style);
+
+        const host = doc.createElement("div");
+        host.className = "narrative-canvas-plugin-host";
+        host.innerHTML = extractBodyHtml(assets.html);
+        doc.body.append(host);
+
+        const downloads = [];
+        const originalCreateObjectURL = win.URL.createObjectURL.bind(win.URL);
+        const originalRevokeObjectURL = win.URL.revokeObjectURL.bind(win.URL);
+        const originalClick = win.HTMLAnchorElement.prototype.click;
+        win.URL.createObjectURL = (blob) => {
+          const url = `blob:fixture-${downloads.length + 1}`;
+          downloads.push({ blob, url, filename: "" });
+          return url;
+        };
+        win.URL.revokeObjectURL = () => {};
+        win.HTMLAnchorElement.prototype.click = function click() {
+          const item = downloads[downloads.length - 1];
+          if (item) item.filename = this.download || "";
+        };
+
+        let savedText = "";
+        const hostApi = {
+          pluginId: "fixture-test",
+          root: host,
+          loadProject: async () => savedText || fixtureText,
+          saveProject: async (text) => {
+            savedText = text;
+            return fixture.file;
+          },
+          ensureProjectFile: async () => "",
+          createProjectFile: async (text) => {
+            savedText = text;
+            return "fixtures/new-project.ncanvas";
+          },
+          previewNewProjectFile: async () => "fixtures/Untitled.ncanvas",
+          chooseProjectFile: async () => fixture.file,
+          getProjectFile: () => fixture.file
+        };
+        win.NarrativeCanvasHost = hostApi;
+
+        const script = doc.createElement("script");
+        script.textContent = assets.appJs;
+        doc.body.append(script);
+        await win.NarrativeCanvasApp.init();
+        await waitFor(`${fixture.name}: ready`, () => Boolean(doc.querySelector(".app-shell[data-theme]")));
+        await win.NarrativeCanvasApp.save();
+        const saved = JSON.parse(savedText);
+        await win.NarrativeCanvasApp.loadVaultProject();
+        await win.NarrativeCanvasApp.save();
+
+        for (const action of fixture.exports) {
+          const button = doc.querySelector(`[data-action="${action}"]`);
+          assert(`${fixture.name}: ${action} button exists`, Boolean(button));
+          button.click();
+        }
+
+        fixture.checks(doc, JSON.parse(savedText), downloads);
+
+        win.URL.createObjectURL = originalCreateObjectURL;
+        win.URL.revokeObjectURL = originalRevokeObjectURL;
+        win.HTMLAnchorElement.prototype.click = originalClick;
+        frame.remove();
+        return saved;
+      }
+
+      async function run() {
+        renderReport();
+        try {
+          const assets = await loadAssets();
+          for (const fixture of fixtures) {
+            await loadFixtureFrame(fixture, assets);
+            record(`${fixture.name}: roundtrip complete`, "pass");
+          }
+          report.status = report.failures.length ? "fail" : "pass";
+        } catch (error) {
+          report.status = "fail";
+          record("fixture runner", "fail", error.message || String(error));
+          console.error(error);
+        } finally {
+          document.body.setAttribute("data-fixture-status", report.status);
+          renderReport();
+        }
+      }
+
+      window.addEventListener("load", run, { once: true });
+    </script>
+  </body>
+</html>

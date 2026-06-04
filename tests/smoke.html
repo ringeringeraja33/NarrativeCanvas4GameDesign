@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Narrative Canvas Smoke Test</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        font-family: system-ui, sans-serif;
+        background: #111;
+        color: #eee;
+      }
+
+      iframe {
+        width: 1180px;
+        height: 760px;
+        border: 1px solid #555;
+      }
+
+      #smoke-report {
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body data-smoke-status="running">
+    <h1>Narrative Canvas Smoke Test</h1>
+    <pre id="smoke-report">running</pre>
+    <script>
+      const report = {
+        startedAt: new Date().toISOString(),
+        tests: [],
+        failures: []
+      };
+
+      function record(name, status, detail = "") {
+        report.tests.push({ name, status, detail });
+      }
+
+      function pass(name, detail = "") {
+        record(name, "pass", detail);
+      }
+
+      function fail(name, detail = "") {
+        record(name, "fail", detail);
+        report.failures.push({ name, detail });
+      }
+
+      function assert(name, condition, detail = "") {
+        if (condition) pass(name, detail);
+        else fail(name, detail);
+      }
+
+      function wait(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function waitFor(name, predicate, timeout = 4000) {
+        const started = performance.now();
+        while (performance.now() - started < timeout) {
+          if (predicate()) {
+            pass(name);
+            return true;
+          }
+          await wait(50);
+        }
+        fail(name, "Timed out");
+        return false;
+      }
+
+      function setControlValue(win, element, value) {
+        element.focus();
+        element.value = value;
+        element.dispatchEvent(new win.Event("input", { bubbles: true }));
+        element.dispatchEvent(new win.Event("change", { bubbles: true }));
+      }
+
+      function click(element) {
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: element.ownerDocument.defaultView }));
+      }
+
+      function isElementHidden(win, element) {
+        const style = win.getComputedStyle(element);
+        return element.hidden || style.display === "none" || style.visibility === "hidden";
+      }
+
+      function isTransparentColor(value) {
+        return value === "transparent" || value === "rgba(0, 0, 0, 0)";
+      }
+
+      function hasHiddenBorder(style, side) {
+        const prefix = `border${side}`;
+        return style[`${prefix}Width`] === "0px" || isTransparentColor(style[`${prefix}Color`]);
+      }
+
+      function hasCollapsedToggleRule(doc) {
+        try {
+          return [...doc.styleSheets].some((sheet) => [...sheet.cssRules]
+            .some((rule) => String(rule.cssText || "").includes("sidebar-toggle-button[aria-expanded=\"false\"]")));
+        } catch (error) {
+          return false;
+        }
+      }
+
+      function verticalCentersAligned(first, second, tolerance = 2) {
+        const firstRect = first.getBoundingClientRect();
+        const secondRect = second.getBoundingClientRect();
+        const firstCenter = firstRect.top + firstRect.height / 2;
+        const secondCenter = secondRect.top + secondRect.height / 2;
+        return Math.abs(firstCenter - secondCenter) <= tolerance;
+      }
+
+      function verticalCenterDetail(first, second) {
+        const firstRect = first.getBoundingClientRect();
+        const secondRect = second.getBoundingClientRect();
+        return `left=${(firstRect.top + firstRect.height / 2).toFixed(1)} right=${(secondRect.top + secondRect.height / 2).toFixed(1)}`;
+      }
+
+      function parseRgb(value) {
+        const match = String(value || "").match(/rgba?\(([^)]+)\)/i);
+        if (!match) return null;
+        const parts = match[1].split(/,\s*/).map((part) => Number.parseFloat(part));
+        if (parts.length < 3 || parts.some((part) => Number.isNaN(part))) return null;
+        return parts.slice(0, 3);
+      }
+
+      function relativeLuminance(rgb) {
+        return rgb
+          .map((channel) => {
+            const value = channel / 255;
+            return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+          })
+          .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+      }
+
+      function contrastRatio(colorA, colorB) {
+        const rgbA = parseRgb(colorA);
+        const rgbB = parseRgb(colorB);
+        if (!rgbA || !rgbB) return 0;
+        const light = Math.max(relativeLuminance(rgbA), relativeLuminance(rgbB));
+        const dark = Math.min(relativeLuminance(rgbA), relativeLuminance(rgbB));
+        return (light + 0.05) / (dark + 0.05);
+      }
+
+      function assertReadableLightThemeToggle(label, win, button, stateName) {
+        const style = win.getComputedStyle(button);
+        const contrast = contrastRatio(style.color, style.backgroundColor);
+        const background = parseRgb(style.backgroundColor) || [0, 0, 0];
+        const isLightBackground = Math.min(...background) >= 220;
+        assert(
+          `${label}: theme toggle ${stateName} state is readable on light background`,
+          contrast >= 4.5 && isLightBackground,
+          `contrast=${contrast.toFixed(2)} color=${style.color} bg=${style.backgroundColor}`
+        );
+      }
+
+      function extractBodyHtml(html) {
+        const match = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        const bodyHtml = match ? match[1] : html;
+        return bodyHtml
+          .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+          .replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, "");
+      }
+
+      const projectBaseUrl = new URL("../", window.location.href);
+
+      function assetUrl(path) {
+        return new URL(path, projectBaseUrl).href;
+      }
+
+      function scopeCanvasCss(source) {
+        const keyframes = [];
+        let css = source
+          .replace(/:root/g, ".narrative-canvas-plugin-host")
+          .replace(/(^|})\s*html\s*,\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {")
+          .replace(/(^|})\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {");
+
+        css = css.replace(/@keyframes\s+[-_a-zA-Z0-9]+\s*{(?:[^{}]|{[^{}]*})*}/g, (match) => {
+          const token = `__NARRATIVE_CANVAS_KEYFRAMES_${keyframes.length}__`;
+          keyframes.push(match);
+          return token;
+        });
+
+        css = css.replace(/(^|[{}])\s*([^@{}][^{]+)\s*{/g, (match, boundary, selectorText) => {
+          const selectors = selectorText
+            .split(",")
+            .map((selector) => selector.trim())
+            .filter(Boolean)
+            .map((selector) => selector.startsWith(".narrative-canvas-plugin-host")
+              ? selector
+              : `.narrative-canvas-plugin-host ${selector}`);
+
+          return `${boundary}\n${selectors.join(", ")} {`;
+        });
+
+        return css.replace(/__NARRATIVE_CANVAS_KEYFRAMES_(\d+)__/g, (_match, index) => keyframes[Number(index)] || "");
+      }
+
+      async function loadWebFrame() {
+        const frame = document.createElement("iframe");
+        frame.title = "web smoke target";
+        frame.src = `${assetUrl("index.html")}?smoke=${Date.now()}`;
+        document.body.append(frame);
+        await new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        const win = frame.contentWindow;
+        const doc = frame.contentDocument;
+        await waitFor("web app ready", () => Boolean(win.NarrativeCanvasApp && doc.querySelector(".app-shell[data-theme]")));
+        return { frame, win, doc };
+      }
+
+      async function loadPluginFrame() {
+        const [html, css, appJs] = await Promise.all([
+          fetch(assetUrl("index.html")).then((response) => response.text()),
+          fetch(assetUrl("canvas.css")).then((response) => response.text()),
+          fetch(assetUrl("app.js")).then((response) => response.text())
+        ]);
+        const frame = document.createElement("iframe");
+        frame.title = "plugin smoke target";
+        document.body.append(frame);
+        const doc = frame.contentDocument;
+        const win = frame.contentWindow;
+        doc.open();
+        doc.write("<!doctype html><html><head><meta charset=\"utf-8\"><title>Plugin Host Smoke</title></head><body></body></html>");
+        doc.close();
+
+        const style = doc.createElement("style");
+        style.textContent = scopeCanvasCss(css);
+        doc.head.append(style);
+
+        const host = doc.createElement("div");
+        host.className = "narrative-canvas-plugin-host";
+        host.innerHTML = extractBodyHtml(html);
+        doc.body.append(host);
+
+        let ensuredProjectPath = "";
+        let newProjectIndex = 0;
+        win.__sampleEnsureOptions = null;
+        win.__saveProjectCalls = [];
+        win.__createdProjectPaths = [];
+        win.NarrativeCanvasHost = {
+          root: host,
+          loadProject: async () => null,
+          saveProject: async (savedStateJson) => {
+            win.__saveProjectCalls.push(savedStateJson);
+            ensuredProjectPath = "Smoke.ncanvas";
+            return ensuredProjectPath;
+          },
+          getAutoSaveIntervalMs: () => 1000,
+          ensureProjectFile: async (_savedStateJson, options) => {
+            win.__sampleEnsureOptions = options || null;
+            ensuredProjectPath = options?.filenameOverride || "Sample-smoke.ncanvas";
+            return ensuredProjectPath;
+          },
+          createProjectFile: async () => {
+            newProjectIndex += 1;
+            ensuredProjectPath = `Untitled-smoke-${newProjectIndex}.ncanvas`;
+            win.__createdProjectPaths.push(ensuredProjectPath);
+            return ensuredProjectPath;
+          },
+          previewNewProjectFile: async () => `Untitled-smoke-${newProjectIndex + 1}.ncanvas`,
+          getProjectFile: () => ensuredProjectPath
+        };
+
+        const script = doc.createElement("script");
+        script.textContent = appJs;
+        doc.body.append(script);
+        await win.NarrativeCanvasApp.init();
+        await waitFor("plugin app ready", () => Boolean(doc.querySelector(".narrative-canvas-plugin-host .app-shell[data-theme]")));
+        return { frame, win, doc };
+      }
+
+      async function runCoreChecks(label, target) {
+        const { win, doc } = target;
+        const root = doc.querySelector(".app-shell");
+        assert(`${label}: app shell exists`, Boolean(root));
+        assert(`${label}: no startup error`, !doc.querySelector(".startup-error"));
+        assert(`${label}: export scale select exists`, Boolean(doc.querySelector("#exportImageScale")));
+        assert(`${label}: theme toggle exists`, Boolean(doc.querySelector("#themeToggle")));
+        assert(`${label}: project file status exists`, Boolean(doc.querySelector("#projectFileName")));
+        if (win.__sampleEnsureOptions) {
+          assert(`${label}: sample project filename is Sample`, win.__sampleEnsureOptions.filenameOverride === "Sample.ncanvas");
+        }
+        const toolbar = doc.querySelector("#workspaceToolbar");
+        assert(`${label}: canvas toolbar exists`, Boolean(toolbar));
+        assert(`${label}: canvas toolbar starts visible`, !isElementHidden(win, toolbar));
+        assert(`${label}: image export controls are grouped`, Boolean(doc.querySelector(".export-image-controls .export-image-button + .export-image-scale-label")));
+
+        const themeButton = doc.querySelector("#themeToggle");
+        const themeMarker = win.getComputedStyle(themeButton, "::before");
+        assert(`${label}: theme toggle has no marker`, themeMarker.content === "none" || themeMarker.display === "none");
+        assertReadableLightThemeToggle(label, win, themeButton, "initial");
+        const beforeTheme = root.getAttribute("data-theme");
+        click(themeButton);
+        await wait(80);
+        assert(`${label}: theme toggles`, root.getAttribute("data-theme") !== beforeTheme);
+        assertReadableLightThemeToggle(label, win, themeButton, "toggled");
+
+        const scale = doc.querySelector("#exportImageScale");
+        setControlValue(win, scale, "2");
+        assert(`${label}: export scale can change`, scale.value === "2");
+
+        click(doc.querySelector("[data-file-id='characters']"));
+        await waitFor(`${label}: characters opens`, () => Boolean(doc.querySelector("[data-character-search]")));
+        assert(`${label}: canvas toolbar hides on characters`, isElementHidden(win, toolbar));
+        const characterCard = doc.querySelector(".character-card");
+        assert(`${label}: character cards do not overflow`, characterCard && characterCard.scrollWidth <= characterCard.clientWidth + 1, `scroll=${characterCard?.scrollWidth} client=${characterCard?.clientWidth}`);
+        const characterSearch = doc.querySelector("[data-character-search]");
+        setControlValue(win, characterSearch, "mara");
+        assert(`${label}: characters search accepts input`, characterSearch.value === "mara");
+        assert(`${label}: character filter bar updates`, doc.querySelector("[data-character-filter-bar]")?.textContent.toLowerCase().includes("mara"));
+
+        click(doc.querySelector("[data-file-id='events']"));
+        await waitFor(`${label}: events opens`, () => Boolean(doc.querySelector("[data-event-search]")));
+        assert(`${label}: canvas toolbar hides on events`, isElementHidden(win, toolbar));
+        assert(`${label}: sample event sheet shows custom columns`, doc.body.textContent.includes("Location") && doc.body.textContent.includes("Clue Status"));
+        assert(`${label}: sample event sheet uses custom story event class`, doc.body.textContent.includes("Story Sequence"));
+        assert(`${label}: sample event sheet shows hidden-column restore`, doc.body.textContent.includes("Status"));
+        const eventSearch = doc.querySelector("[data-event-search]");
+        setControlValue(win, eventSearch, "boarding");
+        assert(`${label}: events search accepts input`, eventSearch.value === "boarding");
+        assert(`${label}: event filter bar updates`, doc.querySelector("[data-event-filter-bar]")?.textContent.toLowerCase().includes("boarding"));
+
+        click(doc.querySelector("[data-file-id='variables']"));
+        await waitFor(`${label}: playbook opens`, () => Boolean(doc.querySelector("[data-variable-field='type']")));
+        assert(`${label}: canvas toolbar hides on playbook`, isElementHidden(win, toolbar));
+        const variableTypes = [...doc.querySelectorAll("[data-variable-field='type']")].map((select) => select.value);
+        ["string", "number", "boolean", "json"].forEach((type) => {
+          assert(`${label}: sample includes ${type} variable`, variableTypes.includes(type));
+        });
+        const variableSelect = doc.querySelector("[data-variable-field='type']");
+        variableSelect.focus();
+        assert(`${label}: select can focus`, doc.activeElement === variableSelect);
+
+        click(doc.querySelector("[data-file-id='adventure']"));
+        await waitFor(`${label}: canvas opens`, () => Boolean(doc.querySelector(".node[data-node-id]")));
+        assert(`${label}: canvas toolbar returns on canvas`, !isElementHidden(win, toolbar));
+        const queryInput = doc.querySelector("#queryInput");
+        setControlValue(win, queryInput, "boarding");
+        assert(`${label}: global search accepts input`, queryInput.value === "boarding");
+
+        const leftToggle = doc.querySelector("[data-sidebar-toggle='left']");
+        click(leftToggle);
+        await wait(80);
+        assert(`${label}: left sidebar collapses`, root.getAttribute("data-sidebar-left") === "collapsed");
+        const collapsedLeftToggleStyle = win.getComputedStyle(leftToggle);
+        assert(
+          `${label}: collapsed left toggle border is hidden`,
+          hasHiddenBorder(collapsedLeftToggleStyle, "Left"),
+          `${collapsedLeftToggleStyle.borderLeftWidth} ${collapsedLeftToggleStyle.borderLeftColor}; aria=${leftToggle.getAttribute("aria-expanded")}; matches=${leftToggle.matches(".sidebar-toggle-button[aria-expanded='false']")}; rule=${hasCollapsedToggleRule(doc)}`
+        );
+
+        const rightToggle = doc.querySelector("[data-sidebar-toggle='right']");
+        click(rightToggle);
+        await wait(80);
+        assert(`${label}: right sidebar collapses`, root.getAttribute("data-sidebar-right") === "collapsed");
+        const collapsedRightToggleStyle = win.getComputedStyle(rightToggle);
+        assert(
+          `${label}: collapsed right toggle border is hidden`,
+          hasHiddenBorder(collapsedRightToggleStyle, "Right"),
+          `${collapsedRightToggleStyle.borderRightWidth} ${collapsedRightToggleStyle.borderRightColor}; aria=${rightToggle.getAttribute("aria-expanded")}; matches=${rightToggle.matches(".sidebar-toggle-button[aria-expanded='false']")}; rule=${hasCollapsedToggleRule(doc)}`
+        );
+        assert(
+          `${label}: collapsed sidebar toggles align vertically`,
+          verticalCentersAligned(leftToggle, rightToggle),
+          verticalCenterDetail(leftToggle, rightToggle)
+        );
+        click(leftToggle);
+        await wait(80);
+        assert(`${label}: left sidebar expands`, root.getAttribute("data-sidebar-left") === "expanded");
+        click(rightToggle);
+        await wait(80);
+        assert(`${label}: right sidebar expands`, root.getAttribute("data-sidebar-right") === "expanded");
+
+        const resizer = doc.querySelector("[data-sidebar-resizer='left']");
+        const beforeWidth = Number.parseFloat(getComputedStyle(root).getPropertyValue("--sidebar-left-width"));
+        resizer.dispatchEvent(new win.PointerEvent("pointerdown", { bubbles: true, pointerId: 31, clientX: beforeWidth, clientY: 40 }));
+        win.dispatchEvent(new win.PointerEvent("pointermove", { bubbles: true, pointerId: 31, clientX: beforeWidth + 36, clientY: 40 }));
+        win.dispatchEvent(new win.PointerEvent("pointerup", { bubbles: true, pointerId: 31, clientX: beforeWidth + 36, clientY: 40 }));
+        await wait(100);
+        const afterWidth = Number.parseFloat(getComputedStyle(root).getPropertyValue("--sidebar-left-width"));
+        assert(`${label}: left sidebar resizes`, afterWidth > beforeWidth);
+
+        const node = doc.querySelector(".node[data-node-id]");
+        node.dispatchEvent(new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 200, clientY: 160, view: win }));
+        await wait(80);
+        const menu = doc.querySelector("#nodeContextMenu");
+        assert(`${label}: context menu opens`, menu && !menu.hidden);
+        const menuAction = menu.querySelector("[data-layer-action]");
+        click(menuAction);
+        await wait(80);
+        assert(`${label}: context menu closes after action`, menu.hidden);
+
+        const status = doc.querySelector(".status-bar").getBoundingClientRect();
+        const workspace = doc.querySelector(".canvas-workspace").getBoundingClientRect();
+        const search = doc.querySelector(".canvas-search-box").getBoundingClientRect();
+        assert(`${label}: status bar stays inside workspace`, status.left >= workspace.left - 1 && status.right <= workspace.right + 1);
+        assert(`${label}: bottom search starts in workspace`, search.left >= workspace.left - 1);
+
+        if (win.__saveProjectCalls) {
+          const beforeAutoSaveCalls = win.__saveProjectCalls.length;
+          const projectTitleInput = doc.querySelector("[data-project-field='title']");
+          setControlValue(win, projectTitleInput, `${projectTitleInput.value} Autosave`);
+          assert(`${label}: save state changes to unsaved after edit`, doc.querySelector("#projectDirtyIndicator")?.dataset.saveState === "unsaved");
+          await waitFor(`${label}: auto-save writes project`, () => win.__saveProjectCalls.length > beforeAutoSaveCalls, 3500);
+          await waitFor(`${label}: auto-save returns to saved state`, () => doc.querySelector("#projectDirtyIndicator")?.dataset.saveState === "saved", 1000);
+        }
+
+        if (win.__createdProjectPaths) {
+          const newButton = doc.querySelector("[data-action='new-project']");
+          click(newButton);
+          await waitFor(`${label}: new project dialog opens`, () => doc.querySelector("#confirmDialog")?.open);
+          click(doc.querySelector("#confirmDialog [value='confirm']"));
+          await waitFor(`${label}: new project vault file created`, () => win.__createdProjectPaths.length > 0);
+          const createdPath = win.__createdProjectPaths[0];
+          await waitFor(`${label}: project file card switches to new file`, () => doc.querySelector("#projectFileName")?.textContent === createdPath);
+          assert(`${label}: new project title is blank project`, doc.querySelector("#vaultProjectTitle")?.textContent === "Untitled");
+          assert(`${label}: new project save state is saved after file creation`, doc.querySelector("#projectDirtyIndicator")?.dataset.saveState === "saved");
+        }
+      }
+
+      async function run() {
+        try {
+          const web = await loadWebFrame();
+          await runCoreChecks("web", web);
+
+          const plugin = await loadPluginFrame();
+          await runCoreChecks("plugin", plugin);
+        } catch (error) {
+          fail("smoke runner crashed", error && error.stack ? error.stack : String(error));
+        } finally {
+          report.finishedAt = new Date().toISOString();
+          report.status = report.failures.length ? "fail" : "pass";
+          document.body.setAttribute("data-smoke-status", report.status);
+          document.querySelector("#smoke-report").textContent = JSON.stringify(report, null, 2);
+        }
+      }
+
+      window.addEventListener("load", run, { once: true });
+    </script>
+  </body>
+</html>

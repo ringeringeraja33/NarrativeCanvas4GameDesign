@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "savedAt": "2026-06-04T00:00:00.000Z",
+  "project": {
+    "title": "Custom Node Types",
+    "notes": "Legacy customNodeTypes should migrate into nodeTypes.",
+    "customNodeTypes": [
+      {
+        "type": "Clue",
+        "label": "Clue",
+        "kind": "node",
+        "color": "#d99a3d",
+        "fields": [
+          {
+            "key": "evidence",
+            "label": "Evidence"
+          },
+          {
+            "key": "owner",
+            "label": "Owner"
+          }
+        ]
+      }
+    ],
+    "nodes": [
+      {
+        "id": "n0",
+        "type": "Entry",
+        "title": "Start",
+        "body": "Begin here.",
+        "x": 80,
+        "y": 80
+      },
+      {
+        "id": "n1",
+        "type": "Clue",
+        "title": "Glass Key",
+        "body": "A brittle key catches moonlight.",
+        "x": 360,
+        "y": 100,
+        "customFields": {
+          "evidence": "Moonlit edge",
+          "owner": "Archivist"
+        }
+      }
+    ],
+    "links": [
+      {
+        "id": "l0",
+        "from": "n0",
+        "to": "n1"
+      }
+    ]
+  },
+  "ui": {
+    "activeFileId": "adventure"
+  }
+}

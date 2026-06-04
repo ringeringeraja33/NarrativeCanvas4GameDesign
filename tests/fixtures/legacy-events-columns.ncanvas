@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "savedAt": "2026-06-04T00:00:00.000Z",
+  "project": {
+    "title": "Legacy Events Columns",
+    "notes": "Old Events Sheet config with legacy default columns.",
+    "eventSheetHiddenColumns": [
+      "notes"
+    ],
+    "eventSheet": {
+      "columns": [
+        {
+          "key": "summary",
+          "label": "Summary"
+        },
+        {
+          "key": "location",
+          "label": "Location"
+        },
+        {
+          "key": "characters",
+          "label": "Characters"
+        },
+        {
+          "key": "notes",
+          "label": "Notes"
+        }
+      ]
+    },
+    "nodes": [
+      {
+        "id": "n0",
+        "type": "Entry",
+        "title": "Start",
+        "body": "Begin here.",
+        "x": 80,
+        "y": 80
+      },
+      {
+        "id": "n1",
+        "type": "Event",
+        "title": "Boarding",
+        "body": "Board the dusk train.",
+        "x": 360,
+        "y": 90,
+        "summary": "Board the train",
+        "location": "Station",
+        "characters": "Mara",
+        "customFields": {
+          "notes": "Legacy note"
+        }
+      }
+    ],
+    "links": [
+      {
+        "id": "l0",
+        "from": "n0",
+        "to": "n1"
+      }
+    ]
+  },
+  "ui": {
+    "activeFileId": "events",
+    "eventSearch": "boarding"
+  }
+}

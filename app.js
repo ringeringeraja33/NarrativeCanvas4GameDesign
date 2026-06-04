@@ -17,6 +17,10 @@ const NODE_TYPE_ICON_MAX_UNITS = 3;
 const SAVED_STATE_VERSION = 1;
 const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
 const PLAYBOOK_FILE_NAME = "Playbook.json";
+const SAMPLE_PROJECT_FILENAME = "Sample.ncanvas";
+const FALLBACK_AUTO_SAVE_INTERVAL_MS = 2000;
+const MIN_AUTO_SAVE_INTERVAL_MS = 1000;
+const MAX_AUTO_SAVE_INTERVAL_MS = 60 * 60 * 1000;
 const SIDEBAR_RESIZER_WIDTH = 6;
 const SIDEBAR_COLLAPSED_WIDTH = 36;
 const SIDEBAR_MIN_WORKSPACE_WIDTH = 420;
@@ -25,6 +29,12 @@ const SIDEBAR_CONFIG = {
   right: { defaultWidth: 340, minWidth: 300, maxWidth: 560 }
 };
 const SIDEBAR_SIDES = new Set(Object.keys(SIDEBAR_CONFIG));
+const EXPORT_IMAGE_SCALES = [
+  { value: "1", scale: 1, label: "1x", suffix: "" },
+  { value: "2", scale: 2, label: "2x", suffix: "@2x" },
+  { value: "3", scale: 3, label: "3x", suffix: "@3x" },
+  { value: "4", scale: 4, label: "4x", suffix: "@4x" }
+];
 const EVENT_ELEMENTS_COLUMN_KEY = "eventElements";
 const STORY_ROW_GAP = 132;
 const STORY_FRAME_PADDING = 32;
@@ -45,6 +55,19 @@ const CAST_RELATION_LABELS = {
   Target: "Target",
   Owner: "Owner"
 };
+const CHARACTER_BACKLINK_GROUP_DEFS = [
+  { id: "Speaker", label: "Speaker scenes" },
+  { id: "Present", label: "Present scenes" },
+  { id: "Mentioned", label: "Mentioned in" },
+  { id: "POV", label: "POV scenes" },
+  { id: "Target", label: "Target scenes" },
+  { id: "Owner", label: "Owned nodes" },
+  { id: "EventFrames", label: "Event frames" }
+];
+const CHARACTER_BACKLINK_PREVIEW_LIMIT = 6;
+const DOCUMENT_RENDER_INITIAL_LIMIT = 80;
+const DOCUMENT_RENDER_INCREMENT = 80;
+const CANVAS_RENDER_PADDING = 420;
 const graphemeSegmenter = typeof Intl !== "undefined" && Intl.Segmenter
   ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
   : null;
@@ -82,87 +105,244 @@ const legacyEventSheetColumns = [
   { key: "eventType", label: "Type of Event(s)" }
 ];
 
-const sampleProject = {
-  title: "Sample",
-  notes: "A short branching ride that demos every node type. Connect nodes with ports, define variables and node-type rules in Playbook.json, group beats inside Event Frames, then play from Entry.",
-  variables: {
-    traveler: "Mara",
-    watch: "Reyes's pocketwatch",
-    region: "the northern dark",
-    trust: "unknown",
-    lantern_lit: "false"
-  },
-  script: {
-    nodeTypes: {
-      Choice: { choices: ["Hand over {watch}", "Keep {watch} hidden"] },
-      Set: { body: "The ledger of the Line updates. {traveler} feels it accept the change." },
-      Jump: { body: "The Midnight Line glides on toward {region}." }
-    }
-  },
-  nodeTypes: defaultNodeTypeList(),
-  characters: [
-    {
-      id: "c0",
-      name: "Mara",
-      role: "Traveler · POV",
-      voice: "Wry, watchful, slow to trust",
-      notes: "The player character. Carried as POV through the journey; the value of {traveler} stands in for her name."
+const sampleProject = createSampleProject();
+
+function createSampleProject() {
+  return {
+    title: "Midnight Line Demo",
+    notes: "A fuller sample that touches every default node type, all variable value types, Characters cast roles, Events Sheet groups, custom event-frame classes, custom node types, a visual frame, hidden library entries, and Playbook rule cards.",
+    variables: {
+      traveler: "Mara",
+      route: "northbound",
+      trust_level: 1,
+      lantern_lit: false,
+      has_ticket: true,
+      inventory: {
+        watch: "Reyes pocketwatch",
+        coins: 3,
+        clues: ["glass key", "ash ticket"]
+      },
+      active_flags: ["boarding", "watch_missing"]
     },
-    {
-      id: "c1",
-      name: "The Conductor",
-      role: "Guide of the Midnight Line",
-      voice: "Formal, warm, knows too much",
-      notes: "Speaks the Dialog scenes (auto-detected as Speaker because the Dialog node title matches this name) and asks for the watch."
+    script: {
+      nodeTypes: {
+        Content: {
+          title: "{title}",
+          body: "{body}\n\nRoute: {route}"
+        },
+        Dialog: {
+          title: "{title}",
+          body: "{title}: {body}"
+        },
+        Choice: {
+          title: "Decision - {title}",
+          body: "{body}\nTrust level: {trust_level}",
+          choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"]
+        },
+        Set: {
+          body: "Set {variable} = {value}. The Line records the change.",
+          set: { key: "last_update", value: "{variable}:{value}" }
+        },
+        Condition: {
+          body: "Check: {condition}",
+          condition: "trust_level >= 2"
+        },
+        Jump: {
+          body: "Jump to {body}."
+        },
+        Clue: {
+          title: "Clue - {title}",
+          body: "{body}",
+          set: { key: "active_clue", value: "{title}" }
+        },
+        StorySequence: {
+          title: "Story Sequence - {title}",
+          body: "{body}"
+        },
+        InvestigationEvent: {
+          title: "Investigation - {title}",
+          body: "{body}"
+        }
+      }
     },
-    {
-      id: "c2",
-      name: "Old Reyes",
-      role: "Missing watchmaker",
-      voice: "—",
-      notes: "Never appears on stage. Mentioned with @Old Reyes in narration, and tagged Owner of the pocketwatch Mara carries."
+    eventSheet: {
+      columns: [
+        { key: "act", label: "ACT", width: "90px" },
+        { key: "chapter", label: "Chap.", width: "90px" },
+        { key: "beatList", label: "Beat", width: "190px" },
+        { key: "eventType", label: "Event Type", width: "150px" },
+        { key: "eventDescription", label: "Description", width: "360px" },
+        { key: "characterEncountered", label: "Characters", width: "300px" },
+        { key: "location", label: "Location", width: "150px", custom: true },
+        { key: "timeWeather", label: "Time / Weather", width: "170px", custom: true },
+        { key: "questEpisode", label: "Quest Ep.", width: "130px", custom: true },
+        { key: "status", label: "Status", width: "150px", custom: true }
+      ],
+      hiddenColumns: ["status"]
     },
-    {
-      id: "c3",
-      name: "The Brakeman",
-      role: "Enforcer",
-      voice: "Gruff, impatient",
-      notes: "Present aboard the train; becomes a Target Mara must evade if she keeps the watch hidden."
-    }
-  ],
-  nodes: [
-    { id: "n0", type: "Entry", title: "All Aboard", body: "The Midnight Line waits at the far platform.", x: 80, y: 620, cast: [{ characterId: "c0", role: "POV" }] },
-    { id: "e1", type: "Event", title: "Boarding", body: "Group related beats inside a frame; the Events Sheet inherits their characters.", x: 300, y: 480, width: 820, height: 520, act: "I", chapter: "1", beatList: "Boarding the Line", eventType: "Scene", eventDescription: "Mara boards the Midnight Line and meets the Conductor." },
-    { id: "n1", type: "Content", title: "Platform 9, Midnight", body: "Fog swallows the rails. The locket once belonging to @Old Reyes is heavier than it looks in {traveler}'s coat.", x: 340, y: 560, cast: [{ characterId: "c0", role: "POV" }] },
-    { id: "n2", type: "Dialog", title: "The Conductor", body: "Tickets, please. {traveler}, isn't it? The Line has been waiting for that {watch}.", x: 660, y: 560 },
-    { id: "n3", type: "Set", title: "Light the lantern", body: "lantern_lit = true", variable: "lantern_lit", value: "true", x: 500, y: 800, cast: [{ characterId: "c0", role: "POV" }] },
-    { id: "e2", type: "Event", title: "The Bargain", body: "The branching choice and both of its outcomes live in this frame.", x: 1240, y: 480, width: 820, height: 560, act: "II", chapter: "2", beatList: "The Bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara decides." },
-    { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you.", choices: ["Hand over the watch", "Keep it hidden"], x: 1280, y: 540, cast: [{ characterId: "c1", role: "Speaker" }] },
-    { id: "n5", type: "Set", title: "A gesture of trust", body: "trust = high", variable: "trust", value: "high", x: 1300, y: 800, cast: [{ characterId: "c2", role: "Owner" }] },
-    { id: "n6", type: "Content", title: "Keep it hidden", body: "{traveler} slips the {watch} deeper into her coat. The Brakeman's eyes follow.", x: 1620, y: 800, cast: [{ characterId: "c3", role: "Present" }] },
-    { id: "n7", type: "Condition", title: "Did Mara earn trust?", body: "trust == high", condition: "trust == high", x: 2160, y: 600, cast: [{ characterId: "c0", role: "POV" }] },
-    { id: "n8", type: "Content", title: "A quiet understanding", body: "The Conductor nods. A door unlocks that was never printed on the map.", x: 2460, y: 460, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
-    { id: "n9", type: "Content", title: "A cold compartment", body: "The Brakeman blocks the aisle. {traveler} is alone with what she kept.", x: 2460, y: 740, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c3", role: "Target" }] },
-    { id: "n10", type: "Jump", title: "Terminus", body: "Terminus", x: 2820, y: 600 },
-    { id: "n11", type: "Content", title: "Epilogue", body: "Dawn. {traveler} steps down at the edge of {region}, the {watch} warm in her hand.", x: 3060, y: 560, cast: [{ characterId: "c0", role: "POV" }] },
-    { id: "n12", type: "Marker", title: "TODO · Act III", body: "Draft the Terminus mystery here: who wound the watch last?", x: 3060, y: 840 }
-  ],
-  links: [
-    { id: "l0", from: "n0", to: "n1" },
-    { id: "l1", from: "n1", to: "n2" },
-    { id: "l2", from: "n2", to: "n3" },
-    { id: "l3", from: "n3", to: "n4" },
-    { id: "l4", from: "n4", to: "n5", label: "Hand over" },
-    { id: "l5", from: "n4", to: "n6", label: "Keep hidden" },
-    { id: "l6", from: "n5", to: "n7" },
-    { id: "l7", from: "n6", to: "n7" },
-    { id: "l8", from: "n7", to: "n8", label: "trust" },
-    { id: "l9", from: "n7", to: "n9", label: "wary" },
-    { id: "l10", from: "n8", to: "n10" },
-    { id: "l11", from: "n9", to: "n10" },
-    { id: "l12", from: "n10", to: "n11" }
-  ]
-};
+    eventRowOrder: {
+      StorySequence: ["e1", "e2", "e4"],
+      InvestigationEvent: ["e3"]
+    },
+    nodeTypes: [
+      ...defaultNodeTypeList(),
+      {
+        type: "StorySequence",
+        label: "Story Sequence",
+        badge: "SS",
+        color: DEFAULT_EVENT_FRAME_COLOR,
+        width: 520,
+        custom: true,
+        badgeCustom: true,
+        kind: "eventFrame",
+        fields: [
+          { key: "location", label: "Location" },
+          { key: "timeWeather", label: "Time / Weather" },
+          { key: "questEpisode", label: "Quest Ep." },
+          { key: "status", label: "Status" }
+        ],
+        hidden: false
+      },
+      {
+        type: "Clue",
+        label: "Clue",
+        badge: "Cl",
+        color: "#d99a3d",
+        width: 250,
+        custom: true,
+        badgeCustom: true,
+        kind: "node",
+        fields: [
+          { key: "evidence", label: "Evidence" },
+          { key: "owner", label: "Owner" },
+          { key: "outcome", label: "Outcome" }
+        ],
+        hidden: false
+      },
+      {
+        type: "LocationFrame",
+        label: "Location Frame",
+        badge: "LF",
+        color: "#6f8fcf",
+        width: 540,
+        custom: true,
+        badgeCustom: true,
+        kind: "frame",
+        fields: [
+          { key: "region", label: "Region" },
+          { key: "mood", label: "Mood" }
+        ],
+        hidden: false
+      },
+      {
+        type: "InvestigationEvent",
+        label: "Investigation Event",
+        badge: "IE",
+        color: "#c678dd",
+        width: 520,
+        custom: true,
+        badgeCustom: true,
+        kind: "eventFrame",
+        fields: [
+          { key: "clueStatus", label: "Clue Status" },
+          { key: "risk", label: "Risk" },
+          { key: "evidenceOwner", label: "Evidence Owner" }
+        ],
+        hidden: false
+      },
+      {
+        type: "ArchivedBeat",
+        label: "Archived Beat",
+        badge: "AB",
+        color: "#8a8f98",
+        width: 230,
+        custom: true,
+        badgeCustom: true,
+        kind: "node",
+        fields: [{ key: "reason", label: "Reason" }],
+        hidden: true
+      }
+    ],
+    characters: [
+      {
+        id: "c0",
+        name: "Mara",
+        role: "Traveler / POV",
+        voice: "Wry, watchful, slow to trust",
+        notes: "Player-facing lead. Used as POV, target of conditions, and the main variable token {traveler}."
+      },
+      {
+        id: "c1",
+        name: "The Conductor",
+        role: "Guide of the Midnight Line",
+        voice: "Formal, warm, knows too much",
+        notes: "Speaker in Dialog nodes. He offers the bargain and reacts to trust changes."
+      },
+      {
+        id: "c2",
+        name: "Old Reyes",
+        role: "Missing watchmaker",
+        voice: "Absent, remembered through clues",
+        notes: "Mentioned by @Old Reyes and tagged as Owner of the pocketwatch and the glass key."
+      },
+      {
+        id: "c3",
+        name: "The Brakeman",
+        role: "Enforcer",
+        voice: "Gruff, impatient",
+        notes: "Present in the train car and Target of the evasion branch."
+      },
+      {
+        id: "c4",
+        name: "Vesper",
+        role: "Remote dispatcher",
+        voice: "Dry, clipped, practical",
+        notes: "Mentioned through radio text and Present in the investigation event."
+      }
+    ],
+    nodes: [
+      { id: "n0", type: "Entry", title: "All Aboard", body: "The Midnight Line waits at the far platform. {traveler} has a ticket, a lantern, and a watch no one should recognize.", x: 80, y: 650, cast: [{ characterId: "c0", role: "POV" }] },
+      { id: "lf1", type: "LocationFrame", title: "Far Platform", body: "A visual frame for the station-side beats. This one is not an Events Sheet row.", x: 230, y: 260, width: 1010, height: 780, customFields: { region: "North terminal", mood: "Fog, brass, late departures" } },
+      { id: "e1", type: "StorySequence", title: "Boarding the Line", body: "Custom Story Sequence frame. Event Frame is the behavior type; this is one concrete class built on it.", x: 280, y: 360, width: 900, height: 620, act: "I", chapter: "1", beatList: "Boarding / ticket check", eventType: "Opening Scene", eventDescription: "Mara boards the Midnight Line, meets the Conductor, and lights the lantern.", location: "Far Platform", timeWeather: "00:03 / fog", questEpisode: "Q01", customFields: { status: "Drafted" } },
+      { id: "n1", type: "Content", title: "Platform 9, Midnight", body: "Fog swallows the rails. The watch once owned by @Old Reyes is heavier than it looks in {traveler}'s coat.", x: 330, y: 470, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
+      { id: "n2", type: "Dialog", title: "The Conductor", body: "Tickets, please. {traveler}, is it? The Line has been waiting for that watch.", x: 630, y: 470, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+      { id: "n3", type: "Set", title: "Light the lantern", body: "lantern_lit = true", variable: "lantern_lit", value: "true", x: 500, y: 745, cast: [{ characterId: "c0", role: "POV" }] },
+      { id: "n13", type: "Marker", title: "Designer note", body: "The variable table includes string, number, boolean, and json values. Open Playbook.json to inspect them.", x: 885, y: 745 },
+      { id: "e2", type: "StorySequence", title: "The Bargain", body: "Choice, Set, and branch outcome nodes inside the custom Story Sequence event-frame class.", x: 1260, y: 360, width: 900, height: 700, act: "II", chapter: "2", beatList: "Watch bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara chooses whether to trust him.", location: "Car 3", timeWeather: "00:17 / rain on glass", questEpisode: "Q02", customFields: { status: "Branching" } },
+      { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you and the aisle.", choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"], x: 1305, y: 455, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+      { id: "n5", type: "Set", title: "Offer the watch", body: "trust_level = 2", variable: "trust_level", value: "2", x: 1305, y: 735, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c1", role: "Present" }] },
+      { id: "n6", type: "Content", title: "Hide it from the Brakeman", body: "{traveler} slips the watch deeper into her coat. The Brakeman notices the movement.", x: 1605, y: 735, cast: [{ characterId: "c3", role: "Target" }, { characterId: "c0", role: "POV" }] },
+      { id: "n14", type: "Dialog", title: "Vesper", body: "Radio check. If the lantern is lit, follow the blue carriage marks.", x: 1885, y: 500, cast: [{ characterId: "c4", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+      { id: "e3", type: "InvestigationEvent", title: "Glass Key Investigation", body: "Custom Event Frame. Its fields appear as extra Events Sheet columns for this group.", x: 2220, y: 320, width: 1020, height: 760, act: "II", chapter: "3", beatList: "Find the glass key", eventType: "Investigation", eventDescription: "Mara checks the luggage rack, identifies the key, and decides whether she has enough trust to use it.", location: "Luggage car", timeWeather: "00:31 / sparks outside", questEpisode: "Q03", customFields: { status: "Needs clue art", clueStatus: "Found", risk: "Medium", evidenceOwner: "Old Reyes" }, cast: [{ characterId: "c4", role: "Present" }] },
+      { id: "n7", type: "Condition", title: "Enough trust to unlock?", body: "trust_level >= 2 && lantern_lit == true", condition: "trust_level >= 2 && lantern_lit == true", x: 2295, y: 450, cast: [{ characterId: "c0", role: "POV" }] },
+      { id: "n8", type: "Clue", title: "Glass Key", body: "A brittle key catches lantern light. It is stamped with Reyes's maker mark.", x: 2585, y: 450, customFields: { evidence: "Maker mark R-17", owner: "Old Reyes", outcome: "Unlocks the map door" }, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c4", role: "Present" }] },
+      { id: "n9", type: "Content", title: "Map door opens", body: "The Conductor nods. A door unlocks that was never printed on the map.", x: 2865, y: 450, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
+      { id: "n10", type: "Content", title: "Cold compartment", body: "The Brakeman blocks the aisle. {traveler} has to bluff with a ticket and a dark lantern.", x: 2585, y: 740, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c3", role: "Target" }] },
+      { id: "e4", type: "StorySequence", title: "Terminus", body: "Jump and epilogue beats gathered into the final Story Sequence frame.", x: 980, y: 1260, width: 1180, height: 650, act: "III", chapter: "4", beatList: "Terminus arrival", eventType: "Resolution", eventDescription: "Branches merge at the northern terminus; the watch points to the next mystery.", location: "Northern Terminus", timeWeather: "05:40 / pale dawn", questEpisode: "Q04", customFields: { status: "Outline" } },
+      { id: "n11", type: "Jump", title: "Merge at Terminus", body: "Terminus", x: 1060, y: 1390 },
+      { id: "n12", type: "Content", title: "Epilogue", body: "Dawn. {traveler} steps down at the edge of the northern dark, the watch warm in her hand.", x: 1350, y: 1390, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
+      { id: "n15", type: "Marker", title: "Next pass", body: "Try filtering Characters for Mara, filtering Events for boarding, exporting Characters.json, and opening Advanced JSON.", x: 1710, y: 1620 }
+    ],
+    links: [
+      { id: "l0", from: "n0", to: "n1" },
+      { id: "l1", from: "n1", to: "n2" },
+      { id: "l2", from: "n2", to: "n3" },
+      { id: "l3", from: "n3", to: "n4" },
+      { id: "l4", from: "n4", to: "n5", label: "Offer" },
+      { id: "l5", from: "n4", to: "n6", label: "Hide" },
+      { id: "l6", from: "n4", to: "n14", label: "Ask Reyes" },
+      { id: "l7", from: "n5", to: "n7" },
+      { id: "l8", from: "n6", to: "n7" },
+      { id: "l9", from: "n14", to: "n7" },
+      { id: "l10", from: "n7", to: "n8", label: "true" },
+      { id: "l11", from: "n7", to: "n10", label: "false" },
+      { id: "l12", from: "n8", to: "n9" },
+      { id: "l13", from: "n9", to: "n11" },
+      { id: "l14", from: "n10", to: "n11" },
+      { id: "l15", from: "n11", to: "n12" }
+    ]
+  };
+}
 
 const fileViews = {
   adventure: "Narrative.canvas",
@@ -181,9 +361,11 @@ const state = {
   panel: "project",
   activeFileId: "adventure",
   theme: "dark",
+  exportImageScale: 1,
   view: { x: 0, y: 0, scale: DEFAULT_CANVAS_ZOOM },
   connectingFrom: null,
   draggingNode: null,
+  geometryHistoryTarget: null,
   draggingStoryNodeId: null,
   storyPointerDrag: null,
   resizingNode: null,
@@ -201,6 +383,14 @@ const state = {
   characterSearch: "",
   eventSearch: "",
   playbookJsonOpen: false,
+  projectFilePath: "",
+  hasUnsavedChanges: false,
+  isSaving: false,
+  saveError: false,
+  dirtyVersion: 0,
+  structureVersion: 0,
+  autoSaveTimer: null,
+  characterBacklinkExpandedIds: new Set(),
   history: { undo: [], redo: [], current: "", pending: null, applying: false },
   editHistoryTarget: null,
   playNodeId: null,
@@ -208,6 +398,18 @@ const state = {
   search: "",
   eventRowDrag: null,
   mention: null,
+  characterRenderContext: null,
+  nodeIndex: null,
+  linkIndex: null,
+  outgoingIndex: null,
+  derived: { flowOrder: null, displayId: null, nodeTypeMap: null, projectNodeTypes: null },
+  canvasViewportRenderFrame: null,
+  storyPanelRenderTimer: null,
+  documentRenderLimits: {
+    characters: DOCUMENT_RENDER_INITIAL_LIMIT,
+    events: DOCUMENT_RENDER_INITIAL_LIMIT,
+    variables: DOCUMENT_RENDER_INITIAL_LIMIT
+  },
   sidebar: {
     leftWidth: SIDEBAR_CONFIG.left.defaultWidth,
     rightWidth: SIDEBAR_CONFIG.right.defaultWidth,
@@ -225,6 +427,7 @@ window.NarrativeCanvasApp = {
   init: initNarrativeCanvas,
   destroy: destroyNarrativeCanvas,
   save: saveCurrentState,
+  configureAutoSave,
   ensureVaultFile: ensureVaultProjectFile,
   loadVaultProject: loadCurrentVaultProject
 };
@@ -255,6 +458,7 @@ async function initNarrativeCanvas() {
     bindEvents();
     if (!restoredView) settleInitialCanvasView();
     await ensureVaultProjectFile();
+    configureAutoSave();
     return true;
   } catch (error) {
     initialized = false;
@@ -291,7 +495,12 @@ function bindDom() {
   dom.undoButton = dom.scope.querySelector("#undoButton");
   dom.redoButton = dom.scope.querySelector("#redoButton");
   dom.themeToggle = dom.scope.querySelector("#themeToggle");
+  dom.exportImageScale = dom.scope.querySelector("#exportImageScale");
   dom.vaultProjectTitle = dom.scope.querySelector("#vaultProjectTitle");
+  dom.projectFileName = dom.scope.querySelector("#projectFileName");
+  dom.projectFilePath = dom.scope.querySelector("#projectFilePath");
+  dom.projectDirtyIndicator = dom.scope.querySelector("#projectDirtyIndicator");
+  dom.newProjectPathPreview = dom.scope.querySelector("#newProjectPathPreview");
   dom.workspaceToolbar = dom.scope.querySelector("#workspaceToolbar");
   dom.projectPanel = dom.scope.querySelector("#projectPanel");
   dom.nodePanel = dom.scope.querySelector("#nodePanel");
@@ -409,7 +618,7 @@ function bindEvents() {
 
   dom.fileInput.addEventListener("change", importJsonFile, { signal });
   dom.confirmDialog.addEventListener("close", () => {
-    if (dom.confirmDialog.returnValue === "confirm") newProject();
+    if (dom.confirmDialog.returnValue === "confirm") void newProject();
   }, { signal });
   dom.eventColumnDeleteDialog.addEventListener("close", () => {
     if (dom.eventColumnDeleteDialog.returnValue === "confirm") {
@@ -462,6 +671,11 @@ function bindEvents() {
 function destroyNarrativeCanvas() {
   eventController?.abort();
   eventController = null;
+  if (state.canvasViewportRenderFrame) {
+    window.cancelAnimationFrame(state.canvasViewportRenderFrame);
+    state.canvasViewportRenderFrame = null;
+  }
+  clearAutoSaveTimer();
   state.sidebar.resizing = null;
   dom.root?.classList.remove("sidebar-resizing");
   dom.root?.removeAttribute("data-sidebar-resizing");
@@ -471,7 +685,7 @@ function destroyNarrativeCanvas() {
 
 function handleWindowResize() {
   hideNodeContextMenu();
-  renderLinks();
+  scheduleCanvasViewportRender();
 }
 
 function renderSidebarState() {
@@ -696,7 +910,8 @@ function resetHistory() {
 
 function beginHistoryCapture() {
   if (state.history?.applying) return null;
-  if (!state.history?.current) resetHistory();
+  if (!state.history) resetHistory();
+  if (!state.history.current) state.history.current = getHistorySnapshot();
   if (!state.history.pending) state.history.pending = state.history.current || getHistorySnapshot();
   return state.history.pending;
 }
@@ -720,16 +935,109 @@ function commitHistoryFromSnapshot(before) {
   if (state.history.undo.length > HISTORY_LIMIT) state.history.undo.shift();
   state.history.redo = [];
   state.history.current = after;
+  setProjectDirty(true);
   renderHistoryButtons();
   return true;
+}
+
+function captureNodeGeometry(node) {
+  return {
+    id: node.id,
+    x: node.x,
+    y: node.y,
+    width: node.width,
+    height: node.height,
+    hasWidth: Object.prototype.hasOwnProperty.call(node, "width"),
+    hasHeight: Object.prototype.hasOwnProperty.call(node, "height")
+  };
+}
+
+function beginGeometryHistoryCapture(node) {
+  if (!node || state.history?.applying) return null;
+  state.geometryHistoryTarget = {
+    before: [captureNodeGeometry(node)]
+  };
+  return state.geometryHistoryTarget;
+}
+
+function commitGeometryHistoryCapture() {
+  const target = state.geometryHistoryTarget;
+  state.geometryHistoryTarget = null;
+  if (!target?.before?.length) return false;
+  const after = target.before
+    .map((entry) => getNode(entry.id))
+    .filter(Boolean)
+    .map(captureNodeGeometry);
+  if (!after.length || sameGeometrySnapshots(target.before, after)) return false;
+  return pushGeometryHistoryEntry({ kind: "geometry", before: target.before, after });
+}
+
+function sameGeometrySnapshots(before, after) {
+  if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return false;
+  return before.every((entry, index) => {
+    const next = after[index];
+    return next
+      && entry.id === next.id
+      && entry.x === next.x
+      && entry.y === next.y
+      && entry.width === next.width
+      && entry.height === next.height
+      && entry.hasWidth === next.hasWidth
+      && entry.hasHeight === next.hasHeight;
+  });
+}
+
+function pushGeometryHistoryEntry(entry) {
+  if (state.history?.applying) return false;
+  if (!state.history) resetHistory();
+  state.history.undo.push(entry);
+  if (state.history.undo.length > HISTORY_LIMIT) state.history.undo.shift();
+  state.history.redo = [];
+  state.history.pending = null;
+  state.history.current = "";
+  setProjectDirty(true);
+  renderHistoryButtons();
+  return true;
+}
+
+function isGeometryHistoryEntry(entry) {
+  return Boolean(entry && typeof entry === "object" && entry.kind === "geometry");
+}
+
+function applyGeometryHistoryEntry(entry, side, label) {
+  const snapshots = Array.isArray(entry?.[side]) ? entry[side] : [];
+  state.history.applying = true;
+  snapshots.forEach(applyNodeGeometry);
+  state.history.applying = false;
+  state.history.current = "";
+  setProjectDirty(true);
+  renderAll();
+  renderHistoryButtons();
+  setStatus(`${label} applied.`);
+}
+
+function applyNodeGeometry(snapshot) {
+  const node = getNode(snapshot.id);
+  if (!node) return;
+  node.x = snapshot.x;
+  node.y = snapshot.y;
+  if (snapshot.hasWidth) node.width = snapshot.width;
+  else delete node.width;
+  if (snapshot.hasHeight) node.height = snapshot.height;
+  else delete node.height;
 }
 
 function undoHistory() {
   commitHistoryCapture();
   const history = state.history;
   if (!history?.undo?.length) return;
-  const current = getHistorySnapshot();
   const previous = history.undo.pop();
+  if (isGeometryHistoryEntry(previous)) {
+    history.redo.push(previous);
+    applyGeometryHistoryEntry(previous, "before", "Undo");
+    return;
+  }
+  const current = getHistorySnapshot();
   history.redo.push(current);
   if (history.redo.length > HISTORY_LIMIT) history.redo.shift();
   restoreHistorySnapshot(previous, "Undo");
@@ -738,8 +1046,13 @@ function undoHistory() {
 function redoHistory() {
   const history = state.history;
   if (!history?.redo?.length) return;
-  const current = getHistorySnapshot();
   const next = history.redo.pop();
+  if (isGeometryHistoryEntry(next)) {
+    history.undo.push(next);
+    applyGeometryHistoryEntry(next, "after", "Redo");
+    return;
+  }
+  const current = getHistorySnapshot();
   history.undo.push(current);
   if (history.undo.length > HISTORY_LIMIT) history.undo.shift();
   restoreHistorySnapshot(next, "Redo");
@@ -757,6 +1070,7 @@ function restoreHistorySnapshot(snapshot, label) {
   }
   state.history.applying = true;
   state.project = normalizeProject(payload.project || {});
+  markProjectStructureChanged({ nodeTypes: true });
   state.selectedNodeId = getValidSavedNodeId(payload.selectedNodeId);
   state.selectedNodeIds = Array.isArray(payload.selectedNodeIds)
     ? payload.selectedNodeIds.filter((id) => getNode(id))
@@ -776,6 +1090,7 @@ function restoreHistorySnapshot(snapshot, label) {
   state.history.current = snapshot;
   state.history.pending = null;
   state.history.applying = false;
+  setProjectDirty(true);
   renderAll();
   setStatus(`${label} applied.`);
 }
@@ -822,14 +1137,21 @@ function renderAll() {
   hideNodeContextMenu();
   renderShellState();
   renderPalette();
-  renderTransform();
-  renderNodes();
-  renderLinks();
+  if (isCanvasFileActive()) {
+    const canvasRenderContext = getCanvasRenderContext();
+    renderTransform();
+    renderNodes(canvasRenderContext);
+    renderLinks(canvasRenderContext);
+  }
   renderWorkspaceFile();
   renderInspector();
-  renderMinimap();
+  if (isCanvasFileActive()) renderMinimap();
   updateStatus();
   renderHistoryButtons();
+}
+
+function isCanvasFileActive() {
+  return state.activeFileId === "adventure";
 }
 
 function renderPlaybookSurfaces(options = {}) {
@@ -850,13 +1172,18 @@ function renderShellState() {
   dom.themeHost?.setAttribute("data-theme", state.theme);
   renderSidebarState();
   if (dom.themeToggle) {
-    const isLight = state.theme === "light";
-    dom.themeToggle.textContent = isLight ? "Dark" : "Light";
-    dom.themeToggle.setAttribute("aria-pressed", String(isLight));
+    const isDark = state.theme === "dark";
+    dom.themeToggle.textContent = isDark ? "Dark" : "Light";
+    dom.themeToggle.setAttribute("aria-pressed", String(isDark));
+    dom.themeToggle.title = `Switch to ${isDark ? "light" : "dark"} theme`;
+  }
+  if (dom.exportImageScale) {
+    dom.exportImageScale.value = getExportImageScalePreset().value;
   }
   if (dom.vaultProjectTitle) {
     dom.vaultProjectTitle.textContent = state.project.title || "Untitled Story";
   }
+  renderProjectFileStatus();
   dom.root?.setAttribute("data-active-file", state.activeFileId || "adventure");
   if (dom.queryInput && dom.queryInput.value !== state.search) {
     dom.queryInput.value = state.search;
@@ -881,6 +1208,139 @@ function renderShellState() {
   renderHistoryButtons();
 }
 
+function renderProjectFileStatus() {
+  if (!dom.projectFileName || !dom.projectFilePath || !dom.projectDirtyIndicator) return;
+  const path = getCurrentProjectFilePath();
+  const host = window.NarrativeCanvasHost;
+  const isVaultProject = Boolean(host?.loadProject || host?.saveProject || host?.ensureProjectFile);
+  state.projectFilePath = path;
+
+  if (path) {
+    dom.projectFileName.textContent = getProjectFileBasename(path);
+    dom.projectFilePath.textContent = path;
+  } else if (isVaultProject) {
+    dom.projectFileName.textContent = "No .ncanvas selected";
+    dom.projectFilePath.textContent = "Save or create a project file in the vault.";
+  } else {
+    dom.projectFileName.textContent = "Browser storage";
+    dom.projectFilePath.textContent = "Saved in this browser";
+  }
+
+  const saveState = getProjectSaveState();
+  const saveLabel = getProjectSaveLabel(saveState);
+  dom.projectDirtyIndicator.hidden = false;
+  dom.projectDirtyIndicator.dataset.saveState = saveState;
+  dom.projectDirtyIndicator.setAttribute("aria-label", saveLabel);
+  const label = dom.projectDirtyIndicator.querySelector("[data-save-label]");
+  if (label) label.textContent = saveLabel;
+  else dom.projectDirtyIndicator.textContent = saveLabel;
+}
+
+function getProjectSaveState() {
+  if (state.isSaving) return "saving";
+  if (state.saveError) return "error";
+  return state.hasUnsavedChanges ? "unsaved" : "saved";
+}
+
+function getProjectSaveLabel(saveState) {
+  if (saveState === "saving") return "Saving";
+  if (saveState === "unsaved") return "Unsaved";
+  if (saveState === "error") return "Save failed";
+  return "Saved";
+}
+
+function getCurrentProjectFilePath() {
+  const host = window.NarrativeCanvasHost;
+  try {
+    const path = host?.getProjectFile?.() || host?.projectFile || "";
+    return typeof path === "string" ? path : state.projectFilePath || "";
+  } catch (error) {
+    console.error(error);
+    return state.projectFilePath || "";
+  }
+}
+
+function getProjectFileBasename(path) {
+  const parts = String(path || "").split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || "Project file";
+}
+
+function setProjectDirty(value) {
+  const nextValue = Boolean(value);
+  if (nextValue) {
+    state.dirtyVersion += 1;
+    state.hasUnsavedChanges = true;
+    state.saveError = false;
+    renderProjectFileStatus();
+    scheduleAutoSave();
+    return;
+  }
+
+  if (state.hasUnsavedChanges === nextValue && !state.saveError) {
+    renderProjectFileStatus();
+    return;
+  }
+  clearAutoSaveTimer();
+  state.hasUnsavedChanges = nextValue;
+  state.saveError = false;
+  renderProjectFileStatus();
+}
+
+function markProjectStructureChanged(options = {}) {
+  state.structureVersion += 1;
+  if (!state.derived) return;
+  state.derived.flowOrder = null;
+  state.derived.displayId = null;
+  if (options.nodeTypes) {
+    state.derived.nodeTypeMap = null;
+    state.derived.projectNodeTypes = null;
+  }
+}
+
+function configureAutoSave() {
+  if (state.hasUnsavedChanges) scheduleAutoSave();
+  else clearAutoSaveTimer();
+  renderProjectFileStatus();
+}
+
+function scheduleAutoSave() {
+  clearAutoSaveTimer();
+  if (!initialized || !state.hasUnsavedChanges || state.isSaving) return;
+  const interval = getAutoSaveIntervalMs();
+  if (!interval) return;
+  state.autoSaveTimer = window.setTimeout(() => {
+    state.autoSaveTimer = null;
+    if (!state.hasUnsavedChanges || state.isSaving) return;
+    void saveCurrentState({ silent: true, reason: "auto" });
+  }, interval);
+}
+
+function clearAutoSaveTimer() {
+  if (!state.autoSaveTimer) return;
+  window.clearTimeout(state.autoSaveTimer);
+  state.autoSaveTimer = null;
+}
+
+function getAutoSaveIntervalMs() {
+  const host = window.NarrativeCanvasHost;
+  try {
+    const value = typeof host?.getAutoSaveIntervalMs === "function"
+      ? host.getAutoSaveIntervalMs()
+      : host?.autoSaveIntervalMs;
+    const normalized = normalizeAutoSaveIntervalMs(value);
+    if (normalized) return normalized;
+  } catch (error) {
+    console.error(error);
+  }
+  return FALLBACK_AUTO_SAVE_INTERVAL_MS;
+}
+
+function normalizeAutoSaveIntervalMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.round(clamp(numeric, MIN_AUTO_SAVE_INTERVAL_MS, MAX_AUTO_SAVE_INTERVAL_MS));
+}
+
 function renderWorkspaceFile() {
   const activeFile = state.activeFileId || "adventure";
   dom.canvasPanel.classList.toggle("active", activeFile === "adventure");
@@ -893,26 +1353,55 @@ function renderWorkspaceFile() {
   if (activeFile === "events") renderEventsSheetPage();
 }
 
+function getDocumentRenderLimit(fileId) {
+  if (!state.documentRenderLimits || typeof state.documentRenderLimits !== "object") {
+    state.documentRenderLimits = {};
+  }
+  const current = Number(state.documentRenderLimits[fileId]);
+  if (Number.isFinite(current) && current > 0) return current;
+  state.documentRenderLimits[fileId] = DOCUMENT_RENDER_INITIAL_LIMIT;
+  return DOCUMENT_RENDER_INITIAL_LIMIT;
+}
+
+function resetDocumentRenderLimit(fileId) {
+  if (!state.documentRenderLimits || typeof state.documentRenderLimits !== "object") {
+    state.documentRenderLimits = {};
+  }
+  state.documentRenderLimits[fileId] = DOCUMENT_RENDER_INITIAL_LIMIT;
+}
+
+function showMoreDocument(fileId) {
+  if (!fileViews[fileId]) return;
+  const current = getDocumentRenderLimit(fileId);
+  state.documentRenderLimits[fileId] = current + DOCUMENT_RENDER_INCREMENT;
+  renderWorkspaceFile();
+  setStatus(`Showing more ${fileViews[fileId]}.`);
+}
+
+function renderDocumentLimitNotice(fileId, shown, total) {
+  if (shown >= total) return "";
+  const remaining = total - shown;
+  return `
+    <div class="document-limit-notice" data-document-limit-notice>
+      <span>Showing ${shown} of ${total}. ${remaining} more not rendered yet.</span>
+      <button class="small-button" type="button" data-action="show-more-document" data-document-id="${escapeAttr(fileId)}">
+        Show ${Math.min(DOCUMENT_RENDER_INCREMENT, remaining)} more
+      </button>
+    </div>
+  `;
+}
+
 function renderCharactersPage() {
-  const characters = getCharacters();
-  const linkCount = characters.reduce((total, character) => total + countCharacterBacklinks(character), 0);
-  const focusedCharacter = getActiveCharacterFocus();
-  const search = (state.characterSearch || "").trim().toLowerCase();
-  const visible = search
-    ? characters.filter((character) => characterMatchesSearch(character, search))
-    : characters;
-  const cardsHtml = characters.length
-    ? (visible.length
-      ? visible.map((character) => renderCharacterCard(character)).join("")
-      : `<div class="empty-state">No characters match "${escapeHtml(search)}".</div>`)
-    : `<div class="empty-state">No characters yet.</div>`;
+  const model = buildCharacterDocumentModel(getCharacterRenderContext());
+  const limit = getDocumentRenderLimit("characters");
+  const shownCount = Math.min(model.visible.length, limit);
   dom.charactersPanel.innerHTML = `
     <div class="document-shell">
       <header class="document-header">
         <div>
           <span class="pane-kicker">Markdown</span>
           <h2>Characters.md</h2>
-          <div class="document-meta">${characters.length} characters, ${linkCount} character links${focusedCharacter ? `, focusing ${escapeHtml(focusedCharacter.name)}` : ""}</div>
+          <div class="document-meta" data-character-search-meta>${escapeHtml(formatCharacterMeta(model))}</div>
         </div>
         <div class="document-actions">
           <label class="character-search-box">
@@ -920,47 +1409,132 @@ function renderCharactersPage() {
             <input type="search" data-character-search placeholder="Find character" value="${escapeAttr(state.characterSearch || "")}" spellcheck="false">
           </label>
           <button class="small-button" data-action="add-character">Add character</button>
-          ${focusedCharacter ? `<button class="small-button" data-action="clear-character-focus">Clear focus</button>` : ""}
           <button class="small-button" data-action="export-characters-md">Export MD</button>
+          <button class="small-button" data-action="export-characters-json">Export JSON</button>
         </div>
       </header>
-      <div class="character-grid">
-        ${cardsHtml}
+      <div class="document-filter-bar" data-character-filter-bar>
+        ${renderCharacterFilterBar(model)}
       </div>
+      <div class="character-grid">
+        ${renderCharacterCardsMarkup(model, limit)}
+      </div>
+      ${renderDocumentLimitNotice("characters", shownCount, model.visible.length)}
     </div>
   `;
 }
 
-function characterMatchesSearch(character, query) {
-  if (!query) return true;
-  const haystack = [character.name, character.role, character.voice, character.notes]
+function buildCharacterDocumentModel(context = getCharacterRenderContext()) {
+  const characters = context.characters;
+  const focusedCharacter = getActiveCharacterFocus();
+  const queryRaw = state.characterSearch || "";
+  const query = queryRaw.trim().toLowerCase();
+  const visible = query
+    ? characters.filter((character) => characterMatchesSearch(character, query, context))
+    : characters;
+  return {
+    context,
+    characters,
+    visible,
+    focusedCharacter,
+    query,
+    queryRaw,
+    linkCount: context.linkCount,
+    totalCount: characters.length,
+    visibleCount: visible.length
+  };
+}
+
+function formatCharacterMeta(model) {
+  const focusText = model.focusedCharacter ? `, focusing ${model.focusedCharacter.name}` : "";
+  if (model.query) return `${model.visibleCount} of ${model.totalCount} characters match "${model.queryRaw.trim()}"${focusText}`;
+  return `${model.totalCount} characters, ${model.linkCount} character links${focusText}`;
+}
+
+function renderCharacterFilterBar(model) {
+  const chips = [];
+  if (model.query) {
+    chips.push(`
+      <span class="filter-chip">
+        Search: ${escapeHtml(model.queryRaw.trim())}
+        <button type="button" data-action="clear-character-search" aria-label="Clear character search">Clear</button>
+      </span>
+    `);
+  }
+  if (model.focusedCharacter) {
+    chips.push(`
+      <span class="filter-chip">
+        Focus: ${escapeHtml(model.focusedCharacter.name)}
+        <button type="button" data-action="clear-character-focus" aria-label="Clear character focus">Clear</button>
+      </span>
+    `);
+  }
+  if (!chips.length) chips.push(`<span class="filter-chip quiet">All characters visible</span>`);
+  return chips.join("");
+}
+
+function renderCharacterCardsMarkup(model, limit = getDocumentRenderLimit("characters")) {
+  if (!model.characters.length) return `<div class="empty-state">No characters yet.</div>`;
+  const visible = model.visible.slice(0, Math.max(0, limit));
+  return visible.length
+    ? visible.map((character) => renderCharacterCard(character, model.context)).join("")
+    : `<div class="empty-state">No characters match "${escapeHtml(model.queryRaw.trim())}".</div>`;
+}
+
+function getCharacterRenderContext() {
+  if (state.characterRenderContext) return state.characterRenderContext;
+  return buildCharacterRenderContext();
+}
+
+function buildCharacterRenderContext() {
+  const characters = getCharacters();
+  const backlinkIndex = buildCharacterBacklinkIndex(characters);
+  const searchIndex = new Map(characters.map((character) => [character.id, buildCharacterSearchText(character)]));
+  const linkCount = [...backlinkIndex.values()]
+    .reduce((total, groups) => total + groups.reduce((groupTotal, group) => groupTotal + group.items.length, 0), 0);
+  const context = { characters, backlinkIndex, searchIndex, linkCount };
+  state.characterRenderContext = context;
+  return context;
+}
+
+function invalidateCharacterRenderContext() {
+  state.characterRenderContext = null;
+}
+
+function buildCharacterSearchText(character) {
+  return [character.name, character.role, character.voice, character.notes]
     .filter(Boolean)
     .map(String)
     .join("\n")
     .toLowerCase();
+}
+
+function characterMatchesSearch(character, query, context = state.characterRenderContext) {
+  if (!query) return true;
+  const haystack = context?.searchIndex?.get(character.id) || buildCharacterSearchText(character);
   return haystack.includes(query);
 }
 
 function renderCharacterGridForSearch() {
   const grid = dom.charactersPanel?.querySelector(".character-grid");
+  const meta = dom.charactersPanel?.querySelector("[data-character-search-meta]");
+  const filterBar = dom.charactersPanel?.querySelector("[data-character-filter-bar]");
   if (!grid) return;
-  const characters = getCharacters();
-  const search = (state.characterSearch || "").trim().toLowerCase();
-  const visible = search
-    ? characters.filter((character) => characterMatchesSearch(character, search))
-    : characters;
-  if (!characters.length) {
-    grid.innerHTML = `<div class="empty-state">No characters yet.</div>`;
-    return;
-  }
-  grid.innerHTML = visible.length
-    ? visible.map((character) => renderCharacterCard(character)).join("")
-    : `<div class="empty-state">No characters match "${escapeHtml(search)}".</div>`;
+  const model = buildCharacterDocumentModel();
+  const limit = getDocumentRenderLimit("characters");
+  const shownCount = Math.min(model.visible.length, limit);
+  if (meta) meta.textContent = formatCharacterMeta(model);
+  if (filterBar) filterBar.innerHTML = renderCharacterFilterBar(model);
+  grid.innerHTML = renderCharacterCardsMarkup(model, limit);
+  const shell = dom.charactersPanel?.querySelector(".document-shell");
+  shell?.querySelector("[data-document-limit-notice]")?.remove();
+  shell?.insertAdjacentHTML("beforeend", renderDocumentLimitNotice("characters", shownCount, model.visible.length));
 }
 
-function renderCharacterCard(character) {
+function renderCharacterCard(character, context = getCharacterRenderContext()) {
   const isFocused = state.characterFocusId === character.id;
-  const groups = getCharacterBacklinkGroups(character);
+  const groups = context?.backlinkIndex?.get(character.id) || getCharacterBacklinkGroups(character);
+  const isExpanded = state.characterBacklinkExpandedIds?.has(character.id);
   return `
     <article class="character-card ${isFocused ? "focused" : ""}">
       <div class="character-card-header">
@@ -987,12 +1561,12 @@ function renderCharacterCard(character) {
         <span>Notes</span>
         <textarea data-character-id="${escapeAttr(character.id)}" data-character-field="notes">${escapeHtml(character.notes || "")}</textarea>
       </label>
-      ${renderCharacterBacklinkSections(groups)}
+      ${renderCharacterBacklinkSections(groups, character.id, isExpanded)}
     </article>
   `;
 }
 
-function renderCharacterBacklinkSections(groups) {
+function renderCharacterBacklinkSections(groups, characterId, isExpanded = false) {
   const nonEmptyGroups = groups.filter((group) => group.items.length);
   if (!nonEmptyGroups.length) return `<div class="linked-node empty">No linked scenes yet</div>`;
   return `
@@ -1001,11 +1575,29 @@ function renderCharacterBacklinkSections(groups) {
         <section class="character-backlink-group">
           <h3>${escapeHtml(group.label)}</h3>
           <div class="linked-node-list">
-            ${group.items.map((item) => renderCharacterBacklinkItem(item)).join("")}
+            ${renderCharacterBacklinkGroupItems(group, characterId, isExpanded)}
           </div>
         </section>
       `).join("")}
     </div>
+  `;
+}
+
+function renderCharacterBacklinkGroupItems(group, characterId, isExpanded) {
+  const items = isExpanded ? group.items : group.items.slice(0, CHARACTER_BACKLINK_PREVIEW_LIMIT);
+  const hiddenCount = group.items.length - items.length;
+  return `
+    ${items.map((item) => renderCharacterBacklinkItem(item)).join("")}
+    ${hiddenCount > 0 ? `
+      <button class="linked-node linked-node-more" data-action="toggle-character-backlinks" data-character-id="${escapeAttr(characterId)}">
+        Show ${hiddenCount} more
+      </button>
+    ` : ""}
+    ${isExpanded && group.items.length > CHARACTER_BACKLINK_PREVIEW_LIMIT ? `
+      <button class="linked-node linked-node-more" data-action="toggle-character-backlinks" data-character-id="${escapeAttr(characterId)}">
+        Show fewer
+      </button>
+    ` : ""}
   `;
 }
 
@@ -1028,6 +1620,11 @@ function renderVariablesPage(options = {}) {
   const entries = Object.entries(variables);
   const ruleCards = getPlaybookRuleCards();
   const ruleCount = ruleCards.length;
+  const limit = getDocumentRenderLimit("variables");
+  const visibleEntries = entries.slice(0, limit);
+  const visibleRuleCards = ruleCards.slice(0, limit);
+  const shownCount = Math.max(visibleEntries.length, visibleRuleCards.length);
+  const totalCount = Math.max(entries.length, ruleCount);
   const playbookJson = buildVariablesJson();
   dom.variablesPanel.innerHTML = `
     <div class="document-shell">
@@ -1057,7 +1654,7 @@ function renderVariablesPage(options = {}) {
             <span>Value</span>
             <span></span>
           </div>
-          ${entries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="empty-state">No variables yet.</div>`}
+          ${visibleEntries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="empty-state">No variables yet.</div>`}
         </div>
       </section>
       <section class="playbook-section">
@@ -1066,9 +1663,10 @@ function renderVariablesPage(options = {}) {
           <span>${ruleCount}</span>
         </header>
         <div class="playbook-rule-grid">
-          ${ruleCards.length ? ruleCards.map(renderPlaybookRuleCard).join("") : `<div class="empty-state">No play rules yet.</div>`}
+          ${visibleRuleCards.length ? visibleRuleCards.map(renderPlaybookRuleCard).join("") : `<div class="empty-state">No play rules yet.</div>`}
         </div>
       </section>
+      ${renderDocumentLimitNotice("variables", shownCount, totalCount)}
       ${state.playbookJsonOpen ? `
         <label class="field json-field">
           <span>Advanced JSON</span>
@@ -1201,17 +1799,16 @@ function scrollPlaybookJsonLineIntoView(textarea, lineIndex) {
 }
 
 function renderEventsSheetPage() {
-  const allGroups = getEventRowGroups();
-  const groups = getFilteredEventRowGroups(allGroups);
-  const totalRows = allGroups.reduce((total, group) => total + group.rows.length, 0);
-  const visibleRows = groups.reduce((total, group) => total + group.rows.length, 0);
+  const model = buildEventSheetDocumentModel();
+  const limit = getDocumentRenderLimit("events");
+  const limited = limitEventSheetGroups(model.groups, limit);
   dom.eventsPanel.innerHTML = `
     <div class="document-shell event-sheet-shell">
       <header class="document-header">
         <div>
           <span class="pane-kicker">CSV</span>
           <h2>Events Sheet.csv</h2>
-          <div class="document-meta" data-event-search-meta>${escapeHtml(formatEventSheetMeta(totalRows, visibleRows))}</div>
+          <div class="document-meta" data-event-search-meta>${escapeHtml(formatEventSheetMeta(model))}</div>
         </div>
         <div class="document-actions">
           <label class="event-search-box">
@@ -1221,11 +1818,16 @@ function renderEventsSheetPage() {
           <button class="small-button" data-action="add-node" data-type="Event">Add event frame</button>
           <button class="small-button" data-action="reset-event-row-order" title="Clear manual drag order and re-sort rows by the canvas flow">Re-sort by graph</button>
           <button class="small-button" data-action="export-event-sheet">Export CSV</button>
+          <button class="small-button" data-action="export-event-sheet-json">Export JSON</button>
         </div>
       </header>
-      <div class="event-sheet-groups">
-        ${renderEventSheetGroupsMarkup(allGroups, groups)}
+      <div class="document-filter-bar" data-event-filter-bar>
+        ${renderEventFilterBar(model)}
       </div>
+      <div class="event-sheet-groups">
+        ${renderEventSheetGroupsMarkup(model, limited.groups)}
+      </div>
+      ${renderDocumentLimitNotice("events", limited.shownRows, model.visibleRows)}
     </div>
   `;
 }
@@ -1233,28 +1835,74 @@ function renderEventsSheetPage() {
 function renderEventSheetGroupsForSearch() {
   const groupContainer = dom.eventsPanel?.querySelector(".event-sheet-groups");
   const meta = dom.eventsPanel?.querySelector("[data-event-search-meta]");
+  const filterBar = dom.eventsPanel?.querySelector("[data-event-filter-bar]");
   if (!groupContainer) {
     renderEventsSheetPage();
     return;
   }
+  const model = buildEventSheetDocumentModel();
+  const limit = getDocumentRenderLimit("events");
+  const limited = limitEventSheetGroups(model.groups, limit);
+  if (meta) meta.textContent = formatEventSheetMeta(model);
+  if (filterBar) filterBar.innerHTML = renderEventFilterBar(model);
+  groupContainer.innerHTML = renderEventSheetGroupsMarkup(model, limited.groups);
+  const shell = dom.eventsPanel?.querySelector(".event-sheet-shell");
+  shell?.querySelector("[data-document-limit-notice]")?.remove();
+  shell?.insertAdjacentHTML("beforeend", renderDocumentLimitNotice("events", limited.shownRows, model.visibleRows));
+}
+
+function buildEventSheetDocumentModel() {
   const allGroups = getEventRowGroups();
   const groups = getFilteredEventRowGroups(allGroups);
   const totalRows = allGroups.reduce((total, group) => total + group.rows.length, 0);
   const visibleRows = groups.reduce((total, group) => total + group.rows.length, 0);
-  if (meta) meta.textContent = formatEventSheetMeta(totalRows, visibleRows);
-  groupContainer.innerHTML = renderEventSheetGroupsMarkup(allGroups, groups);
+  const queryRaw = state.eventSearch || "";
+  const query = queryRaw.trim();
+  return { allGroups, groups, totalRows, visibleRows, query, queryRaw };
 }
 
-function renderEventSheetGroupsMarkup(allGroups, groups) {
+function limitEventSheetGroups(groups, limit = getDocumentRenderLimit("events")) {
+  let remaining = Math.max(0, limit);
+  let shownRows = 0;
+  const limitedGroups = [];
+  groups.forEach((group) => {
+    if (remaining <= 0) return;
+    const rows = group.rows.slice(0, remaining);
+    if (!rows.length) return;
+    shownRows += rows.length;
+    remaining -= rows.length;
+    limitedGroups.push({ ...group, rows, totalRows: group.rows.length });
+  });
+  return { groups: limitedGroups, shownRows };
+}
+
+function renderEventSheetGroupsMarkup(model, groups = model.groups) {
   if (groups.length) return groups.map(renderEventSheetGroup).join("");
-  if (allGroups.length) return `<div class="empty-state">No matching event frames.</div>`;
+  if (model.allGroups.length) return `<div class="empty-state">No matching event frames.</div>`;
   return `<div class="empty-state">No event frame nodes yet.</div>`;
 }
 
-function formatEventSheetMeta(totalRows, visibleRows) {
-  const query = state.eventSearch.trim();
-  if (!query) return `${totalRows} event rows from canvas nodes`;
-  return `${visibleRows} of ${totalRows} event rows match "${query}"`;
+function formatEventSheetMeta(model) {
+  if (!model.query) return `${model.totalRows} event rows from canvas nodes`;
+  return `${model.visibleRows} of ${model.totalRows} event rows match "${model.query}"`;
+}
+
+function renderEventFilterBar(model) {
+  if (!model.query) return `<span class="filter-chip quiet">All event rows visible</span>`;
+  return `
+    <span class="filter-chip">
+      Search: ${escapeHtml(model.query)}
+      <button type="button" data-action="clear-event-search" aria-label="Clear event search">Clear</button>
+    </span>
+  `;
+}
+
+function clearEventSearch() {
+  state.eventSearch = "";
+  const input = dom.eventsPanel?.querySelector("[data-event-search]");
+  if (input) input.value = "";
+  renderEventSheetGroupsForSearch();
+  setStatus("Event search cleared.");
 }
 
 function renderEventSheetGroup(group) {
@@ -1264,7 +1912,7 @@ function renderEventSheetGroup(group) {
     <section class="event-sheet-group" data-event-group-type="${escapeAttr(group.type)}">
       <header class="event-sheet-group-header">
         <h3>${escapeHtml(group.label)}</h3>
-        <span>${group.rows.length} rows</span>
+        <span>${group.rows.length}${group.totalRows && group.totalRows !== group.rows.length ? ` of ${group.totalRows}` : ""} rows</span>
       </header>
       <div class="event-sheet-scroll">
         <table class="event-sheet-table">
@@ -1498,6 +2146,7 @@ function renameEventColumn(key) {
   }
 
   setEventColumnLabel(key, label, column);
+  markProjectStructureChanged({ nodeTypes: Boolean(column.custom) });
   renderAll();
   setStatus(`${column.label} renamed to ${label}.`);
 }
@@ -1536,6 +2185,7 @@ function hideEventColumn(key) {
     ? eventSheet.hiddenColumns
     : [...eventSheet.hiddenColumns, targetKey];
   state.project.eventSheet = { ...eventSheet, hiddenColumns };
+  markProjectStructureChanged();
   renderAll();
   setStatus(`${column.label} column hidden. Data kept.`);
 }
@@ -1548,6 +2198,7 @@ function showEventColumn(key) {
     ...eventSheet,
     hiddenColumns: eventSheet.hiddenColumns.filter((item) => String(item) !== targetKey)
   };
+  markProjectStructureChanged();
   renderAll();
   setStatus(`${column?.label || key} column shown.`);
 }
@@ -1572,6 +2223,7 @@ function deleteEventColumn(key) {
     .filter((node) => isEventSheetNode(node))
     .forEach((node) => deleteNodeFieldValue(node, key));
 
+  markProjectStructureChanged({ nodeTypes: Boolean(column.custom) });
   renderAll();
   setStatus(`${column.label} column deleted.`);
 }
@@ -1760,10 +2412,10 @@ function syncCanvasScrollBounds() {
   dom.content.style.height = `${height}px`;
 }
 
-function renderNodes() {
-  const query = state.search.trim().toLowerCase();
+function renderNodes(renderContext = getCanvasRenderContext()) {
+  const query = renderContext.query;
   const focusedCharacterId = getActiveCharacterFocusId();
-  dom.nodeLayer.innerHTML = getCanvasRenderNodes()
+  dom.nodeLayer.innerHTML = getCanvasRenderNodes(renderContext.visibleNodeIds)
     .map((node) => {
       const meta = getNodeMeta(node.type);
       const isSelected = node.id === state.selectedNodeId;
@@ -1807,8 +2459,71 @@ function renderNodes() {
     })
     .join("");
 
-  const matches = query ? state.project.nodes.filter((node) => nodeMatches(node, query)).length : 0;
-  dom.matchCount.textContent = `${matches} matches`;
+  dom.matchCount.textContent = `${renderContext.matchCount} matches`;
+}
+
+function getCanvasRenderContext(query = state.search.trim().toLowerCase()) {
+  return {
+    query,
+    visibleNodeIds: getCanvasVisibleNodeIds(query),
+    nodeMap: getNodeIndex(),
+    matchCount: query ? state.project.nodes.filter((node) => nodeMatches(node, query)).length : 0
+  };
+}
+
+function scheduleCanvasViewportRender() {
+  if (!isCanvasFileActive() || state.canvasViewportRenderFrame) return;
+  state.canvasViewportRenderFrame = window.requestAnimationFrame(() => {
+    state.canvasViewportRenderFrame = null;
+    const canvasRenderContext = getCanvasRenderContext();
+    renderNodes(canvasRenderContext);
+    renderLinks(canvasRenderContext);
+  });
+}
+
+function getCanvasViewportBounds(padding = CANVAS_RENDER_PADDING) {
+  if (!dom.viewport) {
+    return {
+      left: -padding,
+      top: -padding,
+      right: BOARD_WIDTH + padding,
+      bottom: BOARD_HEIGHT + padding
+    };
+  }
+  const scale = Math.max(CANVAS_MIN_ZOOM, state.view.scale || DEFAULT_CANVAS_ZOOM);
+  const left = (dom.viewport.scrollLeft - state.view.x) / scale - padding;
+  const top = (dom.viewport.scrollTop - state.view.y) / scale - padding;
+  const width = (dom.viewport.clientWidth || 0) / scale + padding * 2;
+  const height = (dom.viewport.clientHeight || 0) / scale + padding * 2;
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height
+  };
+}
+
+function shouldForceCanvasNodeRender(node, query) {
+  if (!node) return false;
+  if (node.id === state.selectedNodeId || state.selectedNodeIds.includes(node.id)) return true;
+  if (node.id === state.connectingFrom || node.id === state.contextNodeId) return true;
+  if (query && nodeMatches(node, query)) return true;
+  return false;
+}
+
+function boundsIntersect(a, b) {
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+function getCanvasVisibleNodeIds(query = state.search.trim().toLowerCase()) {
+  const bounds = getCanvasViewportBounds();
+  const ids = new Set();
+  state.project.nodes.forEach((node) => {
+    if (shouldForceCanvasNodeRender(node, query) || boundsIntersect(getNodeBounds(node), bounds)) {
+      ids.add(node.id);
+    }
+  });
+  return ids;
 }
 
 function getNodeTypeLabel(type) {
@@ -1831,7 +2546,7 @@ function getEventFrameTitlePrefix(node) {
   const parts = [];
   if (act) parts.push(`Act ${act}`);
   if (chapter) parts.push(`Ch. ${chapter}`);
-  return parts.length ? `${parts.join(" · ")} ·` : "";
+  return parts.length ? `${parts.join(" - ")} - ` : "";
 }
 
 function getNodeMeta(type) {
@@ -1839,8 +2554,11 @@ function getNodeMeta(type) {
 }
 
 function getNodeTypeMap() {
+  const types = getProjectNodeTypes();
+  const cache = state.derived.nodeTypeMap;
+  if (cache && cache.source === types) return cache.value;
   const map = {};
-  getProjectNodeTypes().forEach((typeDef) => {
+  types.forEach((typeDef) => {
     map[typeDef.type] = {
       badge: typeDef.badge,
       color: typeDef.color,
@@ -1852,6 +2570,7 @@ function getNodeTypeMap() {
       hidden: Boolean(typeDef.hidden)
     };
   });
+  state.derived.nodeTypeMap = { source: types, value: map };
   return map;
 }
 
@@ -1920,7 +2639,9 @@ function getNodeTypeDef(type) {
   return getProjectNodeTypes().find((typeDef) => typeDef.type === type) || null;
 }
 
-function renderLinks() {
+function renderLinks(renderContext = getCanvasRenderContext()) {
+  const visibleNodeIds = renderContext.visibleNodeIds;
+  const nodeMap = renderContext.nodeMap;
   const linkSvg = [
     `<defs>
       <marker id="arrow-head" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="5" markerHeight="5" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
@@ -1930,8 +2651,9 @@ function renderLinks() {
   ];
 
   state.project.links.forEach((link) => {
-    const from = getNode(link.from);
-    const to = getNode(link.to);
+    if (link.id !== state.selectedLinkId && !visibleNodeIds.has(link.from) && !visibleNodeIds.has(link.to)) return;
+    const from = nodeMap.get(link.from);
+    const to = nodeMap.get(link.to);
     if (!from || !to) return;
     const path = linkPath(getOutputPoint(from), getInputPoint(to));
     linkSvg.push(`<path class="link-hitpath" d="${path}" data-link-id="${link.id}"></path>`);
@@ -2348,9 +3070,107 @@ function renderMinimap() {
       const meta = getNodeMeta(node.type);
       const x = Math.max(2, Math.min(164, node.x / BOARD_WIDTH * 180));
       const y = Math.max(2, Math.min(106, node.y / BOARD_HEIGHT * 118));
-      return `<span class="minimap-node" style="left:${x}px; top:${y}px; --node-color:${meta.color}"></span>`;
+      return `<span class="minimap-node" data-minimap-node-id="${escapeAttr(node.id)}" style="left:${x}px; top:${y}px; --node-color:${meta.color}"></span>`;
     })
     .join("");
+}
+
+// --- Incremental canvas updates -------------------------------------------------
+// Drag/resize/edit interactions update only the affected node element and its
+// incident link paths in place, instead of rebuilding the entire node/link/minimap
+// layers every pointer frame. A full resync runs once when the interaction ends.
+
+function getNodeElementById(id) {
+  if (!dom.nodeLayer || !id) return null;
+  return dom.nodeLayer.querySelector(`.node[data-node-id="${id}"]`);
+}
+
+function patchNodeElementGeometry(node, element = getNodeElementById(node.id)) {
+  if (!element) return false;
+  const width = node.width || getNodeMeta(node.type).width || 230;
+  element.style.left = `${node.x}px`;
+  element.style.top = `${node.y}px`;
+  element.style.width = `${width}px`;
+  element.style.height = `${nodeHeight(node)}px`;
+  return true;
+}
+
+function getIncidentLinks(nodeId) {
+  return state.project.links.filter((link) => link.from === nodeId || link.to === nodeId);
+}
+
+// Cache the DOM elements (paths + optional label) for a set of links so per-frame
+// updates don't re-query the SVG. Links incident to a visible node are themselves
+// rendered, so their elements exist.
+function collectLinkElementRefs(links) {
+  if (!dom.linkLayer) return [];
+  return links
+    .map((link) => ({ link, els: [...dom.linkLayer.querySelectorAll(`[data-link-id="${link.id}"]`)] }))
+    .filter((ref) => ref.els.length);
+}
+
+function patchLinkElementRefs(refs) {
+  if (!refs || !refs.length) return;
+  const nodeMap = getNodeIndex();
+  refs.forEach(({ link, els }) => {
+    const from = nodeMap.get(link.from);
+    const to = nodeMap.get(link.to);
+    if (!from || !to) return;
+    const a = getOutputPoint(from);
+    const b = getInputPoint(to);
+    const d = linkPath(a, b);
+    const mid = midpoint(a, b);
+    els.forEach((el) => {
+      if (el.tagName && el.tagName.toLowerCase() === "text") {
+        el.setAttribute("x", mid.x);
+        el.setAttribute("y", mid.y - 8);
+      } else {
+        el.setAttribute("d", d);
+      }
+    });
+  });
+}
+
+function patchMinimapNode(node) {
+  if (!node || !dom.minimap) return false;
+  const element = dom.minimap.querySelector(`[data-minimap-node-id="${node.id}"]`);
+  if (!element) return false;
+  element.style.left = `${Math.max(2, Math.min(164, node.x / BOARD_WIDTH * 180))}px`;
+  element.style.top = `${Math.max(2, Math.min(106, node.y / BOARD_HEIGHT * 118))}px`;
+  return true;
+}
+
+function syncNodePanelGeometryFields(node) {
+  if (!node || state.panel !== "node" || state.selectedNodeId !== node.id) return;
+  const xInput = dom.nodePanel?.querySelector("[data-node-field='x']");
+  const yInput = dom.nodePanel?.querySelector("[data-node-field='y']");
+  if (xInput) xInput.value = String(Math.round(node.x));
+  if (yInput) yInput.value = String(Math.round(node.y));
+}
+
+// Drag/resize already patched the moving node and incident links during the
+// gesture. On release, refresh visible canvas DOM and only the affected minimap
+// marker/geometry fields; rebuilding the Story panel is expensive on huge graphs.
+function resyncCanvasAfterInteraction(nodeId = null) {
+  if (!isCanvasFileActive()) return;
+  const node = getNode(nodeId);
+  if (node) {
+    if (!patchMinimapNode(node)) renderMinimap();
+    syncNodePanelGeometryFields(node);
+    return;
+  }
+  const context = getCanvasRenderContext();
+  renderNodes(context);
+  renderLinks(context);
+  renderMinimap();
+}
+
+function scheduleStoryPanelRender() {
+  if (state.storyPanelRenderTimer) return;
+  state.storyPanelRenderTimer = window.setTimeout(() => {
+    state.storyPanelRenderTimer = null;
+    if (state.panel === "story" || dom.storyPanel) renderStoryPanel();
+  }, 120);
 }
 
 function handleDocumentClick(event) {
@@ -2586,10 +3406,17 @@ function handleAction(target) {
   if (action === "reset-node-icon") resetNodeTypeBadgeDialog();
   if (action === "save-project") saveCurrentState();
   if (action === "new-project") showNewProjectConfirm();
+  if (action === "confirm-new-project") confirmNewProject();
+  if (action === "cancel-new-project") closeNewProjectConfirm();
+  if (action === "open-project-file") openProjectFileFromUi();
+  if (action === "reload-project-file") reloadProjectFileFromUi();
   if (action === "add-character") addCharacter();
   if (action === "delete-character") deleteCharacter(target.dataset.characterId);
   if (action === "focus-character") focusCharacter(target.dataset.characterId);
   if (action === "clear-character-focus") clearCharacterFocus();
+  if (action === "clear-character-search") clearCharacterSearch();
+  if (action === "toggle-character-backlinks") toggleCharacterBacklinks(target.dataset.characterId);
+  if (action === "show-more-document") showMoreDocument(target.dataset.documentId);
   if (action === "add-node-cast") addNodeCast();
   if (action === "delete-node-cast") deleteNodeCast(Number(target.dataset.nodeCastIndex));
   if (action === "add-variable") addVariable();
@@ -2610,10 +3437,13 @@ function handleAction(target) {
   if (action === "export-all") exportAll();
   if (action === "export-json") exportJson();
   if (action === "export-characters-md") exportCharactersMarkdown();
+  if (action === "export-characters-json") exportCharactersJson();
   if (action === "export-image") exportImage();
   if (action === "export-html") exportHtml();
   if (action === "export-variables-json") exportVariablesJson();
   if (action === "export-event-sheet") exportEventSheetCsv();
+  if (action === "export-event-sheet-json") exportEventSheetJson();
+  if (action === "clear-event-search") clearEventSearch();
   if (action === "rename-event-column") renameEventColumn(target.dataset.eventColumnKey);
   if (action === "hide-event-column") hideEventColumn(target.dataset.eventColumnKey);
   if (action === "delete-event-column") showEventColumnDeleteConfirm(target.dataset.eventColumnKey);
@@ -2639,6 +3469,39 @@ function handleAction(target) {
   if (action === "play-prev") previousPreview();
   if (action === "restart-play") openPreview();
   commitHistoryFromSnapshot(historyBefore);
+}
+
+async function openProjectFileFromUi() {
+  if (!confirmDiscardUnsavedProject("Open another project and discard unsaved changes?")) return;
+  const host = window.NarrativeCanvasHost;
+  if (host?.chooseProjectFile) {
+    try {
+      await host.chooseProjectFile();
+      renderProjectFileStatus();
+    } catch (error) {
+      console.error(error);
+      setStatus("Could not open project picker.");
+    }
+    return;
+  }
+  dom.fileInput?.click();
+}
+
+async function reloadProjectFileFromUi() {
+  if (!confirmDiscardUnsavedProject("Reload the current project and discard unsaved changes?")) return;
+  const host = window.NarrativeCanvasHost;
+  if (host?.loadProject) {
+    const loaded = await loadCurrentVaultProject();
+    setStatus(loaded ? `Reloaded ${getHostProjectFileLabel()}.` : "No project file to reload.");
+    return;
+  }
+  const hasWebState = Boolean(loadWebState());
+  const restored = await loadSavedState(true);
+  if (restored === false && !hasWebState) setStatus("No saved project to reload.");
+}
+
+function confirmDiscardUnsavedProject(message) {
+  return !state.hasUnsavedChanges || window.confirm?.(message) !== false;
 }
 
 function showPlaybookHelp() {
@@ -2854,6 +3717,7 @@ function deleteSelectedNodes() {
   const idSet = new Set(ids);
   state.project.nodes = state.project.nodes.filter((node) => !idSet.has(node.id));
   state.project.links = state.project.links.filter((link) => !idSet.has(link.from) && !idSet.has(link.to));
+  invalidateCharacterRenderContext();
   clearStoryOrderOverrides();
   clearEventRowOrderOverrides();
   clearNodeSelection();
@@ -2864,6 +3728,7 @@ function deleteSelectedNodes() {
 
 function selectFile(fileId) {
   if (!fileViews[fileId]) return;
+  if (state.activeFileId === fileId) return;
   state.activeFileId = fileId;
 
   if (fileId === "adventure") {
@@ -2874,25 +3739,31 @@ function selectFile(fileId) {
   }
 
   if (fileId === "characters") {
-    state.panel = "story";
-    renderAll();
+    renderDocumentFileSwitch();
     setStatus("Characters.md opened.");
     return;
   }
 
   if (fileId === "events") {
-    state.panel = "project";
-    renderAll();
+    renderDocumentFileSwitch();
     setStatus("Events Sheet.csv opened.");
     return;
   }
 
-  state.panel = "project";
-  renderAll();
+  renderDocumentFileSwitch();
   setStatus(`${PLAYBOOK_FILE_NAME} opened.`);
   requestAnimationFrame(() => {
     dom.variablesPanel?.querySelector("[data-project-field='variables']")?.focus();
   });
+}
+
+function renderDocumentFileSwitch() {
+  hideNodeContextMenu();
+  renderShellState();
+  renderWorkspaceFile();
+  renderInspectorTabs();
+  updateStatus();
+  renderHistoryButtons();
 }
 
 function getEditableHistoryKey(target) {
@@ -2947,19 +3818,24 @@ function handleInput(event) {
       renderShellState();
       renderWorkspaceFile();
     }
-    renderNodes();
+    const canvasRenderContext = getCanvasRenderContext();
+    renderTransform();
+    renderNodes(canvasRenderContext);
+    renderLinks(canvasRenderContext);
     updateStatus();
     return;
   }
 
   if (target.hasAttribute && target.hasAttribute("data-character-search")) {
     state.characterSearch = target.value;
+    resetDocumentRenderLimit("characters");
     renderCharacterGridForSearch();
     return;
   }
 
   if (target.hasAttribute && target.hasAttribute("data-event-search")) {
     state.eventSearch = target.value;
+    resetDocumentRenderLimit("events");
     renderEventSheetGroupsForSearch();
     return;
   }
@@ -3006,6 +3882,11 @@ function handleInput(event) {
 function handleChange(event) {
   const target = event.target;
   if (!isNarrativeCanvasTarget(target)) return;
+
+  if (target === dom.exportImageScale) {
+    setExportImageScale(target.value);
+    return;
+  }
 
   if (target.dataset.characterField) {
     setCharacterField(target.dataset.characterId, target.dataset.characterField, target.value, true);
@@ -3403,15 +4284,19 @@ function handleViewportPointerDown(event) {
     const node = getNode(resizeHandle.dataset.nodeId);
     if (!node) return;
     const size = nodeSize(node);
-    beginHistoryCapture();
+    beginGeometryHistoryCapture(node);
     selectNode(node.id, false);
+    // Cache the element + incident link elements AFTER selectNode re-rendered, so
+    // the move handler can patch them in place without re-querying or re-rendering.
     state.resizingNode = {
       id: node.id,
       handle: resizeHandle.dataset.resizeHandle,
       startX: event.clientX,
       startY: event.clientY,
       width: size.width,
-      height: size.height
+      height: size.height,
+      element: getNodeElementById(node.id),
+      linkRefs: collectLinkElementRefs(getIncidentLinks(node.id))
     };
     dom.viewport.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -3422,14 +4307,16 @@ function handleViewportPointerDown(event) {
   if (handle) {
     const node = getNode(handle.dataset.nodeId);
     if (!node) return;
-    beginHistoryCapture();
+    beginGeometryHistoryCapture(node);
     selectNode(node.id, false);
     state.draggingNode = {
       id: node.id,
       startX: event.clientX,
       startY: event.clientY,
       nodeX: node.x,
-      nodeY: node.y
+      nodeY: node.y,
+      element: getNodeElementById(node.id),
+      linkRefs: collectLinkElementRefs(getIncidentLinks(node.id))
     };
     dom.viewport.setPointerCapture(event.pointerId);
     return;
@@ -3585,6 +4472,7 @@ function cancelPendingConnection() {
 function handleViewportScroll() {
   hideNodeContextMenu();
   updateGridPosition();
+  scheduleCanvasViewportRender();
 }
 
 function handleViewportPointerMove(event) {
@@ -3620,19 +4508,26 @@ function handleViewportPointerMove(event) {
         maxNodeHeight(node)
       ));
     }
-    renderNodes();
-    renderLinks();
-    renderMinimap();
-    renderInspector();
+    // Patch only this node + its links in place; full resync runs on pointer-up.
+    if (patchNodeElementGeometry(node, state.resizingNode.element)) {
+      patchLinkElementRefs(state.resizingNode.linkRefs);
+    } else {
+      const context = getCanvasRenderContext();
+      renderNodes(context);
+      renderLinks(context);
+    }
   } else if (state.draggingNode) {
     const node = getNode(state.draggingNode.id);
     if (!node) return;
     node.x = Math.round(state.draggingNode.nodeX + (event.clientX - state.draggingNode.startX) / state.view.scale);
     node.y = Math.round(state.draggingNode.nodeY + (event.clientY - state.draggingNode.startY) / state.view.scale);
-    renderNodes();
-    renderLinks();
-    renderMinimap();
-    renderInspector();
+    if (patchNodeElementGeometry(node, state.draggingNode.element)) {
+      patchLinkElementRefs(state.draggingNode.linkRefs);
+    } else {
+      const context = getCanvasRenderContext();
+      renderNodes(context);
+      renderLinks(context);
+    }
   } else if (state.panning) {
     dom.viewport.scrollLeft = state.panning.scrollLeft - (event.clientX - state.panning.startX);
     dom.viewport.scrollTop = state.panning.scrollTop - (event.clientY - state.panning.startY);
@@ -3650,6 +4545,7 @@ function endPointerActions(event) {
     return;
   }
   const shouldCommitHistory = Boolean(state.draggingNode || state.resizingNode);
+  const interactionNodeId = state.draggingNode?.id || state.resizingNode?.id || null;
   if (state.draggingNode || state.resizingNode || state.panning) {
     try {
       dom.viewport.releasePointerCapture(event.pointerId);
@@ -3660,7 +4556,12 @@ function endPointerActions(event) {
   state.draggingNode = null;
   state.resizingNode = null;
   state.panning = null;
-  if (shouldCommitHistory) commitHistoryCapture();
+  if (shouldCommitHistory) {
+    commitGeometryHistoryCapture();
+    // The interaction patched the canvas in place; refresh visible DOM once and
+    // update only the affected minimap marker/geometry fields.
+    resyncCanvasAfterInteraction(interactionNodeId);
+  }
 }
 
 function handleWheel(event) {
@@ -3675,6 +4576,7 @@ function handleWheel(event) {
   state.view.y = event.clientY - rect.top + dom.viewport.scrollTop - before.y * nextScale;
   renderTransform();
   updateGridPosition();
+  scheduleCanvasViewportRender();
   renderProjectPanel();
 }
 
@@ -3700,6 +4602,8 @@ function handlePortClick(port) {
       }
       const historyBefore = getHistorySnapshot();
       link.to = nodeId;
+      invalidateLinkIndexes();
+      markProjectStructureChanged();
       finishLinkReconnect(link);
       commitHistoryFromSnapshot(historyBefore);
       return;
@@ -3715,6 +4619,8 @@ function handlePortClick(port) {
       }
       const historyBefore = getHistorySnapshot();
       link.from = nodeId;
+      invalidateLinkIndexes();
+      markProjectStructureChanged();
       finishLinkReconnect(link);
       commitHistoryFromSnapshot(historyBefore);
       return;
@@ -3736,6 +4642,7 @@ function handlePortClick(port) {
       to: nodeId
     };
     state.project.links.push(link);
+    markProjectStructureChanged();
     clearStoryOrderOverrides();
     clearEventRowOrderOverrides();
     state.connectingFrom = null;
@@ -3777,6 +4684,7 @@ function addNode(type) {
   if (type === "Condition") node.condition = "flag == true";
   applyNodeTypeDefaults(node);
   state.project.nodes.push(normalizeNode(node));
+  markProjectStructureChanged();
   selectNode(node.id);
   setStatus(`${getNodeTypeLabel(type)} added.`);
 }
@@ -3796,6 +4704,7 @@ function addCustomNodeType() {
     fields: parseCustomNodeFields(dom.customNodeFields.value)
   });
   state.project.nodeTypes = [...getProjectNodeTypes(), typeDef];
+  markProjectStructureChanged({ nodeTypes: true });
   dom.customNodeName.value = "";
   dom.customNodeKind.value = "node";
   dom.customNodeFields.value = "";
@@ -3824,6 +4733,7 @@ function deleteCustomNodeType(type) {
   if (window.confirm && !window.confirm(message)) return;
 
   state.project.nodeTypes = getProjectNodeTypes().filter((item) => item.type !== type);
+  markProjectStructureChanged({ nodeTypes: true });
   renderPalette();
   renderInspector();
   setStatus(`${label} node type deleted.`);
@@ -3834,6 +4744,7 @@ function hideNodeType(type) {
   const typeDef = getProjectNodeTypes().find((item) => item.type === type);
   if (!typeDef) return;
   typeDef.hidden = true;
+  markProjectStructureChanged({ nodeTypes: true });
   renderPalette();
   renderInspector();
   setStatus(`${typeDef.label || type} hidden from Node Library. Data kept.`);
@@ -3858,6 +4769,7 @@ function restoreDefaultNodeTypes() {
   });
 
   state.project.nodeTypes = normalizeNodeTypes(current);
+  markProjectStructureChanged({ nodeTypes: true });
   renderAll();
   if (restored) {
     setStatus("Default node types restored.");
@@ -3870,6 +4782,7 @@ function restoreNodeType(type) {
   const typeDef = getNodeTypeDef(type);
   if (!typeDef) return;
   typeDef.hidden = false;
+  markProjectStructureChanged({ nodeTypes: true });
   renderPalette();
   renderInspector();
   setStatus(`${typeDef.label || type} restored to Node Library.`);
@@ -3915,6 +4828,7 @@ function addCharacter() {
   };
   characters.push(character);
   state.project.characters = characters;
+  invalidateCharacterRenderContext();
   state.activeFileId = "characters";
   renderCharacterListSurfaces();
   setStatus("Character added.");
@@ -3928,11 +4842,13 @@ function deleteCharacter(id) {
   }
   const character = characters.find((item) => item.id === id);
   state.project.characters = characters.filter((item) => item.id !== id);
+  invalidateCharacterRenderContext();
   state.project.nodes.forEach((node) => {
     node.cast = normalizeNodeCast(node.cast).filter((entry) => entry.characterId !== id);
     if (!node.cast.length) delete node.cast;
   });
   if (state.characterFocusId === id || !getCharacterById(state.characterFocusId)) state.characterFocusId = null;
+  state.characterBacklinkExpandedIds?.delete(id);
   state.activeFileId = "characters";
   renderCharacterListSurfaces();
   setStatus(character ? `${character.name} deleted.` : "Character deleted.");
@@ -3941,6 +4857,7 @@ function deleteCharacter(id) {
 function setCharacterField(id, field, value, rerender) {
   const character = getCharacters().find((item) => item.id === id);
   if (!character) return;
+  invalidateCharacterRenderContext();
   if (field === "name") {
     const previousName = character.name;
     character.name = value;
@@ -3949,12 +4866,15 @@ function setCharacterField(id, field, value, rerender) {
         node.title = value;
       }
     });
-    renderNodes();
-    renderStoryPanel();
+    if (rerender) {
+      if (isCanvasFileActive()) renderNodes();
+      renderStoryPanel();
+    }
   } else {
     character[field] = value;
   }
-  updateStatus();
+  setProjectDirty(true);
+  if (rerender) updateStatus();
   if (rerender) renderWorkspaceFile();
 }
 
@@ -3972,6 +4892,30 @@ function clearCharacterFocus() {
   state.characterFocusId = null;
   renderAll();
   setStatus("Character focus cleared.");
+}
+
+function clearCharacterSearch() {
+  state.characterSearch = "";
+  resetDocumentRenderLimit("characters");
+  const input = dom.charactersPanel?.querySelector("[data-character-search]");
+  if (input) input.value = "";
+  renderCharacterGridForSearch();
+  setStatus("Character search cleared.");
+}
+
+function toggleCharacterBacklinks(id) {
+  if (!id || !getCharacterById(id)) return;
+  if (!state.characterBacklinkExpandedIds || !(state.characterBacklinkExpandedIds instanceof Set)) {
+    state.characterBacklinkExpandedIds = new Set();
+  }
+  if (state.characterBacklinkExpandedIds.has(id)) {
+    state.characterBacklinkExpandedIds.delete(id);
+    setStatus("Character links collapsed.");
+  } else {
+    state.characterBacklinkExpandedIds.add(id);
+    setStatus("Character links expanded.");
+  }
+  renderCharacterGridForSearch();
 }
 
 function addNodeCast() {
@@ -4018,12 +4962,16 @@ function setNodeCastField(index, field, value, rerender) {
     entry.role = normalizeCastRole(value);
   }
   node.cast = normalizeNodeCast(cast);
+  setProjectDirty(true);
   renderCharacterAwareSurfaces(rerender ? node : null);
 }
 
 function renderCharacterAwareSurfaces(nodeForPanel = null) {
-  renderNodes();
-  renderLinks();
+  invalidateCharacterRenderContext();
+  if (isCanvasFileActive()) {
+    renderNodes();
+    renderLinks();
+  }
   renderStoryPanel();
   renderProjectPanel();
   renderWorkspaceFile();
@@ -4245,6 +5193,7 @@ function setVariableField(key, field, value, rerender) {
   }
 
   state.project.variables = variables;
+  setProjectDirty(true);
   renderNodes();
   renderStoryPanel();
   renderProjectPanel();
@@ -4398,6 +5347,7 @@ function applyNodeTypeValues(type, values) {
     eventSheet.hiddenColumns = eventSheet.hiddenColumns.filter((key) => !removed.has(key));
   }
 
+  markProjectStructureChanged({ nodeTypes: true });
   renderAll();
   setStatus(`${typeDef.label} node type updated.`);
 }
@@ -4447,6 +5397,7 @@ function resetNodeTypeBadgeDialog() {
   if (!typeDef) return;
   typeDef.badge = getDefaultNodeTypeBadge(typeDef.label);
   typeDef.badgeCustom = false;
+  markProjectStructureChanged({ nodeTypes: true });
   if (dom.nodeIconDialog?.open) dom.nodeIconDialog.close("reset");
   finishNodeTypeBadgeEdit("Node type icon now uses type initial.");
 }
@@ -4457,6 +5408,7 @@ function applyNodeTypeBadgeValue(type, value) {
   const nextIcon = normalizeNodeTypeBadge(value);
   typeDef.badge = nextIcon || getDefaultNodeTypeBadge(typeDef.label);
   typeDef.badgeCustom = Boolean(nextIcon);
+  markProjectStructureChanged({ nodeTypes: true });
   finishNodeTypeBadgeEdit(nextIcon ? "Node type icon updated." : "Node type icon now uses type initial.");
 }
 
@@ -4481,6 +5433,7 @@ function setProjectField(field, value) {
   } else {
     state.project[field] = value;
   }
+  setProjectDirty(true);
 
   if (field === "title" || field === "notes") {
     renderShellState();
@@ -4505,6 +5458,7 @@ function setProjectField(field, value) {
 function setNodeField(field, value) {
   const node = getNode(state.selectedNodeId);
   if (!node) return;
+  invalidateCharacterRenderContext();
   if (field === "x" || field === "y") {
     node[field] = Number(value) || 0;
   } else if (field === "choices") {
@@ -4515,13 +5469,19 @@ function setNodeField(field, value) {
   } else {
     node[field] = value;
   }
+  if (field === "type") markProjectStructureChanged({ nodeTypes: true });
+  setProjectDirty(true);
+  // Incremental: rebuild only the visible nodes (cheap) and patch this node's
+  // incident links in place. The minimap only changes when position changes, and
+  // the (potentially large) story panel is refreshed on a short debounce instead
+  // of on every keystroke.
   renderNodes();
-  renderLinks();
-  renderMinimap();
+  patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
+  if (field === "x" || field === "y") renderMinimap();
   if (field === "type") {
     renderInspector();
   } else {
-    renderStoryPanel();
+    scheduleStoryPanelRender();
   }
   updateStatus();
 }
@@ -4531,6 +5491,7 @@ function setNodeCustomField(key, value, rerender) {
   if (!node) return;
   const fields = getNodeMeta(node.type).fields || [];
   if (!fields.some((field) => field.key === key)) return;
+  invalidateCharacterRenderContext();
   if (key === "choices") {
     node.choices = parseChoiceLines(value);
   } else if (isDirectNodeField(key)) {
@@ -4539,8 +5500,10 @@ function setNodeCustomField(key, value, rerender) {
     if (!node.customFields || typeof node.customFields !== "object" || Array.isArray(node.customFields)) node.customFields = {};
     node.customFields[key] = value;
   }
+  setProjectDirty(true);
   renderNodes();
-  renderStoryPanel();
+  patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
+  scheduleStoryPanelRender();
   renderProjectPanel();
   updateStatus();
   if (rerender) renderNodePanel(node);
@@ -4550,6 +5513,7 @@ function setEventField(nodeId, field, value, rerender) {
   const node = getNode(nodeId);
   const column = getEventSheetColumns().find((item) => item.key === field);
   if (!node || !column || column.readonly) return;
+  invalidateCharacterRenderContext();
   if (column.custom && !isDirectNodeField(field)) {
     if (!node.customFields || typeof node.customFields !== "object" || Array.isArray(node.customFields)) node.customFields = {};
     node.customFields[field] = value;
@@ -4559,6 +5523,7 @@ function setEventField(nodeId, field, value, rerender) {
     node[field] = value;
   }
   if (field === "eventDescription" && !node.body) node.body = value;
+  setProjectDirty(true);
   renderNodes();
   renderStoryPanel();
   renderProjectPanel();
@@ -4572,6 +5537,7 @@ function duplicateSelectedNode() {
   if (!node) return;
   const copy = { ...cloneProject(node), id: nextId("n", state.project.nodes), x: node.x + 42, y: node.y + 42 };
   state.project.nodes.push(copy);
+  invalidateCharacterRenderContext();
   selectNode(copy.id);
   setStatus("Node duplicated.");
 }
@@ -4582,6 +5548,7 @@ function deleteSelectedNode() {
   archiveDeletedNode(id);
   state.project.nodes = state.project.nodes.filter((node) => node.id !== id);
   state.project.links = state.project.links.filter((link) => link.from !== id && link.to !== id);
+  invalidateCharacterRenderContext();
   clearStoryOrderOverrides();
   clearEventRowOrderOverrides();
   clearNodeSelection();
@@ -4692,6 +5659,7 @@ function centerCanvasOnBoardPoint(boardX, boardY, scale = state.view.scale) {
   state.view.y = rect.height / 2 - boardY * state.view.scale;
   renderTransform();
   updateGridPosition();
+  scheduleCanvasViewportRender();
 }
 
 function handleMinimapPointerDown(event) {
@@ -4734,6 +5702,7 @@ function centerView(announce = true) {
   state.view.y = getCanvasAxisOffset(bounds.y, bounds.height, state.view.scale, rect.height);
   renderTransform();
   updateGridPosition();
+  scheduleCanvasViewportRender();
   renderProjectPanel();
   if (announce) setStatus("Canvas centered.");
 }
@@ -4747,6 +5716,7 @@ function centerViewAtScale(scale = DEFAULT_CANVAS_ZOOM, announce = false) {
   state.view.y = getCanvasAxisOffset(bounds.y, bounds.height, state.view.scale, rect.height);
   renderTransform();
   updateGridPosition();
+  scheduleCanvasViewportRender();
   renderProjectPanel();
   if (announce) setStatus("Canvas centered.");
 }
@@ -4766,6 +5736,7 @@ function autoLayoutCanvas(orientation = "horizontal") {
   fitAutoLayoutFrames(frameChildren);
 
   state.activeFileId = "adventure";
+  markProjectStructureChanged();
   renderAll();
   centerView(false);
   setStatus(direction === "horizontal" ? "Canvas arranged horizontally." : "Canvas arranged vertically.");
@@ -4936,6 +5907,7 @@ function setZoom(value) {
   state.view.y = centerY - rect.top + dom.viewport.scrollTop - before.y * state.view.scale;
   renderTransform();
   updateGridPosition();
+  scheduleCanvasViewportRender();
   renderProjectPanel();
 }
 
@@ -4944,6 +5916,23 @@ function toggleTheme() {
   renderShellState();
   renderTransform();
   updateGridPosition();
+}
+
+function normalizeExportImageScale(value) {
+  const numeric = Number(value);
+  const preset = EXPORT_IMAGE_SCALES.find((item) => item.scale === numeric || item.value === String(value));
+  return preset ? preset.scale : 1;
+}
+
+function getExportImageScalePreset(scale = state.exportImageScale) {
+  return EXPORT_IMAGE_SCALES.find((item) => item.scale === normalizeExportImageScale(scale)) || EXPORT_IMAGE_SCALES[0];
+}
+
+function setExportImageScale(value) {
+  const preset = getExportImageScalePreset(value);
+  state.exportImageScale = preset.scale;
+  renderShellState();
+  setStatus(`Image export resolution set to ${preset.label}.`);
 }
 
 function updateGridPosition() {
@@ -4967,8 +5956,8 @@ function resetCanvasScroll() {
   dom.viewport.scrollTop = 0;
 }
 
-function newProject() {
-  state.project = {
+function createBlankProject() {
+  return {
     title: "Untitled",
     notes: "",
     variables: defaultVariables(),
@@ -4978,24 +5967,72 @@ function newProject() {
     nodes: [normalizeNode({ id: "n0", type: "Entry", title: "Start", body: "Adventure Begins", x: 120, y: 120 })],
     links: []
   };
+}
+
+async function newProject() {
+  state.project = createBlankProject();
+  markProjectStructureChanged({ nodeTypes: true });
   state.selectedNodeId = "n0";
   state.selectedLinkId = null;
   state.panel = "project";
   state.activeFileId = "adventure";
   centerViewAtScale(DEFAULT_CANVAS_ZOOM, false);
   resetHistory();
+  setProjectDirty(true);
   renderAll();
-  setStatus("New project created.");
-  createVaultProjectForNewProject();
+  setStatus("Creating new project file...");
+  const target = await createVaultProjectForNewProject();
+  renderProjectFileStatus();
+  if (!target && window.NarrativeCanvasHost?.createProjectFile) {
+    setStatus("New project created, but vault file creation failed.");
+  } else if (!target) {
+    setStatus("New project created.");
+  }
 }
 
 function showNewProjectConfirm() {
+  updateNewProjectPathPreview();
   if (dom.confirmDialog?.showModal) {
     dom.confirmDialog.returnValue = "";
     dom.confirmDialog.showModal();
     return;
   }
-  if (window.confirm("Discard the current canvas and create a blank one?")) newProject();
+  if (window.confirm("Discard the current canvas and create a blank one?")) void newProject();
+}
+
+function confirmNewProject() {
+  if (dom.confirmDialog?.open) {
+    dom.confirmDialog.returnValue = "handled";
+    dom.confirmDialog.close("handled");
+  }
+  void newProject();
+}
+
+function closeNewProjectConfirm() {
+  if (dom.confirmDialog?.open) {
+    dom.confirmDialog.returnValue = "cancel";
+    dom.confirmDialog.close("cancel");
+  }
+}
+
+async function updateNewProjectPathPreview() {
+  if (!dom.newProjectPathPreview) return;
+  const host = window.NarrativeCanvasHost;
+  if (!host?.previewNewProjectFile) {
+    dom.newProjectPathPreview.textContent = host
+      ? "A new .ncanvas file will be created from the plugin save settings."
+      : "The new project will use browser storage until you save or export it.";
+    return;
+  }
+  try {
+    const target = await host.previewNewProjectFile(JSON.stringify(buildSavedStateForProject(createBlankProject()), null, 2));
+    dom.newProjectPathPreview.textContent = target
+      ? `New file: ${target}`
+      : "A new .ncanvas file will be created from the plugin save settings.";
+  } catch (error) {
+    console.error(error);
+    dom.newProjectPathPreview.textContent = "Could not preview the new project file name.";
+  }
 }
 
 function showNodeRequiredDialog() {
@@ -5006,7 +6043,14 @@ function showNodeRequiredDialog() {
   setStatus("Select a node first to open the Node inspector.");
 }
 
-async function saveCurrentState() {
+async function saveCurrentState(options = {}) {
+  const silent = Boolean(options.silent);
+  clearAutoSaveTimer();
+  const dirtyVersionAtStart = state.dirtyVersion;
+  state.isSaving = true;
+  state.saveError = false;
+  renderProjectFileStatus();
+
   const savedState = buildSavedState();
   const savedStateJson = JSON.stringify(savedState, null, 2);
   try {
@@ -5020,30 +6064,53 @@ async function saveCurrentState() {
         const stateTarget = await host.saveState(savedState);
         if (stateTarget) targets.push(stateTarget);
       }
-      setStatus(targets.length ? `Project saved to ${targets.join(" and ")}.` : "Project saved.");
+      finishSuccessfulSave(dirtyVersionAtStart);
+      if (!silent) setStatus(targets.length ? `Project saved to ${targets.join(" and ")}.` : "Project saved.");
       return true;
     }
     saveWebState(savedState);
-    setStatus("Project saved.");
+    finishSuccessfulSave(dirtyVersionAtStart);
+    if (!silent) setStatus("Project saved.");
     return true;
   } catch (error) {
     console.error(error);
-    setStatus("Project save failed.");
+    state.isSaving = false;
+    state.saveError = true;
+    renderProjectFileStatus();
+    scheduleAutoSave();
+    if (!silent) setStatus("Project save failed.");
     return false;
   }
 }
 
+function finishSuccessfulSave(dirtyVersionAtStart) {
+  state.isSaving = false;
+  state.saveError = false;
+  if (state.dirtyVersion === dirtyVersionAtStart) {
+    setProjectDirty(false);
+    return;
+  }
+  state.hasUnsavedChanges = true;
+  renderProjectFileStatus();
+  scheduleAutoSave();
+}
+
 async function createVaultProjectForNewProject() {
   const host = window.NarrativeCanvasHost;
-  if (!host?.createProjectFile) return false;
+  if (!host?.createProjectFile) return "";
   try {
     const target = await host.createProjectFile(JSON.stringify(buildSavedState(), null, 2));
-    if (target) setStatus(`New project created at ${target}.`);
-    return Boolean(target);
+    if (target) {
+      setProjectDirty(false);
+      renderProjectFileStatus();
+      setStatus(`New project created at ${target}.`);
+    }
+    return target || "";
   } catch (error) {
     console.error(error);
     setStatus("New project created, but vault JSON creation failed.");
-    return false;
+    renderProjectFileStatus();
+    return "";
   }
 }
 
@@ -5070,6 +6137,7 @@ async function loadSavedState(announce = true) {
       const saved = await host.loadState();
       if (saved) {
         const restoredView = applySavedState(saved);
+        setProjectDirty(false);
         if (announce) setStatus(`Loaded ${host.stateFile || "saved state"}.`);
         return restoredView;
       }
@@ -5083,6 +6151,7 @@ async function loadSavedState(announce = true) {
     const saved = loadWebState();
     if (saved) {
       const restoredView = applySavedState(saved);
+      setProjectDirty(false);
       if (announce) setStatus("Loaded browser saved state.");
       return restoredView;
     }
@@ -5093,21 +6162,41 @@ async function loadSavedState(announce = true) {
 
 function buildSavedState() {
   state.project = normalizeProject(state.project);
+  return buildSavedStateForProject(state.project, {
+    selectedNodeId: state.selectedNodeId,
+    selectedLinkId: state.selectedLinkId,
+    panel: state.panel,
+    activeFileId: state.activeFileId,
+    theme: state.theme,
+    exportImageScale: state.exportImageScale,
+    view: { ...state.view },
+    sidebar: getSavedSidebarState(),
+    search: state.search,
+    characterSearch: state.characterSearch,
+    eventSearch: state.eventSearch,
+    playbookJsonOpen: state.playbookJsonOpen
+  });
+}
+
+function buildSavedStateForProject(project, uiOverrides = {}) {
   return {
     version: SAVED_STATE_VERSION,
     savedAt: new Date().toISOString(),
-    project: cloneProject(state.project),
+    project: cloneProject(normalizeProject(project)),
     ui: {
-      selectedNodeId: state.selectedNodeId,
-      selectedLinkId: state.selectedLinkId,
-      panel: state.panel,
-      activeFileId: state.activeFileId,
+      selectedNodeId: null,
+      selectedLinkId: null,
+      panel: "project",
+      activeFileId: "adventure",
       theme: state.theme,
-      view: { ...state.view },
+      exportImageScale: state.exportImageScale,
+      view: { x: 0, y: 0, scale: DEFAULT_CANVAS_ZOOM },
       sidebar: getSavedSidebarState(),
-      search: state.search,
-      eventSearch: state.eventSearch,
-      playbookJsonOpen: state.playbookJsonOpen
+      search: "",
+      characterSearch: "",
+      eventSearch: "",
+      playbookJsonOpen: false,
+      ...uiOverrides
     }
   };
 }
@@ -5117,6 +6206,8 @@ function applySavedState(saved) {
   if (!payload) return false;
   const projectSource = payload.project || payload;
   state.project = normalizeProject(projectSource);
+  markProjectStructureChanged({ nodeTypes: true });
+  invalidateCharacterRenderContext();
 
   const ui = payload.ui || {};
   state.selectedNodeId = getValidSavedNodeId(ui.selectedNodeId);
@@ -5124,8 +6215,10 @@ function applySavedState(saved) {
   state.panel = getValidSavedPanel(ui.panel, state.selectedNodeId);
   state.activeFileId = fileViews[ui.activeFileId] ? ui.activeFileId : "adventure";
   state.theme = ui.theme === "light" ? "light" : "dark";
+  state.exportImageScale = normalizeExportImageScale(ui.exportImageScale);
   applySavedSidebarState(ui.sidebar);
   state.search = typeof ui.search === "string" ? ui.search : "";
+  state.characterSearch = typeof ui.characterSearch === "string" ? ui.characterSearch : "";
   state.eventSearch = typeof ui.eventSearch === "string" ? ui.eventSearch : "";
   state.playbookJsonOpen = Boolean(ui.playbookJsonOpen);
   return applySavedView(ui.view);
@@ -5199,6 +6292,7 @@ async function loadFromVault(announce = true) {
     if (!payload) throw new Error("Vault project JSON could not be parsed.");
     const restoredView = applySavedState(payload);
     if (!state.selectedNodeId) state.selectedNodeId = state.project.nodes[0]?.id || null;
+    setProjectDirty(false);
     if (announce) setStatus(`Loaded ${getHostProjectFileLabel()}.`);
     return restoredView;
   } catch (error) {
@@ -5217,7 +6311,8 @@ async function ensureVaultProjectFile() {
   const host = window.NarrativeCanvasHost;
   if (!host?.ensureProjectFile) return false;
   try {
-    const target = await host.ensureProjectFile(JSON.stringify(buildSavedState(), null, 2));
+    const options = isSampleProjectForFilename() ? { filenameOverride: SAMPLE_PROJECT_FILENAME } : undefined;
+    const target = await host.ensureProjectFile(JSON.stringify(buildSavedState(), null, 2), options);
     if (target) setStatus(`Created ${target}.`);
     return Boolean(target);
   } catch (error) {
@@ -5225,6 +6320,12 @@ async function ensureVaultProjectFile() {
     setStatus("Could not create vault project file.");
     return false;
   }
+}
+
+function isSampleProjectForFilename() {
+  return state.project?.title === sampleProject.title
+    && state.project?.variables?.traveler === sampleProject.variables.traveler
+    && state.project?.nodes?.some((node) => node.id === "e1" && node.type === "StorySequence");
 }
 
 function exportJson() {
@@ -5236,6 +6337,11 @@ function exportJson() {
 function exportCharactersMarkdown() {
   downloadBlob(new Blob([buildCharactersMarkdown()], { type: "text/markdown;charset=utf-8" }), "Characters.md");
   setStatus("Characters Markdown exported.");
+}
+
+function exportCharactersJson() {
+  downloadJsonFile(buildCharactersJsonDocument(), "Characters.json");
+  setStatus("Characters JSON exported.");
 }
 
 function exportVariablesJson() {
@@ -5250,15 +6356,22 @@ function exportEventSheetCsv() {
   setStatus("Event sheet CSV exported.");
 }
 
+function exportEventSheetJson() {
+  downloadJsonFile(buildEventSheetJsonDocument(), `${slugify(state.project.title || "narrative-canvas")}-events.json`);
+  setStatus("Event sheet JSON exported.");
+}
+
 async function exportImage() {
+  const preset = getExportImageScalePreset();
+  const slug = slugify(state.project.title || "narrative-canvas");
   try {
     const svg = buildExportSvg();
-    const blob = await svgToPngBlob(svg);
-    downloadBlob(blob, `${slugify(state.project.title || "narrative-canvas")}.png`);
-    setStatus("Image exported.");
+    const blob = await svgToPngBlob(svg, preset.scale);
+    downloadBlob(blob, `${slug}${preset.suffix}.png`);
+    setStatus(`Image exported at ${preset.label}.`);
   } catch (error) {
     console.error(error);
-    downloadBlob(new Blob([buildExportSvg()], { type: "image/svg+xml" }), `${slugify(state.project.title || "narrative-canvas")}.svg`);
+    downloadBlob(new Blob([buildExportSvg()], { type: "image/svg+xml" }), `${slug}.svg`);
     setStatus("PNG export failed; SVG exported.");
   }
 }
@@ -5280,8 +6393,9 @@ async function exportAll() {
       { name: `${slug}.html`, blob: new Blob([buildExportHtml()], { type: "text/html" }) }
     ];
     const svg = buildExportSvg();
+    const imagePreset = getExportImageScalePreset();
     try {
-      files.push({ name: `${slug}.png`, blob: await svgToPngBlob(svg) });
+      files.push({ name: `${slug}${imagePreset.suffix}.png`, blob: await svgToPngBlob(svg, imagePreset.scale) });
     } catch (error) {
       console.error(error);
       files.push({ name: `${slug}.svg`, blob: new Blob([svg], { type: "image/svg+xml" }) });
@@ -5301,13 +6415,14 @@ function buildProjectJson() {
 
 function buildCharactersMarkdown() {
   const characters = getCharacters();
+  const backlinkIndex = buildCharacterBacklinkIndex(characters);
   const lines = [`# Characters`, ""];
   characters.forEach((character) => {
     lines.push(`## ${character.name || "Unnamed Character"}`);
     if (character.role) lines.push(`- Role: ${character.role}`);
     if (character.voice) lines.push(`- Voice: ${character.voice}`);
     if (character.notes) lines.push("", character.notes);
-    getCharacterBacklinkGroups(character)
+    getCharacterBacklinkGroups(character, backlinkIndex)
       .filter((group) => group.items.length)
       .forEach((group) => {
         lines.push("", `### ${group.label}`);
@@ -5322,6 +6437,28 @@ function buildCharactersMarkdown() {
 
 function buildVariablesJson() {
   return JSON.stringify(buildScriptDocument(), null, 2);
+}
+
+function buildCharactersJsonDocument() {
+  const characters = getCharacters();
+  const backlinkIndex = buildCharacterBacklinkIndex(characters);
+  return {
+    characters: characters.map((character) => ({
+      ...character,
+      links: getCharacterBacklinkGroups(character, backlinkIndex)
+        .filter((group) => group.items.length)
+        .map((group) => ({
+          label: group.label,
+          nodes: group.items.map((item) => ({
+            id: item.node.id,
+            displayId: getNodeDisplayId(item.node),
+            type: item.node.type,
+            label: getNodeTypeLabel(item.node.type),
+            title: item.node.title || ""
+          }))
+        }))
+    }))
+  };
 }
 
 function buildScriptDocument() {
@@ -5418,6 +6555,32 @@ function buildEventSheetCsv() {
   return rows.map((row) => row.map(formatCsvCell).join(",")).join("\n");
 }
 
+function buildEventSheetJsonDocument() {
+  return {
+    title: state.project.title || "",
+    groups: getEventRowGroups().map((group) => {
+      const columns = getEventSheetColumns(group.type);
+      return {
+        type: group.type,
+        label: group.label,
+        columns: columns.map((column) => ({
+          key: column.key,
+          label: column.label,
+          custom: Boolean(column.custom),
+          readonly: Boolean(column.readonly)
+        })),
+        rows: group.rows.map((node) => ({
+          nodeId: node.id,
+          displayId: getNodeDisplayId(node),
+          type: node.type,
+          title: node.title || "",
+          values: Object.fromEntries(columns.map((column) => [column.key, getNodeEventValue(node, column.key)]))
+        }))
+      };
+    })
+  };
+}
+
 function buildNodeFieldsCsv() {
   const rows = [
     ["Node ID", "Type", "Title", "Field", "Value"],
@@ -5461,6 +6624,10 @@ function downloadBlob(blob, filename) {
   anchor.download = filename;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+function downloadJsonFile(value, filename) {
+  downloadBlob(new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" }), filename);
 }
 
 async function createZipBlob(files) {
@@ -5594,6 +6761,7 @@ function importJsonFile() {
       if (!state.selectedNodeId) state.selectedNodeId = state.project.nodes[0]?.id || null;
       if (!restoredView) centerViewAtScale(DEFAULT_CANVAS_ZOOM, false);
       resetHistory();
+      setProjectDirty(true);
       renderAll();
       setStatus("JSON imported.");
     } catch (error) {
@@ -5616,6 +6784,7 @@ function normalizeProject(project) {
     variables: ensureNonEmptyVariables(project.variables),
     script: normalizeScriptConfig(project.script),
     eventSheet,
+    eventRowOrder: normalizeEventRowOrder(project.eventRowOrder),
     nodeTypes: nodeTypesList,
     customNodeTypes: [],
     characters: ensureNonEmptyCharacters(Array.isArray(project.characters) ? project.characters : inferCharacters(project)),
@@ -5625,13 +6794,30 @@ function normalizeProject(project) {
   };
 }
 
+function normalizeEventRowOrder(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([type, ids]) => type && Array.isArray(ids))
+    .map(([type, ids]) => [String(type), ids.map((id) => String(id)).filter(Boolean)]));
+}
+
 function getProjectNodeTypes() {
   if (!Array.isArray(state.project.nodeTypes)) {
     state.project.nodeTypes = normalizeProjectNodeTypes(null, state.project.customNodeTypes);
     state.project.customNodeTypes = [];
+    markProjectStructureChanged({ nodeTypes: true });
   }
-  state.project.nodeTypes = normalizeNodeTypes(state.project.nodeTypes);
-  return state.project.nodeTypes;
+  const cache = state.derived.projectNodeTypes;
+  if (cache && cache.source === state.project.nodeTypes && cache.version === state.structureVersion) {
+    return cache.value;
+  }
+  const normalized = normalizeNodeTypes(state.project.nodeTypes);
+  state.project.nodeTypes = normalized;
+  // After canonicalizing, source === value === the array ref, so subsequent calls
+  // at the same structureVersion hit the cache without re-normalizing (which previously
+  // allocated a fresh array on every call and defeated downstream ref-based caches).
+  state.derived.projectNodeTypes = { source: normalized, version: state.structureVersion, value: normalized };
+  return normalized;
 }
 
 function normalizeProjectNodeTypes(types, legacyCustomTypes) {
@@ -6363,43 +7549,65 @@ function getEventFrameCharacterIds(node) {
   return new Set(getNodeCharacterLinks(node, { includeEventAggregate: true }).map((link) => link.characterId));
 }
 
-function getCharacterBacklinkGroups(character) {
-  const sequenceMap = getStorySequenceMap(getStoryStructure());
-  const groups = [
-    { id: "Speaker", label: "Speaker scenes", items: [], seen: new Set() },
-    { id: "Present", label: "Present scenes", items: [], seen: new Set() },
-    { id: "Mentioned", label: "Mentioned in", items: [], seen: new Set() },
-    { id: "POV", label: "POV scenes", items: [], seen: new Set() },
-    { id: "Target", label: "Target scenes", items: [], seen: new Set() },
-    { id: "Owner", label: "Owned nodes", items: [], seen: new Set() },
-    { id: "EventFrames", label: "Event frames", items: [], seen: new Set() }
-  ];
-  const groupById = new Map(groups.map((group) => [group.id, group]));
+function createCharacterBacklinkGroups() {
+  return CHARACTER_BACKLINK_GROUP_DEFS.map((group) => ({
+    ...group,
+    items: [],
+    seen: new Set()
+  }));
+}
 
-  const addItem = (groupId, node, relation, source) => {
-    const group = groupById.get(groupId);
-    if (!group || !node) return;
-    const key = `${node.id}:${relation || ""}`;
-    if (group.seen.has(key)) return;
-    group.seen.add(key);
-    group.items.push({ node, relation, source });
-  };
+function getIndexedCharacterBacklinkGroups(index, characterId) {
+  if (!index.has(characterId)) index.set(characterId, createCharacterBacklinkGroups());
+  return index.get(characterId);
+}
 
-  state.project.nodes.forEach((node) => {
-    getNodeCharacterLinks(node, { includeEventAggregate: false })
-      .filter((link) => link.characterId === character.id)
-      .forEach((link) => addItem(normalizeCastRole(link.role), node, CAST_RELATION_LABELS[normalizeCastRole(link.role)], link.source));
+function addIndexedCharacterBacklink(index, characterId, groupId, node, relation, source) {
+  const groups = getIndexedCharacterBacklinkGroups(index, characterId);
+  const group = groups.find((item) => item.id === groupId);
+  if (!group || !node) return;
+  const key = `${node.id}:${relation || ""}`;
+  if (group.seen.has(key)) return;
+  group.seen.add(key);
+  group.items.push({ node, relation, source });
+}
 
-    if (isEventSheetNode(node) && getEventFrameCharacterIds(node).has(character.id)) {
-      addItem("EventFrames", node, "Characters", "event");
-    }
-  });
-
+function finalizeCharacterBacklinkGroups(groups, sequenceMap) {
   groups.forEach((group) => {
     group.items.sort((a, b) => compareCharacterBacklinkItems(a, b, sequenceMap));
     delete group.seen;
   });
   return groups;
+}
+
+function buildCharacterBacklinkIndex(characters = getCharacters()) {
+  const sequenceMap = getStorySequenceMap(getStoryStructure());
+  const characterIds = new Set(characters.map((character) => character.id));
+  const index = new Map(characters.map((character) => [character.id, createCharacterBacklinkGroups()]));
+
+  state.project.nodes.forEach((node) => {
+    getNodeCharacterLinks(node, { includeEventAggregate: false }).forEach((link) => {
+      if (!characterIds.has(link.characterId)) return;
+      const role = normalizeCastRole(link.role);
+      addIndexedCharacterBacklink(index, link.characterId, role, node, CAST_RELATION_LABELS[role], link.source);
+    });
+
+    if (isEventSheetNode(node)) {
+      getEventFrameCharacterIds(node).forEach((characterId) => {
+        if (characterIds.has(characterId)) {
+          addIndexedCharacterBacklink(index, characterId, "EventFrames", node, "Characters", "event");
+        }
+      });
+    }
+  });
+
+  index.forEach((groups) => finalizeCharacterBacklinkGroups(groups, sequenceMap));
+  return index;
+}
+
+function getCharacterBacklinkGroups(character, index = null) {
+  if (index?.has(character.id)) return index.get(character.id);
+  return buildCharacterBacklinkIndex([character]).get(character.id) || finalizeCharacterBacklinkGroups(createCharacterBacklinkGroups(), new Map());
 }
 
 function compareCharacterBacklinkItems(a, b, sequenceMap) {
@@ -6414,7 +7622,7 @@ function countCharacterBacklinks(character) {
 }
 
 function getTotalCharacterLinkCount() {
-  return getCharacters().reduce((total, character) => total + countCharacterBacklinks(character), 0);
+  return getCharacterRenderContext().linkCount;
 }
 
 function formatNodeSnippet(node) {
@@ -6487,12 +7695,14 @@ function getStoryStructure() {
   const entries = new Map(state.project.nodes.map((node) => [node.id, { node, children: [] }]));
   const frames = state.project.nodes.filter((node) => isFrameNode(node));
   const frameChildren = new Map(frames.map((frame) => [frame.id, []]));
+  const parentFrameByNodeId = new Map();
   const reachable = new Set(getReachableStory().map((node) => node.id));
   const includeMemo = new Map();
   const roots = [];
 
   state.project.nodes.forEach((node) => {
     const parent = getSmallestContainingFrame(node, frames);
+    parentFrameByNodeId.set(node.id, parent);
     if (parent && entries.has(parent.id)) {
       frameChildren.get(parent.id)?.push(node.id);
     }
@@ -6511,7 +7721,7 @@ function getStoryStructure() {
   state.project.nodes.forEach((node) => {
     if (!shouldInclude(node)) return;
     const entry = entries.get(node.id);
-    const parent = getSmallestContainingFrame(node, frames);
+    const parent = parentFrameByNodeId.get(node.id);
     if (parent && entries.has(parent.id) && shouldInclude(parent)) {
       entries.get(parent.id).children.push(entry);
     } else {
@@ -6604,20 +7814,40 @@ function getStoryEntriesForParent(parentId) {
 
 function getSmallestContainingFrame(node, frames) {
   const nodeBounds = getNodeBounds(node);
-  return frames
-    .filter((frame) => frame.id !== node.id)
-    .filter((frame) => boundsContainBounds(getNodeBounds(frame), nodeBounds))
-    .sort((a, b) => boundsArea(getNodeBounds(a)) - boundsArea(getNodeBounds(b)))
-    [0] || null;
+  let smallest = null;
+  let smallestArea = Number.POSITIVE_INFINITY;
+  frames.forEach((frame) => {
+    if (frame.id === node.id) return;
+    const frameBounds = getNodeBounds(frame);
+    if (!boundsContainBounds(frameBounds, nodeBounds)) return;
+    const area = boundsArea(frameBounds);
+    if (area < smallestArea) {
+      smallest = frame;
+      smallestArea = area;
+    }
+  });
+  return smallest;
 }
 
 function getNodeBounds(node) {
-  const size = nodeSize(node);
+  // Pure arithmetic size: never touch the DOM here. getNodeBounds is called for
+  // every node on every viewport cull (and inside frame-containment scans), so
+  // reading offsetWidth/offsetHeight here caused N forced reflows per render
+  // (layout thrashing). The rendered height equals nodeLayoutSize() because
+  // renderNodes writes that exact height into the element's inline style.
+  const size = nodeLayoutSize(node);
   return {
     left: node.x,
     top: node.y,
     right: node.x + size.width,
     bottom: node.y + size.height
+  };
+}
+
+function nodeLayoutSize(node) {
+  return {
+    width: node.width || getNodeMeta(node.type).width || 230,
+    height: nodeHeight(node)
   };
 }
 
@@ -6667,6 +7897,7 @@ function moveStoryNode(nodeId, placement) {
   state.selectedNodeId = nodeId;
   state.selectedLinkId = null;
   state.panel = "story";
+  markProjectStructureChanged();
   renderAll();
   requestAnimationFrame(() => scrollStoryNodeIntoView(nodeId));
   setStatus(parent
@@ -6964,6 +8195,7 @@ function getNodeEventValue(node, key) {
   if (!node) return "";
   const customField = getNodeCustomFieldEntries(node).find((field) => field.key === key);
   if (customField) return customField.value;
+  if (node.customFields && node.customFields[key] != null && node.customFields[key] !== "") return String(node.customFields[key]);
   if (Array.isArray(node[key])) return node[key].join("\n");
   if (node[key] != null && node[key] !== "") return String(node[key]);
   if (key === "eventDescription") return displayBody(node);
@@ -7138,19 +8370,20 @@ function wrapSvgText(value, maxChars, maxLines) {
   return [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1].slice(0, Math.max(0, maxChars - 1))}...`];
 }
 
-function svgToPngBlob(svg) {
+function svgToPngBlob(svg, scale = 1) {
   return new Promise((resolve, reject) => {
     const svgBlob = new Blob([svg], { type: "image/svg+xml" });
     const url = URL.createObjectURL(svgBlob);
     const image = new Image();
     image.onload = () => {
+      const outputScale = normalizeExportImageScale(scale);
       const canvas = document.createElement("canvas");
-      canvas.width = image.naturalWidth;
-      canvas.height = image.naturalHeight;
+      canvas.width = Math.ceil(image.naturalWidth * outputScale);
+      canvas.height = Math.ceil(image.naturalHeight * outputScale);
       const context = canvas.getContext("2d");
       context.fillStyle = "#202020";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(image, 0, 0);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
       URL.revokeObjectURL(url);
       canvas.toBlob((blob) => {
         if (blob) resolve(blob);
@@ -7166,15 +8399,74 @@ function svgToPngBlob(svg) {
 }
 
 function getNode(id) {
-  return state.project.nodes.find((node) => node.id === id);
+  return getNodeIndex().get(id);
+}
+
+function getNodeIndex() {
+  const nodes = Array.isArray(state.project.nodes) ? state.project.nodes : [];
+  const current = state.nodeIndex;
+  if (current?.nodes === nodes && current.length === nodes.length) return current.map;
+  const map = new Map(nodes.map((node) => [node.id, node]));
+  state.nodeIndex = { nodes, length: nodes.length, map };
+  return map;
 }
 
 function getLink(id) {
-  return state.project.links.find((link) => link.id === id);
+  return getLinkIndex().get(id);
 }
 
 function getOutgoing(id) {
-  return state.project.links.filter((link) => link.from === id);
+  return getOutgoingIndex().get(id) || [];
+}
+
+function getLinkIndex() {
+  const links = Array.isArray(state.project.links) ? state.project.links : [];
+  const current = state.linkIndex;
+  if (current?.links === links && current.length === links.length) return current.map;
+  const map = new Map(links.map((link) => [link.id, link]));
+  state.linkIndex = { links, length: links.length, map };
+  return map;
+}
+
+function getOutgoingIndex() {
+  const links = Array.isArray(state.project.links) ? state.project.links : [];
+  const current = state.outgoingIndex;
+  if (current?.links === links && current.length === links.length) return current.map;
+  const map = new Map();
+  links.forEach((link) => {
+    if (!map.has(link.from)) map.set(link.from, []);
+    map.get(link.from).push(link);
+  });
+  state.outgoingIndex = { links, length: links.length, map };
+  return map;
+}
+
+function invalidateLinkIndexes() {
+  state.linkIndex = null;
+  state.outgoingIndex = null;
+}
+
+// Derived maps (flow order, display IDs) depend on graph structure, geometry,
+// and node-type definitions. They do not depend on ordinary text edits, so the
+// cache is keyed by structureVersion rather than dirtyVersion.
+function derivedStructureUnchanged(cache) {
+  return Boolean(cache)
+    && cache.nodes === state.project.nodes
+    && cache.links === state.project.links
+    && cache.nodesLen === (state.project.nodes ? state.project.nodes.length : 0)
+    && cache.linksLen === (state.project.links ? state.project.links.length : 0)
+    && cache.version === state.structureVersion;
+}
+
+function derivedStructureStamp(map) {
+  return {
+    nodes: state.project.nodes,
+    links: state.project.links,
+    nodesLen: state.project.nodes ? state.project.nodes.length : 0,
+    linksLen: state.project.links ? state.project.links.length : 0,
+    version: state.structureVersion,
+    map
+  };
 }
 
 function getNearestLinkAtClientPoint(clientX, clientY) {
@@ -7226,12 +8518,12 @@ function distancePointToSegment(point, a, b) {
 }
 
 function getInputPoint(node) {
-  const size = nodeSize(node);
+  const size = nodeLayoutSize(node);
   return { x: node.x - LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
 }
 
 function getOutputPoint(node) {
-  const size = nodeSize(node);
+  const size = nodeLayoutSize(node);
   return { x: node.x + size.width + LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
 }
 
@@ -7267,15 +8559,14 @@ function maxNodeHeight(node) {
   return isFrameNode(node) ? Number.POSITIVE_INFINITY : 620;
 }
 
+// DOM-measuring size, for the few callers that want the actual rendered box
+// (resize start, auto-layout, center view). Not used on the per-render cull path.
 function nodeSize(node) {
   const element = dom.nodeLayer?.querySelector(`.node[data-node-id="${node.id}"]`);
   if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
     return { width: element.offsetWidth, height: element.offsetHeight };
   }
-  return {
-    width: node.width || getNodeMeta(node.type).width || 230,
-    height: nodeHeight(node)
-  };
+  return nodeLayoutSize(node);
 }
 
 function linkPath(from, to) {
@@ -7367,7 +8658,11 @@ function nodeMatches(node, query) {
 }
 
 function getCanvasRenderNodes() {
-  return getCanvasLayerItems().map((item) => item.node);
+  const query = state.search.trim().toLowerCase();
+  const visibleIds = getCanvasVisibleNodeIds(query);
+  return getCanvasLayerItems()
+    .filter((item) => visibleIds.has(item.node.id))
+    .map((item) => item.node);
 }
 
 function getCanvasLayerItems() {
@@ -7403,6 +8698,8 @@ function getNodeDisplayId(node) {
 }
 
 function getNodeDisplayIdMap() {
+  const cached = state.derived.displayId;
+  if (derivedStructureUnchanged(cached)) return cached.map;
   const flowOrderMap = getNodeFlowOrderMap();
   const indexedNodes = state.project.nodes.map((node, index) => ({ node, index }));
   const counters = { node: 0, frame: 0, eventFrame: 0 };
@@ -7417,6 +8714,7 @@ function getNodeDisplayIdMap() {
       displayMap.set(node.id, `${prefixes[category]}${counters[category]}`);
     });
 
+  state.derived.displayId = derivedStructureStamp(displayMap);
   return displayMap;
 }
 
@@ -7455,17 +8753,28 @@ function getNodeIdentityOrder(node, flowOrderMap) {
 }
 
 function getNodeFlowOrderMap() {
+  const cached = state.derived.flowOrder;
+  if (derivedStructureUnchanged(cached)) return cached.map;
   const orderMap = new Map();
   let order = 0;
-  const visit = (node) => {
-    if (!node || orderMap.has(node.id)) return;
-    orderMap.set(node.id, order);
-    order += 1;
-    getOutgoing(node.id)
-      .map((link) => getNode(link.to))
-      .filter(Boolean)
-      .sort(compareRawNodePosition)
-      .forEach(visit);
+  // Iterative pre-order DFS (explicit stack) instead of recursion: a deep graph
+  // (e.g. a long chain in a large project) would overflow the call stack. Children
+  // are pushed in reverse sorted order so they pop in sorted order, matching the
+  // previous recursive pre-order traversal.
+  const visit = (startNode) => {
+    if (!startNode) return;
+    const stack = [startNode];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || orderMap.has(node.id)) continue;
+      orderMap.set(node.id, order);
+      order += 1;
+      const children = getOutgoing(node.id)
+        .map((link) => getNode(link.to))
+        .filter(Boolean)
+        .sort(compareRawNodePosition);
+      for (let i = children.length - 1; i >= 0; i -= 1) stack.push(children[i]);
+    }
   };
   state.project.nodes
     .filter((node) => node.type === "Entry")
@@ -7475,6 +8784,7 @@ function getNodeFlowOrderMap() {
     .slice()
     .sort(compareRawNodePosition)
     .forEach(visit);
+  state.derived.flowOrder = derivedStructureStamp(orderMap);
   return orderMap;
 }
 
