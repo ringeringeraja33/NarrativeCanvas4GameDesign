@@ -1967,7 +1967,7 @@ button {
 
 .nc-workspace-search-controls[hidden],
 .nc-workspace-search-controls [hidden] {
-  display: none !important;
+  display: none;
 }
 
 .workspace-search-box {
@@ -2304,22 +2304,27 @@ select:focus {
 }
 
 .character-grid {
-  display: block;
-  column-width: 340px;
-  column-gap: 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+  gap: 18px;
+  min-width: 0;
+}
+
+.character-column {
+  display: grid;
+  align-content: start;
+  gap: 18px;
   min-width: 0;
 }
 
 .character-card {
   display: grid;
   width: 100%;
-  margin: 0 0 18px;
   gap: 12px;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  break-inside: avoid;
-  page-break-inside: avoid;
   contain: layout paint;
   padding: 12px;
   border: 1px solid var(--background-modifier-border);
@@ -2917,7 +2922,7 @@ select:focus {
 
 .event-column-resizing,
 .event-column-resizing * {
-  cursor: col-resize !important;
+  cursor: col-resize;
   user-select: none;
 }
 

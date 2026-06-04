@@ -262,6 +262,8 @@ Assert-TextDoesNotMatch $mainJsText '\beval\s*\(' "main.js avoids eval"
 Assert-TextDoesNotMatch $mainJsText 'window\.(prompt|confirm)\b' "main.js avoids native prompt/confirm dialogs"
 Assert-TextDoesNotMatch $mainJsText 'EMBEDDED_(INDEX_HTML|CANVAS_CSS|APP_JS)' "main.js has no base64 embedded fallback constants"
 Assert-TextDoesNotMatch $mainJsText 'app\.vault\.adapter' "main.js avoids direct vault adapter project file I/O"
+Assert-TextDoesNotMatch $mainJsText '\bvault\.getFiles\s*\(' "main.js avoids full vault enumeration"
+Assert-TextDoesNotMatch $mainJsText '\b(localStorage|sessionStorage)\b' "main.js avoids browser storage APIs in plugin release"
 Assert-TextDoesNotMatch $mainJsText 'detachLeavesOfType' "main.js does not detach leaves on unload"
 Assert-TextDoesNotMatch $mainJsText 'document\.head\.appendChild' "main.js does not inject plugin CSS into document.head"
 Assert-TextDoesNotMatch $mainJsText 'contentEl\.innerHTML' "main.js does not mount the app with contentEl.innerHTML"
@@ -269,6 +271,12 @@ Assert-TextDoesNotMatch $mainJsText 'contentEl\.innerHTML' "main.js does not mou
 $stylesText = Read-Utf8Strict (Resolve-ProjectPath "styles.css")
 Assert-TextContains $stylesText "Narrative Canvas web app styles (scoped; generated from canvas.css)" "styles.css includes scoped generated canvas styles"
 Assert-TextDoesNotMatch $stylesText ':root\[data-theme=' "styles.css does not rely on scoped :root theme selectors"
+Assert-TextDoesNotMatch $stylesText '\.narrative-canvas-plugin-host\s+@media' "styles.css has valid scoped media queries"
+Assert-TextDoesNotMatch $stylesText '!important' "styles.css avoids !important"
+
+$canvasCssText = Read-Utf8Strict (Resolve-ProjectPath "canvas.css")
+Assert-TextDoesNotMatch $canvasCssText 'column-width|column-gap|break-inside|page-break-inside' "canvas.css avoids multicolumn CSS"
+Assert-TextDoesNotMatch $canvasCssText '!important' "canvas.css avoids !important"
 
 if (-not $SkipRuntime) {
   if (Test-Path -LiteralPath $RuntimeDir -PathType Container) {

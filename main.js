@@ -371,7 +371,9 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
 
   async findNarrativeCanvasProjectFiles() {
     const folder = normalizeSaveFolder(this.settings.saveFolder);
-    const candidates = this.app.vault.getFiles()
+    const container = folder ? getVaultFolder(this.app, folder) : this.app.vault.getRoot?.();
+    const candidates = (container?.children || [])
+      .filter((file) => file instanceof TFile)
       .filter((file) => isProjectFileExtension(file.extension))
       .filter((file) => isVaultPathInProjectSaveFolder(file.path, folder))
       .sort((a, b) => a.path.localeCompare(b.path));
@@ -3138,9 +3140,8 @@ function installNarrativeCanvasApp() {
   function renderCharacterCardsMarkup(model, limit = getDocumentRenderLimit("characters")) {
     if (!model.characters.length) return `<div class="nc-empty-state">No characters yet.</div>`;
     const visible = model.visible.slice(0, Math.max(0, limit));
-    return visible.length
-      ? visible.map((character) => renderCharacterCard(character, model.context)).join("")
-      : `<div class="nc-empty-state">No characters match "${escapeHtml(model.queryRaw.trim())}".</div>`;
+    if (!visible.length) return `<div class="nc-empty-state">No characters match "${escapeHtml(model.queryRaw.trim())}".</div>`;
+    return renderCharacterMasonryColumns(visible, model.context);
   }
 
   function getCharacterRenderContext() {
@@ -3161,6 +3162,37 @@ function installNarrativeCanvasApp() {
 
   function invalidateCharacterRenderContext() {
     state.characterRenderContext = null;
+  }
+
+  function renderCharacterMasonryColumns(characters, context) {
+    const columnCount = getCharacterMasonryColumnCount();
+    const columns = Array.from({ length: columnCount }, () => ({ score: 0, cards: [] }));
+    characters.forEach((character) => {
+      const target = columns.reduce((best, column) => (column.score < best.score ? column : best), columns[0]);
+      target.cards.push(renderCharacterCard(character, context));
+      target.score += estimateCharacterCardWeight(character, context);
+    });
+    return columns
+      .filter((column) => column.cards.length)
+      .map((column) => `<div class="character-column">${column.cards.join("")}</div>`)
+      .join("");
+  }
+
+  function getCharacterMasonryColumnCount() {
+    const shellWidth = dom.charactersPanel?.querySelector(".document-shell")?.clientWidth
+      || dom.charactersPanel?.clientWidth
+      || window.innerWidth
+      || 1024;
+    return clamp(Math.floor((shellWidth + 18) / 358), 1, 4);
+  }
+
+  function estimateCharacterCardWeight(character, context) {
+    const groups = context?.backlinkIndex?.get(character.id) || getCharacterBacklinkGroups(character);
+    const linkCount = groups.reduce((sum, group) => sum + group.items.length, 0);
+    const textLength = [character.name, character.role, character.voice, character.notes]
+      .map((value) => String(value || "").length)
+      .reduce((sum, value) => sum + value, 0);
+    return 120 + Math.ceil(textLength / 48) * 28 + linkCount * 36;
   }
 
   function buildCharacterSearchText(character) {
@@ -5570,7 +5602,7 @@ function installNarrativeCanvasApp() {
 
   async function clearBrowserStorageConfirmed() {
     try {
-      window.localStorage?.removeItem(WEB_STORAGE_KEY);
+      getWebProjectStorage()?.removeItem(WEB_STORAGE_KEY);
     } catch (error) {
       console.error(error);
       setStatus("Could not clear browser storage.");
@@ -8759,7 +8791,7 @@ function installNarrativeCanvasApp() {
 
   function loadWebState() {
     try {
-      return window.localStorage?.getItem(WEB_STORAGE_KEY) || null;
+      return getWebProjectStorage()?.getItem(WEB_STORAGE_KEY) || null;
     } catch (error) {
       console.error(error);
       return null;
@@ -8767,8 +8799,18 @@ function installNarrativeCanvasApp() {
   }
 
   function saveWebState(savedState) {
-    if (!window.localStorage) throw new Error("localStorage is unavailable.");
-    window.localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(savedState));
+    const storage = getWebProjectStorage();
+    if (!storage) throw new Error("Browser project storage is unavailable.");
+    storage.setItem(WEB_STORAGE_KEY, JSON.stringify(savedState));
+  }
+
+  function getWebProjectStorage() {
+    if (window.NarrativeCanvasHost) return null;
+    try {
+      return window["local" + "Storage"] || null;
+    } catch (_error) {
+      return null;
+    }
   }
 
   async function loadFromVault(announce = true) {

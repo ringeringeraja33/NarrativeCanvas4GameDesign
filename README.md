@@ -1,6 +1,6 @@
 # Narrative Canvas
 
-Latest release notes: [1.0.5](https://github.com/ringeringeraja33/NarrativeCanvas/releases/tag/1.0.5)
+Latest release notes: [1.0.6](https://github.com/ringeringeraja33/NarrativeCanvas/releases/tag/1.0.6)
 
 ## English
 

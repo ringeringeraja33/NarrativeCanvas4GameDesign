@@ -456,14 +456,12 @@
         const characterGrid = doc.querySelector(".character-grid");
         const characterGridStyle = win.getComputedStyle(characterGrid);
         assert(
-          `${label}: character cards use masonry columns`,
-          characterGridStyle.display === "block" && characterGridStyle.columnWidth !== "auto" && Number.parseFloat(characterGridStyle.columnGap) >= 12,
-          `display=${characterGridStyle.display} columnWidth=${characterGridStyle.columnWidth} columnGap=${characterGridStyle.columnGap}`
+          `${label}: character cards use masonry grid`,
+          characterGridStyle.display === "grid" && doc.querySelector(".character-column") && Number.parseFloat(characterGridStyle.gap) >= 12,
+          `display=${characterGridStyle.display} gap=${characterGridStyle.gap} columns=${doc.querySelectorAll(".character-column").length}`
         );
         const characterCard = doc.querySelector(".character-card");
         assert(`${label}: character cards do not overflow`, characterCard && characterCard.scrollWidth <= characterCard.clientWidth + 1, `scroll=${characterCard?.scrollWidth} client=${characterCard?.clientWidth}`);
-        const characterCardStyle = win.getComputedStyle(characterCard);
-        assert(`${label}: character cards do not break across columns`, characterCardStyle.breakInside === "avoid", `breakInside=${characterCardStyle.breakInside}`);
         setControlValue(win, characterSearch, "mara");
         assert(`${label}: characters search accepts input`, characterSearch.value === "mara");
         assert(`${label}: character filter bar updates`, doc.querySelector("[data-character-filter-bar]")?.textContent.toLowerCase().includes("mara"));
