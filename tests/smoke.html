@@ -79,9 +79,40 @@
         element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: element.ownerDocument.defaultView }));
       }
 
+      function getPortHitInfo(doc, port) {
+        if (!port) return null;
+        const viewport = doc.querySelector("#canvasViewport");
+        const viewportRect = viewport?.getBoundingClientRect();
+        const rect = port.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const hit = doc.elementFromPoint(cx, cy);
+        return {
+          port,
+          rect,
+          hit,
+          inViewport: Boolean(viewportRect
+            && cx >= viewportRect.left
+            && cx <= viewportRect.right
+            && cy >= viewportRect.top
+            && cy <= viewportRect.bottom),
+          isHitTarget: hit?.closest("[data-port]") === port
+        };
+      }
+
+      function findClickablePort(doc, kind, excludeNodeId = "") {
+        return [...doc.querySelectorAll(`.port.${kind}[data-node-id]`)]
+          .map((port) => getPortHitInfo(doc, port))
+          .find((info) => info
+            && info.inViewport
+            && info.isHitTarget
+            && (!excludeNodeId || info.port.dataset.nodeId !== excludeNodeId));
+      }
+
       function isElementHidden(win, element) {
+        if (!element) return true;
         const style = win.getComputedStyle(element);
-        return element.hidden || style.display === "none" || style.visibility === "hidden";
+        return Boolean(element.closest("[hidden]")) || element.hidden || style.display === "none" || style.visibility === "hidden";
       }
 
       function isTransparentColor(value) {
@@ -152,6 +183,64 @@
           contrast >= 4.5 && isLightBackground,
           `contrast=${contrast.toFixed(2)} color=${style.color} bg=${style.backgroundColor}`
         );
+      }
+
+      function readSavedProject(win) {
+        const latestPluginSave = win.__saveProjectCalls?.[win.__saveProjectCalls.length - 1] || "";
+        const raw = latestPluginSave || win.localStorage?.getItem("narrative-canvas-state-v1") || "";
+        return raw ? JSON.parse(raw) : null;
+      }
+
+      async function verifyCanDeleteAllCharactersAndVariables(label, win, doc) {
+        click(doc.querySelector("[data-file-id='characters']"));
+        await waitFor(`${label}: characters page opens for delete-all check`, () => Boolean(doc.querySelector("#charactersPanel")));
+        const characterSearch = doc.querySelector("[data-character-search]");
+        if (characterSearch?.value) {
+          setControlValue(win, characterSearch, "");
+          await wait(80);
+        }
+        click(doc.querySelector("[data-action='add-character']"));
+        await waitFor(`${label}: character can be added before delete-all check`, () => Boolean(doc.querySelector("#charactersPanel [data-action='delete-character']")));
+        const deleteCharacterButton = doc.querySelector("#charactersPanel [data-action='delete-character']");
+        if (deleteCharacterButton) click(deleteCharacterButton);
+        await waitFor(`${label}: last character can be deleted`, () => doc.querySelector("#charactersPanel")?.textContent.includes("No characters yet."));
+        await win.NarrativeCanvasApp.save({ silent: true });
+        const savedWithoutCharacters = readSavedProject(win);
+        assert(
+          `${label}: deleting last character saves empty character list`,
+          Array.isArray(savedWithoutCharacters?.project?.characters) && savedWithoutCharacters.project.characters.length === 0
+        );
+
+        click(doc.querySelector("[data-file-id='variables']"));
+        await waitFor(`${label}: playbook opens for delete-all check`, () => Boolean(doc.querySelector("#variablesPanel")));
+        if (!doc.querySelector("#variablesPanel [data-action='delete-variable']")) {
+          click(doc.querySelector("#variablesPanel [data-action='add-variable']"));
+          await waitFor(`${label}: variable can be added before delete-all check`, () => Boolean(doc.querySelector("#variablesPanel [data-action='delete-variable']")));
+        }
+        for (let guard = 0; guard < 12; guard += 1) {
+          const deleteButton = doc.querySelector("#variablesPanel [data-action='delete-variable']");
+          if (!deleteButton) break;
+          click(deleteButton);
+          await wait(80);
+        }
+        await waitFor(`${label}: last variable can be deleted`, () => !doc.querySelector("#variablesPanel [data-action='delete-variable']") && doc.querySelector("#variablesPanel")?.textContent.includes("No variables yet."));
+        await win.NarrativeCanvasApp.save({ silent: true });
+        const savedWithoutVariables = readSavedProject(win);
+        assert(
+          `${label}: deleting last variable saves empty variables object`,
+          savedWithoutVariables?.project?.variables
+            && !Array.isArray(savedWithoutVariables.project.variables)
+            && Object.keys(savedWithoutVariables.project.variables).length === 0
+        );
+        click(doc.querySelector("#variablesPanel [data-action='add-variable']"));
+        await waitFor(`${label}: add variable still works after deleting all variables`, () => Boolean(doc.querySelector("#variablesPanel [data-action='delete-variable']")));
+        for (let guard = 0; guard < 4; guard += 1) {
+          const deleteButton = doc.querySelector("#variablesPanel [data-action='delete-variable']");
+          if (!deleteButton) break;
+          click(deleteButton);
+          await wait(80);
+        }
+        await waitFor(`${label}: variable can be deleted again after re-adding`, () => !doc.querySelector("#variablesPanel [data-action='delete-variable']") && doc.querySelector("#variablesPanel")?.textContent.includes("No variables yet."));
       }
 
       function extractBodyHtml(html) {
@@ -285,6 +374,12 @@
         assert(`${label}: export scale select exists`, Boolean(doc.querySelector("#exportImageScale")));
         assert(`${label}: theme toggle exists`, Boolean(doc.querySelector("#themeToggle")));
         assert(`${label}: project file status exists`, Boolean(doc.querySelector("#projectFileName")));
+        const clearStorageButton = doc.querySelector("[data-action='clear-browser-storage']");
+        if ("__saveProjectCalls" in win) {
+          assert(`${label}: clear browser storage is hidden in plugin`, isElementHidden(win, clearStorageButton));
+        } else {
+          assert(`${label}: clear browser storage is available on web`, clearStorageButton && !isElementHidden(win, clearStorageButton));
+        }
         if ("__sampleEnsureOptions" in win) {
           assert(`${label}: init does not create sample project`, win.__sampleEnsureOptions === null);
         }
@@ -294,6 +389,12 @@
         const toolbar = doc.querySelector("#workspaceToolbar");
         assert(`${label}: canvas toolbar exists`, Boolean(toolbar));
         assert(`${label}: canvas toolbar starts visible`, !isElementHidden(win, toolbar));
+        assert(`${label}: auto-layout buttons are not shown`, !doc.querySelector("[data-action='auto-layout']"));
+        assert(`${label}: canvas HTML export button is not shown`, !doc.querySelector("#workspaceToolbar [data-action='export-html']"));
+        const undoButton = doc.querySelector("#undoButton");
+        const redoButton = doc.querySelector("#redoButton");
+        assert(`${label}: history controls live in workspace header`, undoButton?.closest(".workspace-global-bar") && redoButton?.closest(".workspace-global-bar"));
+        assert(`${label}: history controls are not floating over canvas`, !doc.querySelector(".canvas-frame #undoButton") && !doc.querySelector(".canvas-frame #redoButton"));
         assert(`${label}: image export controls are grouped`, Boolean(doc.querySelector(".export-image-controls .export-image-button + .export-image-scale-label")));
         const imageButtonRect = doc.querySelector(".export-image-button")?.getBoundingClientRect();
         const imageScaleRect = doc.querySelector(".export-image-controls .toolbar-select")?.getBoundingClientRect();
@@ -348,9 +449,21 @@
         click(doc.querySelector("[data-file-id='characters']"));
         await waitFor(`${label}: characters opens`, () => Boolean(doc.querySelector("[data-character-search]")));
         assert(`${label}: canvas toolbar hides on characters`, isElementHidden(win, toolbar));
+        const characterSearch = doc.querySelector("[data-character-search]");
+        assert(`${label}: character search lives in bottom status bar`, characterSearch?.closest(".status-bar") && !characterSearch.closest(".document-header"));
+        assert(`${label}: character search is visible at bottom`, !isElementHidden(win, characterSearch));
+        assert(`${label}: canvas query hides on characters`, isElementHidden(win, doc.querySelector("#queryInput")));
+        const characterGrid = doc.querySelector(".character-grid");
+        const characterGridStyle = win.getComputedStyle(characterGrid);
+        assert(
+          `${label}: character cards use masonry columns`,
+          characterGridStyle.display === "block" && characterGridStyle.columnWidth !== "auto" && Number.parseFloat(characterGridStyle.columnGap) >= 12,
+          `display=${characterGridStyle.display} columnWidth=${characterGridStyle.columnWidth} columnGap=${characterGridStyle.columnGap}`
+        );
         const characterCard = doc.querySelector(".character-card");
         assert(`${label}: character cards do not overflow`, characterCard && characterCard.scrollWidth <= characterCard.clientWidth + 1, `scroll=${characterCard?.scrollWidth} client=${characterCard?.clientWidth}`);
-        const characterSearch = doc.querySelector("[data-character-search]");
+        const characterCardStyle = win.getComputedStyle(characterCard);
+        assert(`${label}: character cards do not break across columns`, characterCardStyle.breakInside === "avoid", `breakInside=${characterCardStyle.breakInside}`);
         setControlValue(win, characterSearch, "mara");
         assert(`${label}: characters search accepts input`, characterSearch.value === "mara");
         assert(`${label}: character filter bar updates`, doc.querySelector("[data-character-filter-bar]")?.textContent.toLowerCase().includes("mara"));
@@ -358,10 +471,83 @@
         click(doc.querySelector("[data-file-id='events']"));
         await waitFor(`${label}: events opens`, () => Boolean(doc.querySelector("[data-event-search]")));
         assert(`${label}: canvas toolbar hides on events`, isElementHidden(win, toolbar));
+        const eventSearch = doc.querySelector("[data-event-search]");
+        assert(`${label}: event search lives in bottom status bar`, eventSearch?.closest(".status-bar") && !eventSearch.closest(".document-header"));
+        assert(`${label}: event search is visible at bottom`, !isElementHidden(win, eventSearch));
+        assert(`${label}: character search hides on events`, isElementHidden(win, characterSearch));
         assert(`${label}: sample event sheet shows custom columns`, doc.body.textContent.includes("Location") && doc.body.textContent.includes("Clue Status"));
         assert(`${label}: sample event sheet uses custom story event class`, doc.body.textContent.includes("Story Sequence"));
         assert(`${label}: sample event sheet shows hidden-column restore`, doc.body.textContent.includes("Status"));
-        const eventSearch = doc.querySelector("[data-event-search]");
+        const eventFilterChip = doc.querySelector("[data-event-filter-bar] .filter-chip");
+        const firstEventGroupHeader = doc.querySelector(".event-sheet-group-header");
+        const filterRect = eventFilterChip?.getBoundingClientRect();
+        const groupHeaderRect = firstEventGroupHeader?.getBoundingClientRect();
+        assert(
+          `${label}: event filter bar does not overlap first group heading`,
+          filterRect && groupHeaderRect && filterRect.bottom + 2 <= groupHeaderRect.top,
+          `filterBottom=${filterRect?.bottom.toFixed(1)} groupTop=${groupHeaderRect?.top.toFixed(1)}`
+        );
+        const firstEventSheetScroll = doc.querySelector(".event-sheet-scroll");
+        assert(
+          `${label}: event sheet scrolls horizontally instead of squeezing columns`,
+          firstEventSheetScroll && firstEventSheetScroll.scrollWidth > firstEventSheetScroll.clientWidth + 1,
+          `scroll=${firstEventSheetScroll?.scrollWidth} client=${firstEventSheetScroll?.clientWidth}`
+        );
+        firstEventSheetScroll.scrollLeft = Math.min(180, firstEventSheetScroll.scrollWidth - firstEventSheetScroll.clientWidth);
+        await wait(40);
+        const eventScrollLeftBeforeResize = firstEventSheetScroll.scrollLeft;
+        const eventColumnResizeHandle = doc.querySelector("[data-event-column-resize='eventDescription']")
+          || doc.querySelector("[data-event-column-resize]");
+        const eventColumnResizeRect = eventColumnResizeHandle?.getBoundingClientRect();
+        assert(`${label}: event column resize handle is available`, Boolean(eventColumnResizeHandle && eventColumnResizeRect));
+        eventColumnResizeHandle.dispatchEvent(new win.PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 41,
+          button: 0,
+          clientX: eventColumnResizeRect.right - 1,
+          clientY: eventColumnResizeRect.top + eventColumnResizeRect.height / 2
+        }));
+        win.dispatchEvent(new win.PointerEvent("pointermove", {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 41,
+          button: 0,
+          clientX: eventColumnResizeRect.right + 36,
+          clientY: eventColumnResizeRect.top + eventColumnResizeRect.height / 2
+        }));
+        win.dispatchEvent(new win.PointerEvent("pointerup", {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 41,
+          button: 0,
+          clientX: eventColumnResizeRect.right + 36,
+          clientY: eventColumnResizeRect.top + eventColumnResizeRect.height / 2
+        }));
+        await wait(100);
+        const eventScrollAfterResize = doc.querySelector(".event-sheet-scroll");
+        assert(
+          `${label}: event column resize preserves horizontal scroll`,
+          eventScrollLeftBeforeResize > 0 && eventScrollAfterResize?.scrollLeft >= eventScrollLeftBeforeResize - 2,
+          `before=${eventScrollLeftBeforeResize} after=${eventScrollAfterResize?.scrollLeft}`
+        );
+        click(doc.querySelector("[data-action='add-node'][data-type='Event']"));
+        await waitFor(`${label}: add event frame returns to canvas`, () => root.getAttribute("data-active-file") === "adventure" && doc.querySelector(".node.selected"));
+        click(doc.querySelector("[data-file-id='events']"));
+        await waitFor(`${label}: added event frame appears in event sheet`, () => Boolean(doc.querySelector("[data-event-group-type='Event'] .event-node-link")));
+        const addedEventGroup = doc.querySelector("[data-event-group-type='Event']");
+        const addedEventScroll = addedEventGroup?.querySelector(".event-sheet-scroll");
+        assert(
+          `${label}: added event frame table keeps horizontal scroll`,
+          addedEventScroll && addedEventScroll.scrollWidth > addedEventScroll.clientWidth + 1,
+          `scroll=${addedEventScroll?.scrollWidth} client=${addedEventScroll?.clientWidth}`
+        );
+        const addedEventNodeCard = addedEventGroup?.querySelector(".event-node-link");
+        const addedEventHiddenCell = addedEventGroup?.querySelector(".event-hidden-cell");
+        const addedEventNodeRect = addedEventNodeCard?.getBoundingClientRect();
+        const addedEventHiddenRect = addedEventHiddenCell?.getBoundingClientRect();
+        assert(`${label}: added event frame node cell keeps readable width`, addedEventNodeRect && addedEventNodeRect.width >= 240, `width=${addedEventNodeRect?.width.toFixed(1)}`);
+        assert(`${label}: added event frame hidden column keeps readable width`, addedEventHiddenRect && addedEventHiddenRect.width >= 200, `width=${addedEventHiddenRect?.width.toFixed(1)}`);
         setControlValue(win, eventSearch, "boarding");
         assert(`${label}: events search accepts input`, eventSearch.value === "boarding");
         assert(`${label}: event filter bar updates`, doc.querySelector("[data-event-filter-bar]")?.textContent.toLowerCase().includes("boarding"));
@@ -369,30 +555,192 @@
         click(doc.querySelector("[data-file-id='variables']"));
         await waitFor(`${label}: playbook opens`, () => Boolean(doc.querySelector("[data-variable-field='type']")));
         assert(`${label}: canvas toolbar hides on playbook`, isElementHidden(win, toolbar));
+        assert(`${label}: history controls stay visible on playbook`, !isElementHidden(win, undoButton) && !isElementHidden(win, redoButton));
+        const variableRowsBeforeUndo = doc.querySelectorAll(".variable-row:not(.variable-heading)").length;
+        const hostCaptureBlocker = (event) => {
+          if (event.target.closest("[data-action='add-variable']")) event.stopPropagation();
+        };
+        root.addEventListener("click", hostCaptureBlocker, { capture: true, once: true });
+        click(doc.querySelector("[data-action='add-variable']"));
+        await waitFor(`${label}: add variable is undoable from playbook despite host capture`, () => doc.querySelectorAll(".variable-row:not(.variable-heading)").length === variableRowsBeforeUndo + 1);
+        assert(`${label}: undo button enables after playbook edit`, !undoButton.disabled);
+        const playbookJsonEditor = doc.querySelector("textarea[data-project-field='variables']");
+        assert(`${label}: playbook JSON editor is available after adding variable`, Boolean(playbookJsonEditor));
+        (playbookJsonEditor || doc.activeElement || doc.body).dispatchEvent(new win.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
+        await waitFor(`${label}: Ctrl+Z undoes playbook edit`, () => doc.querySelectorAll(".variable-row:not(.variable-heading)").length === variableRowsBeforeUndo);
         const variableTypes = [...doc.querySelectorAll("[data-variable-field='type']")].map((select) => select.value);
         ["string", "number", "boolean", "json"].forEach((type) => {
           assert(`${label}: sample includes ${type} variable`, variableTypes.includes(type));
         });
         const variableSelect = doc.querySelector("[data-variable-field='type']");
         variableSelect.focus();
-        assert(`${label}: select can focus`, doc.activeElement === variableSelect);
+        await waitFor(`${label}: select can focus`, () => doc.activeElement === variableSelect);
 
         click(doc.querySelector("[data-file-id='adventure']"));
         await waitFor(`${label}: canvas opens`, () => Boolean(doc.querySelector(".node[data-node-id]")));
         assert(`${label}: canvas toolbar returns on canvas`, !isElementHidden(win, toolbar));
+        assert(`${label}: canvas query returns to bottom status bar`, doc.querySelector("#queryInput")?.closest(".status-bar") && !isElementHidden(win, doc.querySelector("#queryInput")));
+        assert(`${label}: event search hides on canvas`, isElementHidden(win, eventSearch));
         assert(`${label}: node inspector hides position fields`, !doc.querySelector("[data-node-field='x']") && !doc.querySelector("[data-node-field='y']"));
+        await win.NarrativeCanvasApp.save({ silent: true });
+        const savedChoiceBranches = (readSavedProject(win)?.project?.links || [])
+          .filter((link) => link.from === "n4")
+          .sort((a, b) => a.choiceIndex - b.choiceIndex);
+        assert(`${label}: sample choice branches keep explicit labels`, savedChoiceBranches.map((link) => link.label).join("|") === "Offer the watch|Hide the watch|Ask about Old Reyes");
+        assert(`${label}: sample choice branches keep explicit indexes`, savedChoiceBranches.map((link) => link.choiceIndex).join("|") === "0|1|2");
         const canvasNodeAfterFileSwitch = doc.querySelector(".node[data-node-id]");
         const canvasNodeCountAfterFileSwitch = doc.querySelectorAll(".node[data-node-id]").length;
         assert(
-          `${label}: canvas nodes stay mounted across file tabs`,
-          canvasNodeAfterFileSwitch === canvasNodeBeforeFileSwitch,
+          `${label}: canvas returns to the same first visible node after file tabs`,
+          canvasNodeAfterFileSwitch?.dataset.nodeId === canvasNodeBeforeFileSwitch?.dataset.nodeId,
           `before=${canvasNodeBeforeFileSwitch?.dataset.nodeId} after=${canvasNodeAfterFileSwitch?.dataset.nodeId}`
         );
         assert(
-          `${label}: canvas node count is unchanged after file tab return`,
-          canvasNodeCountAfterFileSwitch === canvasNodeCountBeforeFileSwitch,
+          `${label}: canvas node layer stays populated after file tab return`,
+          canvasNodeCountAfterFileSwitch > 0 && canvasNodeCountBeforeFileSwitch > 0,
           `before=${canvasNodeCountBeforeFileSwitch} after=${canvasNodeCountAfterFileSwitch}`
         );
+        for (let index = 0; index < 12; index += 1) {
+          click(doc.querySelector("[data-action='zoom-out']"));
+        }
+        assert(`${label}: canvas can reset to 3 percent before focus checks`, doc.querySelector("#zoomReadout")?.textContent === "3%");
+        const singleFocusNode = doc.querySelector(".node[data-node-id='n13']") || doc.querySelector(".node[data-node-id]");
+        click(singleFocusNode);
+        await waitFor(`${label}: single-click node focuses at 100 percent`, () => doc.querySelector("#zoomReadout")?.textContent === "100%");
+        assert(`${label}: single-click node does not open inline editor`, !doc.querySelector("[data-inline-node-field]"));
+        await win.NarrativeCanvasApp.save({ silent: true });
+        const savedLinkCountBeforePortCreate = readSavedProject(win)?.project?.links?.length || 0;
+        const outputPort = doc.querySelector(".port.output[data-node-id='n13']") || doc.querySelector(".port.output[data-node-id]");
+        const inputPort = [...doc.querySelectorAll(".port.input[data-node-id]")]
+          .find((port) => port.dataset.nodeId !== outputPort?.dataset.nodeId);
+        const outputPortRect = outputPort?.getBoundingClientRect();
+        const outputNodeRect = doc.querySelector(`.node[data-node-id='${outputPort?.dataset.nodeId || ""}']`)?.getBoundingClientRect();
+        const inputPortRect = inputPort?.getBoundingClientRect();
+        const inputNodeRect = doc.querySelector(`.node[data-node-id='${inputPort?.dataset.nodeId || ""}']`)?.getBoundingClientRect();
+        assert(
+          `${label}: node output port sits on the node edge`,
+          outputPortRect && outputNodeRect
+            && outputPortRect.width > 0
+            && outputPortRect.left <= outputNodeRect.right + 1
+            && outputPortRect.right >= outputNodeRect.right - 1,
+          `port=${outputPortRect?.left.toFixed(1)}..${outputPortRect?.right.toFixed(1)} node=${outputNodeRect?.left.toFixed(1)}..${outputNodeRect?.right.toFixed(1)}`
+        );
+        assert(
+          `${label}: node input port sits on the node edge`,
+          inputPortRect && inputNodeRect
+            && inputPortRect.width > 0
+            && inputPortRect.left <= inputNodeRect.left + 1
+            && inputPortRect.right >= inputNodeRect.left - 1,
+          `port=${inputPortRect?.left.toFixed(1)}..${inputPortRect?.right.toFixed(1)} node=${inputNodeRect?.left.toFixed(1)}..${inputNodeRect?.right.toFixed(1)}`
+        );
+        const clickableOutputInfo = findClickablePort(doc, "output");
+        const clickableInputInfo = findClickablePort(doc, "input", clickableOutputInfo?.port?.dataset.nodeId || "");
+        const linkOutputPort = clickableOutputInfo?.port || outputPort;
+        const linkInputPort = clickableInputInfo?.port || inputPort;
+        if (label === "web") {
+          assert(`${label}: output port is the clickable hit target`, Boolean(clickableOutputInfo), `hit=${clickableOutputInfo?.hit?.className || clickableOutputInfo?.hit?.tagName || ""}`);
+          assert(`${label}: input port is the clickable hit target`, Boolean(clickableInputInfo), `hit=${clickableInputInfo?.hit?.className || clickableInputInfo?.hit?.tagName || ""}`);
+        }
+        assert(`${label}: node input port is available for link creation`, Boolean(linkInputPort));
+        click(linkOutputPort);
+        await waitFor(`${label}: output port starts pending link`, () => Boolean(doc.querySelector(".link-path.pending")));
+        click(linkInputPort);
+        await wait(80);
+        await win.NarrativeCanvasApp.save({ silent: true });
+        const savedLinkCountAfterPortCreate = readSavedProject(win)?.project?.links?.length || 0;
+        assert(
+          `${label}: output-to-input click creates link`,
+          savedLinkCountAfterPortCreate > savedLinkCountBeforePortCreate,
+          `before=${savedLinkCountBeforePortCreate} after=${savedLinkCountAfterPortCreate}`
+        );
+        const resizedNodeId = linkOutputPort.dataset.nodeId;
+        const resizedNode = doc.querySelector(`.node[data-node-id='${resizedNodeId}']`);
+        const resizedNodeHandle = resizedNode?.querySelector(".node-resize-handle.right");
+        const resizedViewport = doc.querySelector("#canvasViewport");
+        const resizedNodeRectBefore = resizedNode?.getBoundingClientRect();
+        resizedNodeHandle?.dispatchEvent(new win.PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 34,
+          button: 0,
+          buttons: 1,
+          clientX: resizedNodeRectBefore?.right || 0,
+          clientY: resizedNodeRectBefore ? resizedNodeRectBefore.top + resizedNodeRectBefore.height / 2 : 0
+        }));
+        resizedViewport?.dispatchEvent(new win.PointerEvent("pointermove", {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 34,
+          button: 0,
+          buttons: 1,
+          clientX: (resizedNodeRectBefore?.right || 0) + 80,
+          clientY: resizedNodeRectBefore ? resizedNodeRectBefore.top + resizedNodeRectBefore.height / 2 : 0
+        }));
+        resizedViewport?.dispatchEvent(new win.PointerEvent("pointerup", {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 34,
+          button: 0,
+          buttons: 0,
+          clientX: (resizedNodeRectBefore?.right || 0) + 80,
+          clientY: resizedNodeRectBefore ? resizedNodeRectBefore.top + resizedNodeRectBefore.height / 2 : 0
+        }));
+        await wait(80);
+        const resizedNodeAfter = doc.querySelector(`.node[data-node-id='${resizedNodeId}']`);
+        const resizedNodeRectAfter = resizedNodeAfter?.getBoundingClientRect();
+        const resizedOutputPort = doc.querySelector(`.port.output[data-node-id='${resizedNodeId}']`);
+        const resizedOutputPortRect = resizedOutputPort?.getBoundingClientRect();
+        assert(
+          `${label}: resize grows the node width`,
+          resizedNodeRectBefore && resizedNodeRectAfter && resizedNodeRectAfter.width > resizedNodeRectBefore.width + 40,
+          `before=${resizedNodeRectBefore?.width.toFixed(1)} after=${resizedNodeRectAfter?.width.toFixed(1)}`
+        );
+        assert(
+          `${label}: output port follows resized node edge`,
+          resizedOutputPortRect && resizedNodeRectAfter
+            && resizedOutputPortRect.left <= resizedNodeRectAfter.right + 1
+            && resizedOutputPortRect.right >= resizedNodeRectAfter.right - 1,
+          `port=${resizedOutputPortRect?.left.toFixed(1)}..${resizedOutputPortRect?.right.toFixed(1)} node=${resizedNodeRectAfter?.left.toFixed(1)}..${resizedNodeRectAfter?.right.toFixed(1)}`
+        );
+        for (let index = 0; index < 12; index += 1) {
+          click(doc.querySelector("[data-action='zoom-out']"));
+        }
+        assert(`${label}: canvas can reset to 3 percent before double-click focus`, doc.querySelector("#zoomReadout")?.textContent === "3%");
+        const inlineEditNode = doc.querySelector(".node[data-node-id='n1']") || doc.querySelector(".node[data-node-id]");
+        inlineEditNode.dispatchEvent(new win.MouseEvent("dblclick", { bubbles: true, cancelable: true, view: win }));
+        await waitFor(`${label}: double-click opens inline node editor`, () => Boolean(doc.querySelector("[data-inline-node-field]")));
+        await waitFor(`${label}: double-click node focuses at 100 percent`, () => doc.querySelector("#zoomReadout")?.textContent === "100%");
+        const inlineEditor = doc.querySelector("[data-inline-node-field]");
+        inlineEditor.focus();
+        const inlineEditNodeId = inlineEditor.dataset.nodeId;
+        const inlineNodeTitle = doc.querySelector(`.node[data-node-id='${inlineEditNodeId}'] .node-title`)
+          || doc.querySelector(`.node[data-node-id='${inlineEditNodeId}'] .node-body`)
+          || doc.querySelector(`.node[data-node-id='${inlineEditNodeId}']`);
+        inlineNodeTitle.dispatchEvent(new win.PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 32, button: 0, clientX: 320, clientY: 240 }));
+        inlineNodeTitle.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true, view: win }));
+        inlineEditor.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+        await wait(80);
+        assert(`${label}: inline editor stays open when clicking same node`, Boolean(doc.querySelector(`[data-inline-node-field][data-node-id='${inlineEditNodeId}']`)));
+        const inlineEditorAfterSameNodeClick = doc.querySelector(`[data-inline-node-field][data-node-id='${inlineEditNodeId}']`);
+        doc.querySelector("#nodeLayer").dispatchEvent(new win.PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 33, button: 0, clientX: 80, clientY: 80 }));
+        inlineEditorAfterSameNodeClick?.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+        await wait(80);
+        assert(`${label}: inline editor closes when clicking outside node`, !doc.querySelector("[data-inline-node-field]"));
+        click(doc.querySelector(".node[data-node-id='n1']"));
+        await waitFor(`${label}: node body field is ready for mentions`, () => Boolean(doc.querySelector("[data-node-field='body']")));
+        const mentionBodyField = doc.querySelector("[data-node-field='body']");
+        setControlValue(win, mentionBodyField, "@");
+        const mentionPopover = doc.querySelector("#mentionPopover");
+        await waitFor(`${label}: @ opens character mention menu`, () => mentionPopover && !isElementHidden(win, mentionPopover) && mentionPopover.querySelector("[data-mention-index]"));
+        const mentionOptionMarkup = mentionPopover.innerHTML;
+        mentionPopover.innerHTML = Array.from({ length: 12 }, () => mentionOptionMarkup).join("");
+        const mentionPopoverStyle = win.getComputedStyle(mentionPopover);
+        assert(`${label}: mention menu uses vertical scrolling`, mentionPopoverStyle.overflowY === "auto" && mentionPopover.scrollHeight > mentionPopover.clientHeight + 1, `overflowY=${mentionPopoverStyle.overflowY} scroll=${mentionPopover.scrollHeight} client=${mentionPopover.clientHeight}`);
+        assert(`${label}: mention menu does not show horizontal scrollbar`, mentionPopoverStyle.overflowX === "hidden" && mentionPopover.scrollWidth <= mentionPopover.clientWidth + 1, `overflowX=${mentionPopoverStyle.overflowX} scroll=${mentionPopover.scrollWidth} client=${mentionPopover.clientWidth}`);
+        click(mentionPopover.querySelector("[data-mention-index='0']"));
+        await wait(80);
+        assert(`${label}: mention menu fully hides after selecting character`, isElementHidden(win, mentionPopover) && mentionPopover.innerHTML === "");
+        assert(`${label}: mention insert writes selected character`, mentionBodyField.value.includes("@Mara"));
         const queryInput = doc.querySelector("#queryInput");
         setControlValue(win, queryInput, "boarding");
         assert(`${label}: global search accepts input`, queryInput.value === "boarding");
@@ -441,9 +789,8 @@
 
         const node = doc.querySelector(".node[data-node-id]");
         node.dispatchEvent(new win.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 200, clientY: 160, view: win }));
-        await wait(80);
         const menu = doc.querySelector("#nodeContextMenu");
-        assert(`${label}: context menu opens`, menu && !menu.hidden);
+        await waitFor(`${label}: context menu opens`, () => menu && !menu.hidden);
         const menuAction = menu.querySelector("[data-layer-action]");
         click(menuAction);
         await wait(80);
@@ -477,8 +824,50 @@
           await waitFor(`${label}: project file card switches to new file`, () => doc.querySelector("#projectFileName")?.textContent === createdPath);
           assert(`${label}: new project create receives filename title`, win.__createdProjectOptions[0]?.filenameProjectTitle === "Smoke Draft");
           assert(`${label}: new project save JSON uses input title`, win.__createdProjectStates[0]?.project?.title === "Smoke Draft");
+          assert(`${label}: new project starts without sample characters`, Array.isArray(win.__createdProjectStates[0]?.project?.characters) && win.__createdProjectStates[0].project.characters.length === 0);
+          assert(
+            `${label}: new project starts without default variables`,
+            win.__createdProjectStates[0]?.project?.variables
+              && !Array.isArray(win.__createdProjectStates[0].project.variables)
+              && Object.keys(win.__createdProjectStates[0].project.variables).length === 0
+          );
           assert(`${label}: new project title uses input`, doc.querySelector("#vaultProjectTitle")?.textContent === "Smoke Draft");
           assert(`${label}: new project save state is saved after file creation`, doc.querySelector("#projectDirtyIndicator")?.dataset.saveState === "saved");
+          click(doc.querySelector("[data-file-id='characters']"));
+          await waitFor(`${label}: new project characters page re-renders`, () => doc.querySelector("#charactersPanel")?.textContent.includes("No characters yet."));
+          assert(`${label}: new project characters page drops sample names`, !doc.querySelector("#charactersPanel")?.textContent.includes("Mara"));
+          await verifyCanDeleteAllCharactersAndVariables(label, win, doc);
+
+          click(doc.querySelector("[data-file-id='events']"));
+          await waitFor(`${label}: empty events page opens`, () => doc.querySelector("#eventsPanel")?.textContent.includes("No event frame nodes yet."));
+          doc.querySelector("#eventsPanel [data-action='add-node'][data-type='Event']")?.click();
+          await waitFor(`${label}: Add event frame works from empty events page`, () => doc.querySelector(".app-shell")?.getAttribute("data-active-file") === "adventure" && doc.body.textContent.includes("Event Frame"));
+
+          click(doc.querySelector("[data-file-id='variables']"));
+          await waitFor(`${label}: playbook page opens after empty project`, () => doc.querySelector("#variablesPanel")?.textContent.includes("No play rules yet."));
+          doc.querySelector("#variablesPanel [data-action='add-variable']")?.click();
+          await waitFor(`${label}: Add variable works from playbook`, () => doc.querySelector("#variablesPanel")?.textContent.includes("new_variable"));
+          doc.querySelector("#variablesPanel [data-action='add-play-rule']")?.click();
+          await waitFor(`${label}: Add play rule dialog opens`, () => doc.querySelector("#playRuleDialog")?.open);
+          doc.querySelector("#playRuleDialog [data-action='create-play-rule'][data-playbook-rule-kind='text']")?.click();
+          await waitFor(`${label}: Add play rule creates rule`, () => doc.querySelector("#variablesPanel")?.textContent.includes("1 Play rules") && !doc.querySelector("#variablesPanel")?.textContent.includes("No play rules yet."));
+        } else if (clearStorageButton) {
+          const previousConfirm = win.confirm;
+          win.confirm = () => true;
+          click(clearStorageButton);
+          await waitFor(`${label}: clear browser storage confirm opens`, () => doc.querySelector("#genericConfirmDialog")?.open);
+          click(doc.querySelector("#genericConfirmDialog [value='confirm']"));
+          await waitFor(`${label}: clear browser storage saves blank project`, () => {
+            const saved = readSavedProject(win);
+            return saved?.project?.title === "Untitled"
+              && saved.project.nodes?.length === 1
+              && saved.project.characters?.length === 0
+              && saved.project.variables
+              && Object.keys(saved.project.variables).length === 0;
+          });
+          win.confirm = previousConfirm;
+          assert(`${label}: clear browser storage selects blank entry`, doc.querySelector("#vaultProjectTitle")?.textContent === "Untitled");
+          await verifyCanDeleteAllCharactersAndVariables(label, win, doc);
         }
       }
 

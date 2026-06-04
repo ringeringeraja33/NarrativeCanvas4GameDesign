@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "savedAt": "2026-06-05T00:00:00.000Z",
+  "project": {
+    "title": "Export Large Canvas",
+    "notes": "Fixture for oversized PNG export scale limiting.",
+    "variables": {},
+    "nodes": [
+      {
+        "id": "n0",
+        "type": "Entry",
+        "title": "Large Start",
+        "body": "This node sits near the origin.",
+        "x": 80,
+        "y": 120
+      },
+      {
+        "id": "n1",
+        "type": "Content",
+        "title": "Large Far Target",
+        "body": "This node forces a very wide export when 4x PNG is selected.",
+        "x": 22000,
+        "y": 120
+      }
+    ],
+    "links": [
+      {
+        "id": "l0",
+        "from": "n0",
+        "to": "n1",
+        "label": "very-far-link"
+      }
+    ]
+  },
+  "ui": {
+    "selectedNodeId": "n0",
+    "panel": "project",
+    "activeFileId": "adventure",
+    "theme": "dark",
+    "exportImageScale": 4,
+    "view": {
+      "x": 0,
+      "y": 0,
+      "scale": 1
+    }
+  }
+}

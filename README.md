@@ -1,12 +1,10 @@
 # Narrative Canvas
 
-Latest release notes: [1.0.4](https://github.com/ringeringeraja33/NarrativeCanvas/releases/tag/1.0.4)
-
-当前最新版本 Release note：[1.0.4](https://github.com/ringeringeraja33/NarrativeCanvas/releases/tag/1.0.4)
+Latest release notes: [1.0.5](https://github.com/ringeringeraja33/NarrativeCanvas/releases/tag/1.0.5)
 
 ## English
 
-Narrative Canvas is a visual writing and planning workspace for complex stories. It helps you break a narrative into scenes, choices, conditions, variables, event frames, and character references, then connect them into a playable flow.
+Narrative Canvas is a node-based workspace for writing and designing complex stories. It can organize story beats, character dialog, choice branches, conditions, variables, jumps, characters, and notes into a connected, previewable interactive flow. It is suitable for games, interactive fiction, branching scripts, questlines, and other nonlinear narrative structures.
 
 It is best used for organizing ideas, checking branching logic, preparing pitches, and demonstrating how a story or questline works. It is not meant to replace prose drafting tools. Write the actual manuscript, script, or dialogue polish in your usual editor; use Narrative Canvas to keep the structure understandable.
 
@@ -18,6 +16,11 @@ It is best used for organizing ideas, checking branching logic, preparing pitche
 - Hide keeps Events Sheet data. Delete removes a column from the schema and clears matching values from Event Frame nodes.
 - Deleted nodes are archived outside the runtime path so accidental deletion is less destructive, but you should still save versions of important work.
 - Browser Save writes to browser local storage. Obsidian Save writes the current `.ncanvas` project file in your vault.
+- `Save`: saves the current project. In the web app, it writes to browser `localStorage`. In Obsidian, it writes the current `.ncanvas` project file in your vault.
+- `New`: creates a blank project. In the web app, the new project uses browser storage. In Obsidian, it creates a new `.ncanvas` file from the plugin filename settings when possible.
+- `Open`: in the web app, imports a project file from disk. In Obsidian, opens a project file from your vault.
+- `Reload`: discards unsaved changes and reloads the current saved source. In the web app, it reads browser storage. In Obsidian, it rereads the current `.ncanvas` file.
+- `Clear storage`: web app only. It deletes the browser-saved project and loads a blank project.
 
 ### Web App
 
@@ -25,25 +28,17 @@ Open `index.html` directly or use:
 
 <https://ringeringeraja33.github.io/NarrativeCanvas/>
 
-The web app is useful for quick planning and demos. Use `Export JSON`, `Image`, `HTML`, `Characters.md`, `Events Sheet.csv`, or `Playbook.json` when you need portable files.
+When the project file card says `Browser storage`, the web app is reading and writing `localStorage`, not the browser HTTP cache. Clearing cached files may leave the saved project intact. Use `Clear storage` in the Project File controls to delete the browser-saved project and load a blank one.
 
 ### Obsidian Plugin
 
-For manual installation, copy the plugin files into:
+For manual installation, copy the latest released plugin files into:
 
 ```text
 .obsidian/plugins/narrative-canvas/
 ```
 
 Then reload Obsidian and enable `Narrative Canvas` in Community plugins.
-
-The plugin stores projects as `.ncanvas` files. New project files use a configurable template. The default is:
-
-```text
-{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
-```
-
-The file name and the project title are independent after the file is created. Editing the project title does not rename the `.ncanvas` file, and renaming the file does not change the project title. The left Files entry is a fixed workspace label, `Narrative.canvas`, not the saved project file name. Plugin settings include the vault-relative save folder and the new-file name template.
 
 ### Main Workflow
 
@@ -55,8 +50,6 @@ The file name and the project title are independent after the file is created. E
 6. Use Story to inspect the reachable flow from Entry.
 7. Click Play to run the current narrative route.
 8. Save or export when the structure is ready to share.
-
-Undo and Redo are floating buttons in the upper-left of the canvas. The minimap floats in the lower-right; click it to move the main canvas.
 
 ### Node Types
 
@@ -76,13 +69,21 @@ All default node types are editable templates. You can rename, hide, delete, res
 ### Canvas Operations
 
 - Drag nodes by their header.
-- Resize nodes from the lower-right handle.
 - Click an output port, then an input port, to connect nodes.
 - Double-click blank canvas to cancel a pending connection.
 - Right-click a link to reconnect or delete it.
-- Use `Layout H` or `Layout V` for automatic layout.
-- Drag Story rows to change story order or move nodes into and out of frames.
-- Story `Focus` selects the node, opens the Node inspector, centers it on canvas, and uses 50% zoom.
+
+### Story
+
+Story shows the reachable structure from the Entry node. Non-frame nodes appear when they are reachable from Entry. Frame nodes appear when the frame is reachable itself, or when it contains an included child node.
+
+Story containment comes from canvas geometry. A node belongs to a frame when the node center point is inside that frame. The whole node box does not need to be inside the frame. If more than one frame contains the center point, Story folds the node into the smallest containing frame. A frame node can fold into another frame only when the containing frame is larger, which prevents nested-frame cycles.
+
+Story display is read from the current canvas graph and geometry. Story operations write back to the canvas. Dragging a Story row into a frame moves that node into the frame area; when the dragged row is a frame, its Story descendants move with it. The target frame can expand to contain the moved content. Dragging a row to the root level moves it outside frames and avoids placing it inside another frame.
+
+Manual Story row ordering is stored as `storyOrder`. `Re-sort by graph` clears those manual order values and returns Story ordering to the current graph order.
+
+Story `Focus` selects the node, opens the Node inspector, centers it on canvas, and uses 100% zoom.
 
 ### Events Sheet
 
@@ -90,7 +91,7 @@ All default node types are editable templates. You can rename, hide, delete, res
 
 Only Event Frame nodes appear in Events Sheet. Different Event Frame types are grouped into separate tables.
 
-You can rename, hide, or delete columns. Hidden columns appear in the sticky `Hidden` column at the right edge of each table so they can be restored. Deleted schema fields are removed from Event Frame type definitions and matching values are cleared from existing Event Frame nodes.
+You can rename, hide, or delete columns. Hidden columns appear in the rightmost `Hidden` column of each table so they can be restored. Deleted schema fields are removed from Event Frame type definitions and matching values are cleared from existing Event Frame nodes.
 
 `Re-sort by graph` clears manual row ordering and sorts event rows by the current canvas graph.
 
@@ -109,7 +110,7 @@ Characters can be linked to nodes with Cast chips:
 
 You can also type `@Character Name` inside node text to create a natural reference. Character pages list backlinks by story order, including speaker scenes, present scenes, mentions, owned nodes, and event frames.
 
-Use Character focus to highlight related nodes without drawing a web of lines across the canvas.
+Use Character focus to highlight related nodes.
 
 
 ### Playbook
@@ -191,6 +192,11 @@ Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区
 - Hide 只隐藏 Events Sheet 的列，保留数据。Delete 会从 schema 移除列，并清掉 Event Frame 节点里对应字段的值。
 - 删除节点后，相关内容会被放到运行路径之外的归档数据里，误删风险会低一些。重要项目仍建议保留版本。
 - 网页端 Save 存到浏览器本地缓存。Obsidian 端 Save 写入当前 vault 里的 `.ncanvas` 项目文件。
+- `Save`：保存当前项目。网页端写入浏览器 `localStorage`；Obsidian 端写入当前 vault 里的 `.ncanvas` 项目文件。
+- `New`：新建空项目。网页端使用浏览器保存；Obsidian 端会按插件设置里的文件名模板创建新的 `.ncanvas` 文件。
+- `Open`：网页端从本地磁盘选择并导入项目文件；Obsidian 端从 vault 里选择项目文件打开。
+- `Reload`：放弃未保存修改，重新加载当前保存来源。网页端读取浏览器保存内容；Obsidian 端重新读取当前 `.ncanvas` 文件。
+- `Clear storage`：仅网页端可用。删除浏览器保存的项目，并加载一个空项目。
 
 ### 网页
 
@@ -198,25 +204,17 @@ Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区
 
 <https://ringeringeraja33.github.io/NarrativeCanvas/>
 
-网页应用适合快速规划和演示。需要带走文件时，可以使用 `Export JSON`、`Image`、`HTML`、`Characters.md`、`Events Sheet.csv` 或 `Playbook.json`。
+Project File 显示 `Browser storage` 时，网页端读写的是 `localStorage`，不是浏览器的普通缓存。清 cache 不一定会清掉上次保存的项目。需要清空网页端保存内容时，用 Project File 里的 `Clear storage`。
 
 ### Obsidian 插件
 
-手动安装时，把插件文件复制到：
+手动安装时，把最新发布的插件文件复制到：
 
 ```text
 .obsidian/plugins/narrative-canvas/
 ```
 
 然后重新加载 Obsidian，在 Community plugins 里启用 `Narrative Canvas`。
-
-插件会把项目保存成 `.ncanvas` 文件。新项目文件名使用可配置模板，默认是：
-
-```text
-{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas
-```
-
-文件创建之后，文件名和 project title 互不影响。修改 project title 不会改 `.ncanvas` 文件名，重命名文件也不会改项目标题。左侧 Files 里的 `Narrative.canvas` 是固定白板入口名，不是保存出来的项目文件名。插件设置里可以配置保存路径、新建文件名模板。
 
 ### 基本流程
 
@@ -231,35 +229,43 @@ Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区
 
 ### 节点类型
 
-- **Entry** 是 Play 的起点。
-- **Content** 用来写叙述或场景文字。
-- **Dialog** 是角色台词。Dialog 标题和角色名一致时，会被识别为 Speaker。
-- **Choice** 会把每一行 choice 变成 Play 里的一个按钮。
-- **Condition** 读取简单条件，例如 `trust == high`。
-- **Set** 写入变量值。
-- **Jump** 用来标记路线转场或目标位置。它不会自动传送流程，需要把它连到下一个要访问的节点。
-- **Marker** 是规划备注。
-- **Frame** 用来视觉分组。
-- **Event Frame** 用来归组故事节拍，并在 Events Sheet 里生成一行。
+- **Entry** 是：Play 的起点。
+- **Content**：叙述或场景文字。
+- **Dialog**：角色对话。Dialog 标题和角色名一致时，会被识别为 Speaker。
+- **Choice**：将每一行 choice 作为Play 里的一个按钮。
+- **Condition**：读取简单条件，例如 `trust == high`。
+- **Set**：写入变量值。
+- **Jump**：标记路线转场或目标位置。它不会自动传送流程，需要把它连到下一个要访问的节点。
+- **Marker**：规划备注。
+- **Frame**：视觉分组。
+- **Event Frame**：故事节拍分组，并在 Events Sheet 里生成一行。
 
-示例里的所有 node type 都是默认模板，可以重命名、隐藏、删除、恢复、改颜色，也可以调整字段。
+所有 node type 默认模板可以重命名、隐藏、删除、恢复、改颜色，也可以调整字段。
 
 ### Canvas 操作
 
 - 拖动节点头部可以移动节点。
-- 从右下角手柄可以调整节点大小。
 - 点击输出端口，再点击输入端口，可以建立连线。
 - 连线过程中双击空白画布，可以取消待建立的连线。
-- 右键已有连线，可以选择重连或删除。
-- `Layout H` 和 `Layout V` 可以自动横排或竖排。
-- 在 Story 里拖动条目，可以改变故事顺序，或把节点移入、移出某个 frame。
-- Story 里的 `Focus` 会选中节点，打开 Node inspector，把节点以 50% 缩放居中到 canvas。
+- 右键点击已有的连线，可以选择重连或删除。
+
+### Story
+
+Story 显示从 Entry 节点可到达的结构。非 frame 节点只有从 Entry 可到达时才显示。Frame 节点本身可到达，或者包含了需要显示的子节点时，会显示在 Story 里。
+
+Story 里的包含关系来自 canvas 上的几何位置。判断一个节点是否在某个 frame 内，只看节点中心点：中心点在 frame 内，就算属于这个 frame；节点整个外框不必完全落在 frame 内。如果多个 frame 同时包含这个中心点，Story 会把节点折进面积最小的那个 frame。Frame 节点也可以折进另一个 frame，但只会折进面积更大的 frame，避免 frame 之间形成嵌套循环。
+
+Story 的显示读取当前 canvas 的连线和几何位置；Story 里的操作会反写到 canvas。把 Story 条目拖进 frame，会把该节点移动到 frame 内；如果拖动的是 frame，也会带着它在 Story 里的后代一起移动。必要时，目标 frame 会扩展以包住被拖入的内容。把条目拖到根层级，会把节点移到 frame 外，并避开其他 frame。
+
+手动拖动产生的 Story 顺序会写入 `storyOrder`。`Re-sort by graph` 会清掉这些手动顺序，回到当前连线顺序。
+
+Story 里的 `Focus` 会选中节点，打开 Node inspector，把节点以 100% 缩放居中到 canvas。
 
 ### Events Sheet
 
 只有 Event Frame 节点会进入 Events Sheet。用户自定义出多种 Event Frame 类型时，不同类型会分成不同表格。
 
-列可以重命名、隐藏或删除。隐藏的列会集中显示在每张表右侧固定的 `Hidden` 列里，方便恢复。删除 schema 字段时，会从 Event Frame 类型定义里移除该字段，并清掉已有 Event Frame 节点上的对应值。
+列可以重命名、隐藏或删除。隐藏的列会集中显示在每张表最右侧的 `Hidden` 列里，方便恢复。删除 schema 字段时，会从 Event Frame 类型定义里移除该字段，并清掉已有 Event Frame 节点上的对应值。
 
 `Re-sort by graph` 会清掉手动行顺序，按当前 canvas 连线关系重新排序。
 
@@ -276,8 +282,7 @@ Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区
 
 也可以在节点正文里输入 `@角色名` 创建自然引用。Characters 页面会按 Story 顺序列出角色相关节点，包括说话场景、在场场景、被提到的位置、拥有关系和事件框。
 
-Character focus 会高亮相关节点，让无关节点变淡。
-
+Character focus 会高亮相关节点。
 
 ### Playbook
 

@@ -3,6 +3,8 @@ param(
   [string]$Tag = "",
   [string]$ReleaseNotesPath = "",
   [string]$RuntimeDir = "",
+  [string]$GitHubRepo = "ringeringeraja33/NarrativeCanvas",
+  [switch]$CheckGitHubRelease,
   [switch]$SkipRuntime,
   [switch]$SkipEmbedded
 )
@@ -17,6 +19,7 @@ if (-not $RuntimeDir) {
 
 $script:Failures = New-Object System.Collections.Generic.List[string]
 $script:Warnings = New-Object System.Collections.Generic.List[string]
+$script:PluginReleaseFiles = @("main.js", "manifest.json", "styles.css")
 
 function Write-CheckOk([string]$Message) {
   Write-Host "[ok] $Message"
@@ -59,33 +62,58 @@ function Assert-FileExists([string]$Path, [string]$Label) {
   return $false
 }
 
-function Get-EmbeddedAssetText([string]$ConstantName) {
+function Get-JsStringArrayJoinedText([string]$ConstantName) {
   $mainPath = Resolve-ProjectPath "main.js"
   $mainJs = Read-Utf8Strict $mainPath
-  $pattern = 'const\s+' + [regex]::Escape($ConstantName) + '\s*=\s*\[([\s\S]*?)\]\.join\(""\);'
+  $pattern = 'const\s+' + [regex]::Escape($ConstantName) + '\s*=\s*\[([\s\S]*?)\]\.join\("([^"]*)"\);'
   $match = [regex]::Match($mainJs, $pattern)
   if (-not $match.Success) {
     throw "Could not find $ConstantName in main.js"
   }
-  $chunks = [regex]::Matches($match.Groups[1].Value, '"([^"]*)"') | ForEach-Object { $_.Groups[1].Value }
-  if (-not $chunks -or $chunks.Count -eq 0) {
-    throw "$ConstantName has no encoded chunks"
+  $chunks = [regex]::Matches($match.Groups[1].Value, '"(?:\\.|[^"\\])*"') | ForEach-Object {
+    $_.Value | ConvertFrom-Json
   }
-  $base64 = -join $chunks
-  return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($base64))
+  if (-not $chunks -or $chunks.Count -eq 0) {
+    throw "$ConstantName has no string chunks"
+  }
+  $joinText = ('"' + $match.Groups[2].Value + '"') | ConvertFrom-Json
+  return [string]::Join($joinText, $chunks)
 }
 
-function Assert-EmbeddedMatchesSource([string]$ConstantName, [string]$SourceFile) {
+function Assert-BundledHtmlMatchesSource {
   try {
-    $embedded = Get-EmbeddedAssetText $ConstantName
-    $source = Read-Utf8Strict (Resolve-ProjectPath $SourceFile)
-    if ($embedded -eq $source) {
-      Write-CheckOk "$ConstantName matches $SourceFile"
+    $bundled = Get-JsStringArrayJoinedText "CANVAS_INDEX_HTML"
+    $source = (Read-Utf8Strict (Resolve-ProjectPath "index.html")).Replace("`r`n", "`n").TrimEnd()
+    if ($bundled -eq $source) {
+      Write-CheckOk "CANVAS_INDEX_HTML matches index.html"
     } else {
-      Write-CheckFail "$ConstantName does not match $SourceFile"
+      Write-CheckFail "CANVAS_INDEX_HTML does not match index.html"
     }
   } catch {
-    Write-CheckFail "$ConstantName check failed: $($_.Exception.Message)"
+    Write-CheckFail "CANVAS_INDEX_HTML check failed: $($_.Exception.Message)"
+  }
+}
+
+function Assert-BundledAppMatchesSource {
+  try {
+    $mainJs = Read-Utf8Strict (Resolve-ProjectPath "main.js")
+    $pattern = 'function\s+installNarrativeCanvasApp\(\)\s*\{\s*// BEGIN bundled app\.js\r?\n([\s\S]*?)\r?\n\s*// END bundled app\.js\r?\n\}'
+    $match = [regex]::Match($mainJs, $pattern)
+    if (-not $match.Success) {
+      throw "Could not find bundled app.js markers in main.js"
+    }
+    $body = ($match.Groups[1].Value -split "\r?\n") | ForEach-Object {
+      if ($_.StartsWith("  ")) { $_.Substring(2) } else { $_ }
+    }
+    $bundled = [string]::Join("`n", $body).TrimEnd()
+    $source = (Read-Utf8Strict (Resolve-ProjectPath "app.js")).Replace("`r`n", "`n").TrimEnd()
+    if ($bundled -eq $source) {
+      Write-CheckOk "bundled app.js matches source app.js"
+    } else {
+      Write-CheckFail "bundled app.js does not match source app.js"
+    }
+  } catch {
+    Write-CheckFail "bundled app.js check failed: $($_.Exception.Message)"
   }
 }
 
@@ -96,6 +124,59 @@ function Assert-TextHasNoMojibake([string]$Text, [string]$Label) {
     Write-CheckFail "$Label contains ??"
   } else {
     Write-CheckOk "$Label has no obvious mojibake markers"
+  }
+}
+
+function Assert-TextDoesNotMatch([string]$Text, [string]$Pattern, [string]$Label) {
+  if ($Text -match $Pattern) {
+    Write-CheckFail $Label
+  } else {
+    Write-CheckOk $Label
+  }
+}
+
+function Assert-TextContains([string]$Text, [string]$Needle, [string]$Label) {
+  if ($Text.Contains($Needle)) {
+    Write-CheckOk $Label
+  } else {
+    Write-CheckFail $Label
+  }
+}
+
+function Assert-GitHubReleaseAssets([string]$Repo, [string]$ReleaseTag) {
+  if (-not $ReleaseTag) {
+    Write-CheckWarn "No tag supplied; GitHub release asset check skipped"
+    return
+  }
+
+  $ghCommand = Get-Command gh -ErrorAction SilentlyContinue
+  if (-not $ghCommand) {
+    Write-CheckFail "GitHub release asset check needs the gh CLI"
+    return
+  }
+
+  $json = & gh release view $ReleaseTag --repo $Repo --json assets 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $json) {
+    Write-CheckFail "GitHub release $ReleaseTag could not be read from $Repo"
+    return
+  }
+
+  $release = $json | ConvertFrom-Json
+  $assetNames = @($release.assets | ForEach-Object { [string]$_.name } | Sort-Object)
+  $expected = @($script:PluginReleaseFiles | Sort-Object)
+  $extra = @($assetNames | Where-Object { $expected -notcontains $_ })
+  $missing = @($expected | Where-Object { $assetNames -notcontains $_ })
+
+  if ($extra.Count -eq 0 -and $missing.Count -eq 0) {
+    Write-CheckOk "GitHub release assets are plugin-only: $($expected -join ', ')"
+    return
+  }
+
+  if ($extra.Count -gt 0) {
+    Write-CheckFail "GitHub release has non-plugin assets: $($extra -join ', ')"
+  }
+  if ($missing.Count -gt 0) {
+    Write-CheckFail "GitHub release is missing plugin assets: $($missing -join ', ')"
   }
 }
 
@@ -152,10 +233,42 @@ if ($manifest) {
   }
 }
 
-$releaseFiles = @("app.js", "canvas.css", "index.html", "main.js", "manifest.json", "styles.css")
+$releaseFiles = $script:PluginReleaseFiles
 foreach ($file in $releaseFiles) {
   Assert-FileExists (Resolve-ProjectPath $file) "release asset $file" | Out-Null
 }
+
+$sourceFiles = @("app.js", "canvas.css", "index.html")
+foreach ($file in $sourceFiles) {
+  Assert-FileExists (Resolve-ProjectPath $file) "source asset $file" | Out-Null
+}
+
+$obsidianTreeClassFiles = @("app.js", "canvas.css", "index.html", "main.js", "styles.css")
+foreach ($file in $obsidianTreeClassFiles) {
+  $path = Resolve-ProjectPath $file
+  if (Test-Path -LiteralPath $path -PathType Leaf) {
+    $text = Read-Utf8Strict $path
+    if ($text -match "(^|[^A-Za-z0-9_-])tree-item($|[^A-Za-z0-9_-])" -or $text -match "(^|[^A-Za-z0-9_-])tree-item-label($|[^A-Za-z0-9_-])") {
+      Write-CheckFail "$file uses Obsidian tree-item class names"
+    } else {
+      Write-CheckOk "$file avoids Obsidian tree-item class names"
+    }
+  }
+}
+
+$mainJsText = Read-Utf8Strict (Resolve-ProjectPath "main.js")
+Assert-TextDoesNotMatch $mainJsText 'new\s+Function\s*\(' "main.js avoids new Function dynamic execution"
+Assert-TextDoesNotMatch $mainJsText '\beval\s*\(' "main.js avoids eval"
+Assert-TextDoesNotMatch $mainJsText 'window\.(prompt|confirm)\b' "main.js avoids native prompt/confirm dialogs"
+Assert-TextDoesNotMatch $mainJsText 'EMBEDDED_(INDEX_HTML|CANVAS_CSS|APP_JS)' "main.js has no base64 embedded fallback constants"
+Assert-TextDoesNotMatch $mainJsText 'app\.vault\.adapter' "main.js avoids direct vault adapter project file I/O"
+Assert-TextDoesNotMatch $mainJsText 'detachLeavesOfType' "main.js does not detach leaves on unload"
+Assert-TextDoesNotMatch $mainJsText 'document\.head\.appendChild' "main.js does not inject plugin CSS into document.head"
+Assert-TextDoesNotMatch $mainJsText 'contentEl\.innerHTML' "main.js does not mount the app with contentEl.innerHTML"
+
+$stylesText = Read-Utf8Strict (Resolve-ProjectPath "styles.css")
+Assert-TextContains $stylesText "Narrative Canvas web app styles (scoped; generated from canvas.css)" "styles.css includes scoped generated canvas styles"
+Assert-TextDoesNotMatch $stylesText ':root\[data-theme=' "styles.css does not rely on scoped :root theme selectors"
 
 if (-not $SkipRuntime) {
   if (Test-Path -LiteralPath $RuntimeDir -PathType Container) {
@@ -178,9 +291,8 @@ if (-not $SkipRuntime) {
 }
 
 if (-not $SkipEmbedded) {
-  Assert-EmbeddedMatchesSource "EMBEDDED_INDEX_HTML" "index.html"
-  Assert-EmbeddedMatchesSource "EMBEDDED_CANVAS_CSS" "canvas.css"
-  Assert-EmbeddedMatchesSource "EMBEDDED_APP_JS" "app.js"
+  Assert-BundledHtmlMatchesSource
+  Assert-BundledAppMatchesSource
 }
 
 if ($ReleaseNotesPath) {
@@ -200,6 +312,11 @@ if ($ReleaseNotesPath) {
   }
 } else {
   Write-CheckWarn "No release notes path supplied; UTF-8 release note check skipped"
+}
+
+if ($CheckGitHubRelease) {
+  $releaseTag = if ($Tag) { $Tag } elseif ($manifest) { [string]$manifest.version } else { "" }
+  Assert-GitHubReleaseAssets $GitHubRepo $releaseTag
 }
 
 Write-Host ""

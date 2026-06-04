@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "savedAt": "2026-06-05T00:00:00.000Z",
+  "project": {
+    "title": "Choice Link Branches",
+    "notes": "Legacy choice outgoing links should gain stable branch labels.",
+    "nodes": [
+      {
+        "id": "n0",
+        "type": "Choice",
+        "title": "The Conductor",
+        "body": "A gloved hand opens.",
+        "choices": [
+          "Offer the watch",
+          "Hide the watch",
+          "Ask about Old Reyes"
+        ],
+        "x": 80,
+        "y": 80
+      },
+      {
+        "id": "n1",
+        "type": "Set",
+        "title": "Offer the watch",
+        "body": "Raise trust.",
+        "x": 380,
+        "y": 20
+      },
+      {
+        "id": "n2",
+        "type": "Content",
+        "title": "Hide it from the Brakeman",
+        "body": "Mara hides the watch.",
+        "x": 380,
+        "y": 160
+      },
+      {
+        "id": "n3",
+        "type": "Dialog",
+        "title": "Vesper",
+        "body": "Remote dispatch answers.",
+        "x": 380,
+        "y": 300
+      }
+    ],
+    "links": [
+      {
+        "id": "l0",
+        "from": "n0",
+        "to": "n1"
+      },
+      {
+        "id": "l1",
+        "from": "n0",
+        "to": "n2"
+      },
+      {
+        "id": "l2",
+        "from": "n0",
+        "to": "n3"
+      }
+    ]
+  },
+  "ui": {
+    "activeFileId": "adventure"
+  }
+}

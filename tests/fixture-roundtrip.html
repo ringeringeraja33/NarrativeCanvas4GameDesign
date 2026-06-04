@@ -74,6 +74,51 @@
             assert("characters: json export downloaded", downloads.some((item) => item.filename === "Characters.json"));
           },
           exports: ["export-characters-md", "export-characters-json"]
+        },
+        {
+          name: "choice-link-branches",
+          file: "fixtures/choice-link-branches.ncanvas",
+          checks(doc, saved, downloads) {
+            const links = saved.project.links.filter((link) => link.from === "n0").sort((a, b) => a.choiceIndex - b.choiceIndex);
+            assert("choice links: branch count preserved", links.length === 3);
+            assert("choice links: first branch labeled", links[0]?.choiceIndex === 0 && links[0]?.label === "Offer the watch");
+            assert("choice links: second branch labeled", links[1]?.choiceIndex === 1 && links[1]?.label === "Hide the watch");
+            assert("choice links: third branch labeled", links[2]?.choiceIndex === 2 && links[2]?.label === "Ask about Old Reyes");
+            const renderedLabels = [...doc.querySelectorAll("#linkLayer text")].map((node) => node.textContent);
+            assert("choice links: labels render on canvas", ["Offer the watch", "Hide the watch", "Ask about Old Reyes"].every((label) => renderedLabels.includes(label)));
+          },
+          exports: []
+        },
+        {
+          name: "export-outside-viewport",
+          file: "fixtures/export-outside-viewport.ncanvas",
+          async checks(doc, saved, downloads) {
+            await waitFor("export: png download created", () => downloads.some((item) => item.filename === "export-outside-viewport.png"));
+            const png = await getDownloadBlob(downloads, /^export-outside-viewport\.png$/);
+            const distinctPixels = await countDistinctOpaquePixels(png);
+            assert("export: png contains visible non-background content", distinctPixels > 4, `distinct=${distinctPixels}`);
+            const svg = doc.defaultView.buildExportSvg();
+            assert("export: HTML button is not shown", !doc.querySelector("[data-action='export-html']"));
+            assert("export: near node included", svg.includes("Near Start"));
+            assert("export: far node outside viewport included", svg.includes("Far Target"));
+            assert("export: link label included", svg.includes("far-link"));
+          },
+          exports: ["export-image"]
+        },
+        {
+          name: "export-large-canvas",
+          file: "fixtures/export-large-canvas.ncanvas",
+          async checks(doc, saved, downloads) {
+            await waitFor("export large: png download created", () => downloads.some((item) => /^export-large-canvas@[\d.]+x\.png$/.test(item.filename)));
+            const png = await getDownloadBlob(downloads, /^export-large-canvas@[\d.]+x\.png$/);
+            const distinctPixels = await countDistinctOpaquePixels(png);
+            assert("export large: png contains visible non-background content", distinctPixels > 4, `distinct=${distinctPixels}`);
+            assert("export large: requested 4x was scale-limited", downloads.some((item) => /^export-large-canvas@[\d.]+x\.png$/.test(item.filename) && item.filename !== "export-large-canvas@4x.png"));
+            const svg = doc.defaultView.buildExportSvg();
+            assert("export large: far node included", svg.includes("Large Far Target"));
+            assert("export large: link label included", svg.includes("very-far-link"));
+          },
+          exports: ["export-image"]
         }
       ];
 
@@ -110,6 +155,46 @@
 
       function assetUrl(path) {
         return new URL(`../${path}`, window.location.href).href;
+      }
+
+      async function readDownloadText(downloads, filename) {
+        const item = downloads.find((entry) => entry.filename === filename);
+        assert(`download exists: ${filename}`, Boolean(item));
+        return item.blob.text();
+      }
+
+      async function getDownloadBlob(downloads, pattern) {
+        const item = downloads.find((entry) => pattern.test(entry.filename));
+        assert(`download exists: ${pattern}`, Boolean(item));
+        return item.blob;
+      }
+
+      async function countDistinctOpaquePixels(blob) {
+        const image = new Image();
+        const url = URL.createObjectURL(blob);
+        try {
+          await new Promise((resolve, reject) => {
+            image.onload = resolve;
+            image.onerror = reject;
+            image.src = url;
+          });
+          const canvas = document.createElement("canvas");
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+          const context = canvas.getContext("2d");
+          context.drawImage(image, 0, 0);
+          const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          const colors = new Set();
+          const step = Math.max(4, Math.floor(data.length / 4 / 12000) * 4);
+          for (let index = 0; index < data.length; index += step) {
+            if (data[index + 3] < 200) continue;
+            colors.add(`${data[index]},${data[index + 1]},${data[index + 2]}`);
+            if (colors.size > 12) break;
+          }
+          return colors.size;
+        } finally {
+          URL.revokeObjectURL(url);
+        }
       }
 
       async function loadAssets() {
@@ -157,13 +242,13 @@
         const originalRevokeObjectURL = win.URL.revokeObjectURL.bind(win.URL);
         const originalClick = win.HTMLAnchorElement.prototype.click;
         win.URL.createObjectURL = (blob) => {
-          const url = `blob:fixture-${downloads.length + 1}`;
+          const url = originalCreateObjectURL(blob);
           downloads.push({ blob, url, filename: "" });
           return url;
         };
-        win.URL.revokeObjectURL = () => {};
+        win.URL.revokeObjectURL = (url) => originalRevokeObjectURL(url);
         win.HTMLAnchorElement.prototype.click = function click() {
-          const item = downloads[downloads.length - 1];
+          const item = downloads.find((entry) => entry.url === this.href) || downloads[downloads.length - 1];
           if (item) item.filename = this.download || "";
         };
 
@@ -203,7 +288,7 @@
           button.click();
         }
 
-        fixture.checks(doc, JSON.parse(savedText), downloads);
+        await fixture.checks(doc, JSON.parse(savedText), downloads);
 
         win.URL.createObjectURL = originalCreateObjectURL;
         win.URL.revokeObjectURL = originalRevokeObjectURL;

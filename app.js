@@ -4,9 +4,12 @@ const CANVAS_VIEW_PADDING = 48;
 const CANVAS_MIN_ZOOM = 0.025;
 const CANVAS_MAX_ZOOM = 3;
 const DEFAULT_CANVAS_ZOOM = 0.5;
+const NODE_FOCUS_ZOOM = 1;
+const NODE_INLINE_EDIT_CLICK_INTERVAL_MS = 500;
 const CANVAS_MIN_AUTO_SCALE = CANVAS_MIN_ZOOM;
 const CANVAS_MAX_AUTO_SCALE = 1;
 const HISTORY_LIMIT = 80;
+const APP_SHORTCUT_CONTEXT_MS = 30000;
 const EVENT_LAYER_BASE = 0;
 const REGULAR_LAYER_BASE = 1000000;
 const LINK_PORT_ANCHOR_OFFSET = 6;
@@ -35,6 +38,9 @@ const EXPORT_IMAGE_SCALES = [
   { value: "3", scale: 3, label: "3x", suffix: "@3x" },
   { value: "4", scale: 4, label: "4x", suffix: "@4x" }
 ];
+const EXPORT_IMAGE_MAX_DIMENSION = 16000;
+const EXPORT_IMAGE_MAX_PIXELS = 64000000;
+const EXPORT_IMAGE_MIN_SCALE = 0.05;
 const EVENT_ELEMENTS_COLUMN_KEY = "eventElements";
 const STORY_ROW_GAP = 132;
 const STORY_FRAME_PADDING = 32;
@@ -42,10 +48,11 @@ const AUTO_LAYOUT_NODE_GAP = 72;
 const AUTO_LAYOUT_RANK_GAP = 180;
 const AUTO_LAYOUT_FRAME_PADDING = 36;
 const AUTO_LAYOUT_FRAME_HEADER = 38;
-const FALLBACK_NODE_META = { badge: "N", color: DEFAULT_CUSTOM_NODE_COLOR, width: 230, label: "Node" };
+const FALLBACK_NODE_META = { badge: "N", color: DEFAULT_CUSTOM_NODE_COLOR, width: 200, label: "Node" };
 const LEGACY_DEFAULT_NODE_BADGES = { Content: "T", Choice: "?", Set: "$", Event: "EV" };
 const LEGACY_EVENT_FRAME_COLORS = new Set(["#98c379"]);
 const DIRECT_NODE_FIELD_KEYS = new Set(["variable", "variables", "value", "condition", "choices"]);
+const INLINE_NODE_FIELD_KEYS = new Set(["title", "body", "condition", "value"]);
 const CAST_RELATIONS = ["POV", "Speaker", "Present", "Mentioned", "Target", "Owner"];
 const CAST_RELATION_LABELS = {
   POV: "POV",
@@ -68,8 +75,8 @@ const CHARACTER_BACKLINK_PREVIEW_LIMIT = 6;
 const DOCUMENT_RENDER_INITIAL_LIMIT = 80;
 const DOCUMENT_RENDER_INCREMENT = 80;
 const CANVAS_RENDER_PADDING = 420;
-const NODE_AUTO_MIN_WIDTH = 170;
-const NODE_AUTO_MAX_WIDTH = 460;
+const NODE_AUTO_MIN_WIDTH = 150;
+const NODE_AUTO_MAX_WIDTH = 320;
 const NODE_AUTO_FRAME_MAX_WIDTH = 760;
 const NODE_AUTO_MIN_BODY_LINES = 2;
 const NODE_AUTO_MAX_BODY_LINES = 6;
@@ -80,14 +87,14 @@ const graphemeSegmenter = typeof Intl !== "undefined" && Intl.Segmenter
   : null;
 
 const nodeTypes = {
-  Entry: { badge: "E", color: "#cdd6f4", width: 170 },
-  Content: { badge: "C", color: "#61afef", width: 250 },
-  Dialog: { badge: "D", color: "#56b6c2", width: 250 },
-  Choice: { badge: "C", color: "#d19a66", width: 250 },
-  Condition: { badge: "C", color: "#e06c75", width: 240 },
-  Set: { badge: "S", color: "#98c379", width: 240 },
-  Jump: { badge: "J", color: "#abb2bf", width: 190 },
-  Marker: { badge: "M", color: "#7fdbca", width: 190 },
+  Entry: { badge: "E", color: "#cdd6f4", width: 155 },
+  Content: { badge: "C", color: "#61afef", width: 200 },
+  Dialog: { badge: "D", color: "#56b6c2", width: 200 },
+  Choice: { badge: "C", color: "#d19a66", width: 200 },
+  Condition: { badge: "C", color: "#e06c75", width: 190 },
+  Set: { badge: "S", color: "#98c379", width: 190 },
+  Jump: { badge: "J", color: "#abb2bf", width: 170 },
+  Marker: { badge: "M", color: "#7fdbca", width: 170 },
   Event: { badge: "E", color: DEFAULT_EVENT_FRAME_COLOR, width: 420 }
 };
 
@@ -215,7 +222,7 @@ function createSampleProject() {
         label: "Clue",
         badge: "Cl",
         color: "#d99a3d",
-        width: 250,
+        width: 220,
         custom: true,
         badgeCustom: true,
         kind: "node",
@@ -262,7 +269,7 @@ function createSampleProject() {
         label: "Archived Beat",
         badge: "AB",
         color: "#8a8f98",
-        width: 230,
+        width: 200,
         custom: true,
         badgeCustom: true,
         kind: "node",
@@ -308,36 +315,36 @@ function createSampleProject() {
       }
     ],
     nodes: [
-      { id: "n0", type: "Entry", title: "All Aboard", body: "The Midnight Line waits at the far platform. {traveler} has a ticket, a lantern, and a watch no one should recognize.", x: 80, y: 650, cast: [{ characterId: "c0", role: "POV" }] },
-      { id: "lf1", type: "LocationFrame", title: "Far Platform", body: "A visual frame for the station-side beats. This one is not an Events Sheet row.", x: 230, y: 260, width: 1010, height: 780, customFields: { region: "North terminal", mood: "Fog, brass, late departures" } },
-      { id: "e1", type: "StorySequence", title: "Boarding the Line", body: "Custom Story Sequence frame. Event Frame is the behavior type; this is one concrete class built on it.", x: 280, y: 360, width: 900, height: 620, act: "I", chapter: "1", beatList: "Boarding / ticket check", eventType: "Opening Scene", eventDescription: "Mara boards the Midnight Line, meets the Conductor, and lights the lantern.", location: "Far Platform", timeWeather: "00:03 / fog", questEpisode: "Q01", customFields: { status: "Drafted" } },
-      { id: "n1", type: "Content", title: "Platform 9, Midnight", body: "Fog swallows the rails. The watch once owned by @Old Reyes is heavier than it looks in {traveler}'s coat.", x: 330, y: 470, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
-      { id: "n2", type: "Dialog", title: "The Conductor", body: "Tickets, please. {traveler}, is it? The Line has been waiting for that watch.", x: 630, y: 470, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
-      { id: "n3", type: "Set", title: "Light the lantern", body: "lantern_lit = true", variable: "lantern_lit", value: "true", x: 500, y: 745, cast: [{ characterId: "c0", role: "POV" }] },
-      { id: "n13", type: "Marker", title: "Designer note", body: "The variable table includes string, number, boolean, and json values. Open Playbook.json to inspect them.", x: 885, y: 745 },
-      { id: "e2", type: "StorySequence", title: "The Bargain", body: "Choice, Set, and branch outcome nodes inside the custom Story Sequence event-frame class.", x: 1260, y: 360, width: 900, height: 700, act: "II", chapter: "2", beatList: "Watch bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara chooses whether to trust him.", location: "Car 3", timeWeather: "00:17 / rain on glass", questEpisode: "Q02", customFields: { status: "Branching" } },
-      { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you and the aisle.", choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"], x: 1305, y: 455, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
-      { id: "n5", type: "Set", title: "Offer the watch", body: "trust_level = 2", variable: "trust_level", value: "2", x: 1305, y: 735, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c1", role: "Present" }] },
-      { id: "n6", type: "Content", title: "Hide it from the Brakeman", body: "{traveler} slips the watch deeper into her coat. The Brakeman notices the movement.", x: 1605, y: 735, cast: [{ characterId: "c3", role: "Target" }, { characterId: "c0", role: "POV" }] },
-      { id: "n14", type: "Dialog", title: "Vesper", body: "Radio check. If the lantern is lit, follow the blue carriage marks.", x: 1885, y: 500, cast: [{ characterId: "c4", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
-      { id: "e3", type: "InvestigationEvent", title: "Glass Key Investigation", body: "Custom Event Frame. Its fields appear as extra Events Sheet columns for this group.", x: 2220, y: 320, width: 1020, height: 760, act: "II", chapter: "3", beatList: "Find the glass key", eventType: "Investigation", eventDescription: "Mara checks the luggage rack, identifies the key, and decides whether she has enough trust to use it.", location: "Luggage car", timeWeather: "00:31 / sparks outside", questEpisode: "Q03", customFields: { status: "Needs clue art", clueStatus: "Found", risk: "Medium", evidenceOwner: "Old Reyes" }, cast: [{ characterId: "c4", role: "Present" }] },
-      { id: "n7", type: "Condition", title: "Enough trust to unlock?", body: "trust_level >= 2 && lantern_lit == true", condition: "trust_level >= 2 && lantern_lit == true", x: 2295, y: 450, cast: [{ characterId: "c0", role: "POV" }] },
-      { id: "n8", type: "Clue", title: "Glass Key", body: "A brittle key catches lantern light. It is stamped with Reyes's maker mark.", x: 2585, y: 450, customFields: { evidence: "Maker mark R-17", owner: "Old Reyes", outcome: "Unlocks the map door" }, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c4", role: "Present" }] },
-      { id: "n9", type: "Content", title: "Map door opens", body: "The Conductor nods. A door unlocks that was never printed on the map.", x: 2865, y: 450, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
-      { id: "n10", type: "Content", title: "Cold compartment", body: "The Brakeman blocks the aisle. {traveler} has to bluff with a ticket and a dark lantern.", x: 2585, y: 740, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c3", role: "Target" }] },
-      { id: "e4", type: "StorySequence", title: "Terminus", body: "Jump and epilogue beats gathered into the final Story Sequence frame.", x: 980, y: 1260, width: 1180, height: 650, act: "III", chapter: "4", beatList: "Terminus arrival", eventType: "Resolution", eventDescription: "Branches merge at the northern terminus; the watch points to the next mystery.", location: "Northern Terminus", timeWeather: "05:40 / pale dawn", questEpisode: "Q04", customFields: { status: "Outline" } },
-      { id: "n11", type: "Jump", title: "Merge at Terminus", body: "Terminus", x: 1060, y: 1390 },
-      { id: "n12", type: "Content", title: "Epilogue", body: "Dawn. {traveler} steps down at the edge of the northern dark, the watch warm in her hand.", x: 1350, y: 1390, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
-      { id: "n15", type: "Marker", title: "Next pass", body: "Try filtering Characters for Mara, filtering Events for boarding, exporting Characters.json, and opening Advanced JSON.", x: 1710, y: 1620 }
+      { id: "n0", type: "Entry", title: "All Aboard", body: "The Midnight Line waits at the far platform. {traveler} has a ticket, a lantern, and a watch no one should recognize.", x: 80, y: 700, cast: [{ characterId: "c0", role: "POV" }] },
+      { id: "lf1", type: "LocationFrame", title: "Far Platform", body: "A visual frame for the station-side beats. This one is not an Events Sheet row.", x: 220, y: 220, width: 1040, height: 900, customFields: { region: "North terminal", mood: "Fog, brass, late departures" } },
+      { id: "e1", type: "StorySequence", title: "Boarding the Line", body: "Custom Story Sequence frame. Event Frame is the behavior type; this is one concrete class built on it.", x: 270, y: 340, width: 920, height: 700, act: "I", chapter: "1", beatList: "Boarding / ticket check", eventType: "Opening Scene", eventDescription: "Mara boards the Midnight Line, meets the Conductor, and lights the lantern.", location: "Far Platform", timeWeather: "00:03 / fog", questEpisode: "Q01", customFields: { status: "Drafted" } },
+      { id: "n1", type: "Content", title: "Platform 9, Midnight", body: "Fog swallows the rails. The watch once owned by @Old Reyes is heavier than it looks in {traveler}'s coat.", x: 320, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
+      { id: "n2", type: "Dialog", title: "The Conductor", body: "Tickets, please. {traveler}, is it? The Line has been waiting for that watch.", x: 740, y: 520, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+      { id: "n3", type: "Set", title: "Light the lantern", body: "lantern_lit = true", variable: "lantern_lit", value: "true", x: 320, y: 785, cast: [{ characterId: "c0", role: "POV" }] },
+      { id: "n13", type: "Marker", title: "Designer note", body: "The variable table includes string, number, boolean, and json values. Open Playbook.json to inspect them.", x: 740, y: 785 },
+      { id: "e2", type: "StorySequence", title: "The Bargain", body: "Choice, Set, and branch outcome nodes inside the custom Story Sequence event-frame class.", x: 1240, y: 340, width: 1030, height: 760, act: "II", chapter: "2", beatList: "Watch bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara chooses whether to trust him.", location: "Car 3", timeWeather: "00:17 / rain on glass", questEpisode: "Q02", customFields: { status: "Branching" } },
+      { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you and the aisle.", choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"], x: 1290, y: 520, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+      { id: "n5", type: "Set", title: "Offer the watch", body: "trust_level = 2", variable: "trust_level", value: "2", x: 1290, y: 800, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c1", role: "Present" }] },
+      { id: "n6", type: "Content", title: "Hide it from the Brakeman", body: "{traveler} slips the watch deeper into her coat. The Brakeman notices the movement.", x: 1570, y: 800, cast: [{ characterId: "c3", role: "Target" }, { characterId: "c0", role: "POV" }] },
+      { id: "n14", type: "Dialog", title: "Vesper", body: "Radio check. If the lantern is lit, follow the blue carriage marks.", x: 1850, y: 520, cast: [{ characterId: "c4", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+      { id: "e3", type: "InvestigationEvent", title: "Glass Key Investigation", body: "Custom Event Frame. Its fields appear as extra Events Sheet columns for this group.", x: 2320, y: 340, width: 1060, height: 760, act: "II", chapter: "3", beatList: "Find the glass key", eventType: "Investigation", eventDescription: "Mara checks the luggage rack, identifies the key, and decides whether she has enough trust to use it.", location: "Luggage car", timeWeather: "00:31 / sparks outside", questEpisode: "Q03", customFields: { status: "Needs clue art", clueStatus: "Found", risk: "Medium", evidenceOwner: "Old Reyes" }, cast: [{ characterId: "c4", role: "Present" }] },
+      { id: "n7", type: "Condition", title: "Enough trust to unlock?", body: "trust_level >= 2 && lantern_lit == true", condition: "trust_level >= 2 && lantern_lit == true", x: 2370, y: 520, cast: [{ characterId: "c0", role: "POV" }] },
+      { id: "n8", type: "Clue", title: "Glass Key", body: "A brittle key catches lantern light. It is stamped with Reyes's maker mark.", x: 2660, y: 520, customFields: { evidence: "Maker mark R-17", owner: "Old Reyes", outcome: "Unlocks the map door" }, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c4", role: "Present" }] },
+      { id: "n9", type: "Content", title: "Map door opens", body: "The Conductor nods. A door unlocks that was never printed on the map.", x: 3000, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
+      { id: "n10", type: "Content", title: "Cold compartment", body: "The Brakeman blocks the aisle. {traveler} has to bluff with a ticket and a dark lantern.", x: 2660, y: 795, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c3", role: "Target" }] },
+      { id: "e4", type: "StorySequence", title: "Terminus", body: "Jump and epilogue beats gathered into the final Story Sequence frame.", x: 980, y: 1220, width: 1060, height: 620, act: "III", chapter: "4", beatList: "Terminus arrival", eventType: "Resolution", eventDescription: "Branches merge at the northern terminus; the watch points to the next mystery.", location: "Northern Terminus", timeWeather: "05:40 / pale dawn", questEpisode: "Q04", customFields: { status: "Outline" } },
+      { id: "n11", type: "Jump", title: "Merge at Terminus", body: "Terminus", x: 1030, y: 1400 },
+      { id: "n12", type: "Content", title: "Epilogue", body: "Dawn. {traveler} steps down at the edge of the northern dark, the watch warm in her hand.", x: 1320, y: 1400, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
+      { id: "n15", type: "Marker", title: "Next pass", body: "Try filtering Characters for Mara, filtering Events for boarding, exporting Characters.json, and opening Advanced JSON.", x: 1660, y: 1645 }
     ],
     links: [
       { id: "l0", from: "n0", to: "n1" },
       { id: "l1", from: "n1", to: "n2" },
       { id: "l2", from: "n2", to: "n3" },
       { id: "l3", from: "n3", to: "n4" },
-      { id: "l4", from: "n4", to: "n5", label: "Offer" },
-      { id: "l5", from: "n4", to: "n6", label: "Hide" },
-      { id: "l6", from: "n4", to: "n14", label: "Ask Reyes" },
+      { id: "l4", from: "n4", to: "n5", label: "Offer the watch", choiceIndex: 0 },
+      { id: "l5", from: "n4", to: "n6", label: "Hide the watch", choiceIndex: 1 },
+      { id: "l6", from: "n4", to: "n14", label: "Ask about Old Reyes", choiceIndex: 2 },
       { id: "l7", from: "n5", to: "n7" },
       { id: "l8", from: "n6", to: "n7" },
       { id: "l9", from: "n14", to: "n7" },
@@ -360,7 +367,8 @@ const fileViews = {
 
 const validPanels = new Set(["project", "node", "story"]);
 
-const state = {
+function createInitialRuntimeState() {
+  return {
   project: cloneProject(sampleProject),
   selectedNodeId: "n1",
   selectedNodeIds: [],
@@ -384,6 +392,8 @@ const state = {
   iconDialogType: null,
   typeDialogType: null,
   eventColumnDeleteKey: null,
+  genericConfirmAction: null,
+  genericTextAction: null,
   reconnectingLinkId: null,
   reconnectingEnd: null,
   characterFocusId: null,
@@ -394,6 +404,8 @@ const state = {
   hasUnsavedChanges: false,
   isSaving: false,
   saveError: false,
+  statusOverride: false,
+  statusTimer: null,
   dirtyVersion: 0,
   structureVersion: 0,
   canvasRenderVersion: 1,
@@ -404,10 +416,16 @@ const state = {
   characterBacklinkExpandedIds: new Set(),
   history: { undo: [], redo: [], current: "", pending: null, applying: false },
   editHistoryTarget: null,
+  lastAppInteractionAt: 0,
+  inlineEditNodeId: null,
+  inlineEditField: null,
+  inlineEditPointerNodeId: null,
+  lastNodeClick: { id: null, time: 0 },
   playNodeId: null,
   playPath: [],
   search: "",
   eventRowDrag: null,
+  eventColumnResize: null,
   mention: null,
   characterRenderContext: null,
   nodeIndex: null,
@@ -428,7 +446,10 @@ const state = {
     rightCollapsed: false,
     resizing: null
   }
-};
+  };
+}
+
+const state = createInitialRuntimeState();
 
 const dom = {};
 const optionalDomKeys = new Set(["activeFileTab", "mentionPopover"]);
@@ -438,6 +459,7 @@ window.NarrativeCanvasApp = {
   init: initNarrativeCanvas,
   destroy: destroyNarrativeCanvas,
   save: saveCurrentState,
+  getSavedState: buildSavedState,
   configureAutoSave,
   createSampleProjectFile,
   ensureVaultFile: ensureVaultProjectFile,
@@ -456,6 +478,10 @@ if (!window.NarrativeCanvasHost) {
 
 async function initNarrativeCanvas() {
   if (initialized) return true;
+  eventController?.abort();
+  eventController = null;
+  resetRuntimeState();
+  resetDomRefs();
   try {
     bindDom();
     const missingElements = getMissingDomElements();
@@ -479,8 +505,8 @@ async function initNarrativeCanvas() {
   }
 }
 
-function bindDom() {
-  dom.scope = resolveDomScope();
+function bindDom(scopeOverride = null) {
+  dom.scope = scopeOverride || resolveDomScope();
   dom.root = dom.scope.querySelector(".app-shell");
   dom.themeHost = dom.root?.closest(".narrative-canvas-plugin-host") || document.documentElement;
   dom.sidebarLeft = dom.scope.querySelector("[data-sidebar='left']");
@@ -519,11 +545,15 @@ function bindDom() {
   dom.storyPanel = dom.scope.querySelector("#storyPanel");
   dom.inspectorTitle = dom.scope.querySelector("#inspectorTitle");
   dom.statusText = dom.scope.querySelector("#statusText");
+  dom.workspaceSearchControls = dom.scope.querySelector("#workspaceSearchControls");
   dom.queryInput = dom.scope.querySelector("#queryInput");
+  dom.characterSearchInput = dom.scope.querySelector("#characterSearchInput");
+  dom.eventSearchInput = dom.scope.querySelector("#eventSearchInput");
   dom.matchCount = dom.scope.querySelector("#matchCount");
   dom.fileInput = dom.scope.querySelector("#fileInput");
   dom.activeFileTab = dom.scope.querySelector("#activeFileTab");
   dom.fileScopedActions = [...dom.scope.querySelectorAll("[data-files]")];
+  dom.webOnlyActions = [...dom.scope.querySelectorAll("[data-web-only]")];
   dom.hint = dom.scope.querySelector("#selectionHint");
   dom.minimap = dom.scope.querySelector("#minimap");
   dom.nodeContextMenu = dom.scope.querySelector("#nodeContextMenu");
@@ -546,6 +576,18 @@ function bindDom() {
   dom.eventColumnDeleteTitle = dom.scope.querySelector("#eventColumnDeleteTitle");
   dom.eventColumnDeleteBody = dom.scope.querySelector("#eventColumnDeleteBody");
   dom.eventColumnsResetDialog = dom.scope.querySelector("#eventColumnsResetDialog");
+  dom.genericConfirmDialog = dom.scope.querySelector("#genericConfirmDialog");
+  dom.genericConfirmKicker = dom.scope.querySelector("#genericConfirmKicker");
+  dom.genericConfirmTitle = dom.scope.querySelector("#genericConfirmTitle");
+  dom.genericConfirmBody = dom.scope.querySelector("#genericConfirmBody");
+  dom.genericConfirmButton = dom.scope.querySelector("#genericConfirmButton");
+  dom.genericTextDialog = dom.scope.querySelector("#genericTextDialog");
+  dom.genericTextKicker = dom.scope.querySelector("#genericTextKicker");
+  dom.genericTextTitle = dom.scope.querySelector("#genericTextTitle");
+  dom.genericTextLabel = dom.scope.querySelector("#genericTextLabel");
+  dom.genericTextInput = dom.scope.querySelector("#genericTextInput");
+  dom.genericTextBody = dom.scope.querySelector("#genericTextBody");
+  dom.genericTextButton = dom.scope.querySelector("#genericTextButton");
   dom.playbookHelpDialog = dom.scope.querySelector("#playbookHelpDialog");
   dom.nodeRequiredDialog = dom.scope.querySelector("#nodeRequiredDialog");
   dom.playTitle = dom.scope.querySelector("#playTitle");
@@ -573,12 +615,14 @@ function showStartupError(message) {
     ? dom.scope
     : window.NarrativeCanvasHost?.root || document.body || document.documentElement;
   if (!target) return;
-  target.innerHTML = `
-    <main class="startup-error">
-      <h1>Narrative Canvas failed to load</h1>
-      <p>${escapeHtml(message)}</p>
-    </main>
-  `;
+  const shell = document.createElement("main");
+  shell.className = "startup-error";
+  const title = document.createElement("h1");
+  title.textContent = "Narrative Canvas failed to load";
+  const body = document.createElement("p");
+  body.textContent = message;
+  shell.append(title, body);
+  target.replaceChildren(shell);
 }
 
 function getStartupErrorMessage(error) {
@@ -605,6 +649,12 @@ function bindEvents() {
   eventRoot.addEventListener("focusout", handleEditFocusOut, { signal });
   eventRoot.addEventListener("keydown", handleKeyDown, { signal });
   eventRoot.addEventListener("pointerdown", handleStoryPointerDown, { signal });
+  dom.mentionPopover?.addEventListener("pointerdown", handleMentionPopoverPointerDown, { signal });
+  document.addEventListener("pointerdown", handleGlobalAppPointerContext, { capture: true, signal });
+  document.addEventListener("click", handleGlobalAppPointerContext, { capture: true, signal });
+  document.addEventListener("focusin", handleGlobalAppFocusContext, { capture: true, signal });
+  document.addEventListener("keydown", handleGlobalHistoryKeyDown, { capture: true, signal });
+  document.addEventListener("click", handleDocumentClickCapture, { capture: true, signal });
   document.addEventListener("pointerdown", handleGlobalMenuDismiss, { capture: true, signal });
   document.addEventListener("mousedown", handleGlobalMenuDismiss, { capture: true, signal });
   document.addEventListener("click", handleGlobalMenuDismiss, { capture: true, signal });
@@ -614,6 +664,7 @@ function bindEvents() {
   window.addEventListener("pointerup", handleSidebarPointerUp, { signal });
   window.addEventListener("pointermove", handleStoryPointerMove, { signal });
   window.addEventListener("pointerup", handleStoryPointerUp, { signal });
+  window.addEventListener("keydown", handleGlobalHistoryKeyDown, { capture: true, signal });
   window.addEventListener("blur", hideNodeContextMenu, { signal });
   window.addEventListener("resize", handleWindowResize, { signal });
 
@@ -654,6 +705,19 @@ function bindEvents() {
       resetEventColumns();
       commitHistoryFromSnapshot(historyBefore);
     }
+  }, { signal });
+  dom.genericConfirmDialog.addEventListener("close", handleGenericConfirmClose, { signal });
+  dom.genericConfirmDialog.addEventListener("click", (event) => {
+    if (event.target === dom.genericConfirmDialog) dom.genericConfirmDialog.close("cancel");
+  }, { signal });
+  dom.genericTextDialog.addEventListener("close", handleGenericTextClose, { signal });
+  dom.genericTextDialog.addEventListener("click", (event) => {
+    if (event.target === dom.genericTextDialog) dom.genericTextDialog.close("cancel");
+  }, { signal });
+  dom.genericTextInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    dom.genericTextDialog.close("confirm");
   }, { signal });
   dom.playbookHelpDialog.addEventListener("click", (event) => {
     if (event.target === dom.playbookHelpDialog) dom.playbookHelpDialog.close();
@@ -696,11 +760,28 @@ function destroyNarrativeCanvas() {
     state.canvasViewportRenderFrame = null;
   }
   clearAutoSaveTimer();
+  clearStatusTimer();
+  clearStoryPanelRenderTimer();
   state.sidebar.resizing = null;
   dom.root?.classList.remove("sidebar-resizing");
   dom.root?.removeAttribute("data-sidebar-resizing");
   hideNodeContextMenu();
   initialized = false;
+  resetRuntimeState();
+  resetDomRefs();
+  if (window.NarrativeCanvasApp?.destroy === destroyNarrativeCanvas) {
+    delete window.NarrativeCanvasApp;
+  }
+}
+
+function resetRuntimeState() {
+  const nextState = createInitialRuntimeState();
+  Object.keys(state).forEach((key) => delete state[key]);
+  Object.assign(state, nextState);
+}
+
+function resetDomRefs() {
+  Object.keys(dom).forEach((key) => delete dom[key]);
 }
 
 function handleWindowResize() {
@@ -876,27 +957,13 @@ function cloneProject(project) {
 }
 
 function defaultVariables() {
-  return { variable: "" };
+  return {};
 }
 
-function defaultCharacters() {
-  return [{
-    id: "c0",
-    name: "Character",
-    role: "",
-    voice: "",
-    notes: ""
-  }];
-}
-
-function ensureNonEmptyVariables(value) {
-  const variables = normalizeVariablesObject(value);
-  return Object.keys(variables).length ? variables : defaultVariables();
-}
-
-function ensureNonEmptyCharacters(characters) {
-  const normalized = normalizeCharacters(characters);
-  return normalized.length ? normalized : defaultCharacters();
+function normalizeProjectCharacters(project) {
+  return Array.isArray(project.characters)
+    ? normalizeCharacters(project.characters)
+    : inferCharacters(project);
 }
 
 function getHistorySnapshot() {
@@ -926,14 +993,6 @@ function resetHistory() {
   };
   state.editHistoryTarget = null;
   renderHistoryButtons();
-}
-
-function beginHistoryCapture() {
-  if (state.history?.applying) return null;
-  if (!state.history) resetHistory();
-  if (!state.history.current) state.history.current = getHistorySnapshot();
-  if (!state.history.pending) state.history.pending = state.history.current || getHistorySnapshot();
-  return state.history.pending;
 }
 
 function commitHistoryCapture() {
@@ -1149,7 +1208,8 @@ function shouldRecordAction(action) {
     "duplicate-node",
     "delete-node",
     "delete-selected-nodes",
-    "delete-context-link"
+    "delete-context-link",
+    "assign-choice-link"
   ]).has(action);
 }
 
@@ -1236,11 +1296,9 @@ function renderShellState() {
   }
   renderProjectFileStatus();
   dom.root?.setAttribute("data-active-file", state.activeFileId || "adventure");
-  if (dom.queryInput && dom.queryInput.value !== state.search) {
-    dom.queryInput.value = state.search;
-  }
+  syncWorkspaceSearchControls();
 
-  dom.scope.querySelectorAll(".tree-item[data-file-id]").forEach((button) => {
+  dom.scope.querySelectorAll(".nc-file-item[data-file-id]").forEach((button) => {
     const isActive = button.dataset.fileId === state.activeFileId;
     button.classList.toggle("active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
@@ -1256,7 +1314,27 @@ function renderShellState() {
     const files = String(button.dataset.files || "").split(/\s+/);
     button.hidden = !files.includes(state.activeFileId);
   });
+  dom.webOnlyActions.forEach((element) => {
+    element.hidden = Boolean(window.NarrativeCanvasHost);
+  });
   renderHistoryButtons();
+}
+
+function syncWorkspaceSearchControls() {
+  const activeFile = state.activeFileId || "adventure";
+  if (dom.queryInput && dom.queryInput.value !== state.search) dom.queryInput.value = state.search;
+  if (dom.characterSearchInput && dom.characterSearchInput.value !== state.characterSearch) {
+    dom.characterSearchInput.value = state.characterSearch || "";
+  }
+  if (dom.eventSearchInput && dom.eventSearchInput.value !== state.eventSearch) {
+    dom.eventSearchInput.value = state.eventSearch || "";
+  }
+
+  const hasSearch = activeFile === "adventure" || activeFile === "characters" || activeFile === "events";
+  if (dom.workspaceSearchControls) dom.workspaceSearchControls.hidden = !hasSearch;
+  dom.scope.querySelectorAll("[data-search-scope]").forEach((element) => {
+    element.hidden = element.dataset.searchScope !== activeFile;
+  });
 }
 
 function renderProjectFileStatus() {
@@ -1343,6 +1421,7 @@ function markProjectStructureChanged(options = {}) {
   state.structureVersion += 1;
   invalidateCanvasSurface();
   invalidateDocumentSurfaces();
+  invalidateCharacterRenderContext();
   if (!state.derived) return;
   state.derived.flowOrder = null;
   state.derived.displayId = null;
@@ -1374,6 +1453,20 @@ function clearAutoSaveTimer() {
   if (!state.autoSaveTimer) return;
   window.clearTimeout(state.autoSaveTimer);
   state.autoSaveTimer = null;
+}
+
+function clearStatusTimer(resetOverride = true) {
+  if (state.statusTimer) {
+    window.clearTimeout(state.statusTimer);
+    state.statusTimer = null;
+  }
+  if (resetOverride) state.statusOverride = false;
+}
+
+function clearStoryPanelRenderTimer() {
+  if (!state.storyPanelRenderTimer) return;
+  window.clearTimeout(state.storyPanelRenderTimer);
+  state.storyPanelRenderTimer = null;
 }
 
 function getAutoSaveIntervalMs() {
@@ -1495,10 +1588,6 @@ function renderCharactersPage() {
           <div class="document-meta" data-character-search-meta>${escapeHtml(formatCharacterMeta(model))}</div>
         </div>
         <div class="document-actions">
-          <label class="character-search-box">
-            <span class="visually-hidden">Find character</span>
-            <input type="search" data-character-search placeholder="Find character" value="${escapeAttr(state.characterSearch || "")}" spellcheck="false">
-          </label>
           <button class="small-button" data-action="add-character">Add character</button>
           <button class="small-button" data-action="export-characters-md">Export MD</button>
           <button class="small-button" data-action="export-characters-json">Export JSON</button>
@@ -1565,11 +1654,11 @@ function renderCharacterFilterBar(model) {
 }
 
 function renderCharacterCardsMarkup(model, limit = getDocumentRenderLimit("characters")) {
-  if (!model.characters.length) return `<div class="empty-state">No characters yet.</div>`;
+  if (!model.characters.length) return `<div class="nc-empty-state">No characters yet.</div>`;
   const visible = model.visible.slice(0, Math.max(0, limit));
   return visible.length
     ? visible.map((character) => renderCharacterCard(character, model.context)).join("")
-    : `<div class="empty-state">No characters match "${escapeHtml(model.queryRaw.trim())}".</div>`;
+    : `<div class="nc-empty-state">No characters match "${escapeHtml(model.queryRaw.trim())}".</div>`;
 }
 
 function getCharacterRenderContext() {
@@ -1727,10 +1816,10 @@ function renderVariablesPage(options = {}) {
         </div>
         <div class="document-actions">
           <button class="help-button" type="button" data-action="show-playbook-help" aria-label="What can Playbook.json do?">?</button>
-          <button class="small-button" data-action="add-variable">Add variable</button>
-          <button class="small-button" data-action="add-play-rule">Add play rule</button>
-          <button class="small-button" data-action="toggle-playbook-json">${state.playbookJsonOpen ? "Hide JSON" : "Advanced JSON"}</button>
-          <button class="small-button" data-action="export-variables-json">Export JSON</button>
+          <button class="small-button" type="button" data-action="add-variable">Add variable</button>
+          <button class="small-button" type="button" data-action="add-play-rule">Add play rule</button>
+          <button class="small-button" type="button" data-action="toggle-playbook-json">${state.playbookJsonOpen ? "Hide JSON" : "Advanced JSON"}</button>
+          <button class="small-button" type="button" data-action="export-variables-json">Export JSON</button>
         </div>
       </header>
       <section class="playbook-section">
@@ -1745,7 +1834,7 @@ function renderVariablesPage(options = {}) {
             <span>Value</span>
             <span></span>
           </div>
-          ${visibleEntries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="empty-state">No variables yet.</div>`}
+          ${visibleEntries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="nc-empty-state">No variables yet.</div>`}
         </div>
       </section>
       <section class="playbook-section">
@@ -1754,14 +1843,14 @@ function renderVariablesPage(options = {}) {
           <span>${ruleCount}</span>
         </header>
         <div class="playbook-rule-grid">
-          ${visibleRuleCards.length ? visibleRuleCards.map(renderPlaybookRuleCard).join("") : `<div class="empty-state">No play rules yet.</div>`}
+          ${visibleRuleCards.length ? visibleRuleCards.map(renderPlaybookRuleCard).join("") : `<div class="nc-empty-state">No play rules yet.</div>`}
         </div>
       </section>
       ${renderDocumentLimitNotice("variables", shownCount, totalCount)}
       ${state.playbookJsonOpen ? `
         <label class="field json-field">
           <span>Advanced JSON</span>
-          <textarea data-project-field="variables" rows="${getPlaybookJsonRows(playbookJson)}" spellcheck="false">${escapeHtml(playbookJson)}</textarea>
+          <textarea data-project-field="variables" data-playbook-json-version="${state.dirtyVersion}" rows="${getPlaybookJsonRows(playbookJson)}" spellcheck="false">${escapeHtml(playbookJson)}</textarea>
         </label>
       ` : ""}
     </div>
@@ -1902,14 +1991,10 @@ function renderEventsSheetPage() {
           <div class="document-meta" data-event-search-meta>${escapeHtml(formatEventSheetMeta(model))}</div>
         </div>
         <div class="document-actions">
-          <label class="event-search-box">
-            <span class="visually-hidden">Find event</span>
-            <input type="search" data-event-search placeholder="Find event" value="${escapeAttr(state.eventSearch || "")}" spellcheck="false">
-          </label>
-          <button class="small-button" data-action="add-node" data-type="Event">Add event frame</button>
-          <button class="small-button" data-action="reset-event-row-order" title="Clear manual drag order and re-sort rows by the canvas flow">Re-sort by graph</button>
-          <button class="small-button" data-action="export-event-sheet">Export CSV</button>
-          <button class="small-button" data-action="export-event-sheet-json">Export JSON</button>
+          <button class="small-button" type="button" data-action="add-node" data-type="Event">Add event frame</button>
+          <button class="small-button" type="button" data-action="reset-event-row-order" title="Clear manual drag order and re-sort rows by the canvas flow">Re-sort by graph</button>
+          <button class="small-button" type="button" data-action="export-event-sheet">Export CSV</button>
+          <button class="small-button" type="button" data-action="export-event-sheet-json">Export JSON</button>
         </div>
       </header>
       <div class="document-filter-bar" data-event-filter-bar>
@@ -1969,8 +2054,8 @@ function limitEventSheetGroups(groups, limit = getDocumentRenderLimit("events"))
 
 function renderEventSheetGroupsMarkup(model, groups = model.groups) {
   if (groups.length) return groups.map(renderEventSheetGroup).join("");
-  if (model.allGroups.length) return `<div class="empty-state">No matching event frames.</div>`;
-  return `<div class="empty-state">No event frame nodes yet.</div>`;
+  if (model.allGroups.length) return `<div class="nc-empty-state">No matching event frames.</div>`;
+  return `<div class="nc-empty-state">No event frame nodes yet.</div>`;
 }
 
 function formatEventSheetMeta(model) {
@@ -1990,10 +2075,38 @@ function renderEventFilterBar(model) {
 
 function clearEventSearch() {
   state.eventSearch = "";
-  const input = dom.eventsPanel?.querySelector("[data-event-search]");
-  if (input) input.value = "";
+  if (dom.eventSearchInput) dom.eventSearchInput.value = "";
   renderEventSheetGroupsForSearch();
   setStatus("Event search cleared.");
+}
+
+function captureEventSheetScrollState() {
+  const entries = [];
+  dom.eventsPanel?.querySelectorAll(".event-sheet-group[data-event-group-type]").forEach((group) => {
+    const scroll = group.querySelector(".event-sheet-scroll");
+    if (!scroll) return;
+    entries.push({
+      type: group.dataset.eventGroupType || "",
+      left: scroll.scrollLeft,
+      top: scroll.scrollTop
+    });
+  });
+  return entries;
+}
+
+function restoreEventSheetScrollState(entries) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  const restore = () => {
+    entries.forEach((entry) => {
+      const group = dom.eventsPanel?.querySelector(`.event-sheet-group[data-event-group-type="${CSS.escape(entry.type)}"]`);
+      const scroll = group?.querySelector(".event-sheet-scroll");
+      if (!scroll) return;
+      scroll.scrollLeft = Math.min(entry.left, Math.max(0, scroll.scrollWidth - scroll.clientWidth));
+      scroll.scrollTop = Math.min(entry.top, Math.max(0, scroll.scrollHeight - scroll.clientHeight));
+    });
+  };
+  restore();
+  requestAnimationFrame(restore);
 }
 
 function renderEventSheetGroup(group) {
@@ -2016,7 +2129,7 @@ function renderEventSheetGroup(group) {
           <thead>
             <tr>
               <th aria-hidden="true"></th>
-              <th>Node</th>
+              <th class="event-node-heading">Node</th>
               ${columns.map((column) => renderEventColumnHeader(column)).join("")}
               <th>Hidden</th>
             </tr>
@@ -2033,7 +2146,7 @@ function renderEventSheetGroup(group) {
 function renderEventColumnHeader(column) {
   const columnName = column.custom ? `${column.label} field` : `${column.label} column`;
   return `
-    <th>
+    <th style="${eventColumnWidthStyle(column.width)}" data-event-column-key="${escapeAttr(column.key)}">
       <div class="event-column-header">
         <span class="event-column-name">${escapeHtml(column.label)}</span>
         <span class="event-column-actions" aria-label="${escapeAttr(column.label)} column actions">
@@ -2042,6 +2155,7 @@ function renderEventColumnHeader(column) {
           <button class="event-column-button danger" type="button" aria-label="${escapeAttr(`Delete ${columnName}`)}" data-action="delete-event-column" data-event-column-key="${escapeAttr(column.key)}">Delete</button>
         </span>
       </div>
+      <span class="event-column-resize-handle" data-event-column-resize="${escapeAttr(column.key)}" role="separator" aria-label="${escapeAttr(`Resize ${columnName}`)}" title="Drag to resize"></span>
     </th>
   `;
 }
@@ -2080,12 +2194,17 @@ function renderHiddenEventColumnRestoreControls(hiddenColumns) {
 function renderEventCell(node, column) {
   const value = getNodeEventValue(node, column.key);
   if (column.readonly) {
-    return `<td>${renderEventElementsCell(node)}</td>`;
+    return `<td style="${eventColumnWidthStyle(column.width)}">${renderEventElementsCell(node)}</td>`;
   }
   const control = isMultilineEventField(column.key)
     ? `<textarea data-event-node-id="${escapeAttr(node.id)}" data-event-field="${column.key}">${escapeHtml(value)}</textarea>`
     : `<input data-event-node-id="${escapeAttr(node.id)}" data-event-field="${column.key}" value="${escapeAttr(value)}">`;
-  return `<td>${control}</td>`;
+  return `<td style="${eventColumnWidthStyle(column.width)}">${control}</td>`;
+}
+
+function eventColumnWidthStyle(width) {
+  const normalized = normalizeEventColumnWidth(width);
+  return `width:${normalized}; min-width:${normalized};`;
 }
 
 function isMultilineEventField(key) {
@@ -2217,7 +2336,9 @@ function normalizeEventSheetColumn(column) {
 
 function normalizeEventColumnWidth(value) {
   const width = String(value || "180px").trim();
-  return /^\d+(px|rem|em|%)$/.test(width) ? width : "180px";
+  if (!width) return "180px";
+  if (typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("width", width)) return width;
+  return /^(?:\d+(?:\.\d+)?(?:px|rem|em|%|vw|vh)|auto)$/.test(width) ? width : "180px";
 }
 
 function normalizeEventSheetHiddenColumns(hiddenColumns, legacyHiddenColumns) {
@@ -2228,18 +2349,32 @@ function normalizeEventSheetHiddenColumns(hiddenColumns, legacyHiddenColumns) {
 function renameEventColumn(key) {
   const column = getEventColumnByKey(key);
   if (!column) return;
-  const nextLabel = window.prompt?.("Column name", column.label);
-  if (nextLabel == null) return;
+  showGenericTextInput({
+    kicker: "Events Sheet",
+    title: `Rename ${column.label}`,
+    label: "Column name",
+    value: column.label,
+    maxLength: 60,
+    confirmLabel: "Rename",
+    recordHistory: true,
+    onConfirm: (nextLabel) => applyEventColumnRename(key, nextLabel)
+  });
+}
+
+function applyEventColumnRename(key, nextLabel) {
+  const column = getEventColumnByKey(key);
+  if (!column) return false;
   const label = String(nextLabel).trim().slice(0, 60);
   if (!label) {
     setStatus("Column name is required.");
-    return;
+    return false;
   }
 
   setEventColumnLabel(key, label, column);
   markProjectStructureChanged({ nodeTypes: Boolean(column.custom) });
-  renderAll();
+  renderEventSheetSchemaSurfaces();
   setStatus(`${column.label} renamed to ${label}.`);
+  return true;
 }
 
 function setEventColumnLabel(key, label, column = getEventColumnByKey(key)) {
@@ -2277,7 +2412,7 @@ function hideEventColumn(key) {
     : [...eventSheet.hiddenColumns, targetKey];
   state.project.eventSheet = { ...eventSheet, hiddenColumns };
   markProjectStructureChanged();
-  renderAll();
+  renderEventSheetSchemaSurfaces();
   setStatus(`${column.label} column hidden. Data kept.`);
 }
 
@@ -2290,7 +2425,7 @@ function showEventColumn(key) {
     hiddenColumns: eventSheet.hiddenColumns.filter((item) => String(item) !== targetKey)
   };
   markProjectStructureChanged();
-  renderAll();
+  renderEventSheetSchemaSurfaces();
   setStatus(`${column?.label || key} column shown.`);
 }
 
@@ -2315,8 +2450,91 @@ function deleteEventColumn(key) {
     .forEach((node) => deleteNodeFieldValue(node, key));
 
   markProjectStructureChanged({ nodeTypes: Boolean(column.custom) });
-  renderAll();
+  renderEventSheetSchemaSurfaces();
   setStatus(`${column.label} column deleted.`);
+}
+
+function renderEventSheetSchemaSurfaces() {
+  if (state.activeFileId === "events") {
+    renderEventsSheetPage();
+    markDocumentSurfaceRendered("events");
+  }
+  renderInspector();
+  updateStatus();
+  renderHistoryButtons();
+}
+
+function showGenericConfirm(options) {
+  if (!dom.genericConfirmDialog?.showModal) {
+    setStatus("Confirmation dialog is unavailable.");
+    return false;
+  }
+  state.genericConfirmAction = {
+    onConfirm: typeof options.onConfirm === "function" ? options.onConfirm : null,
+    recordHistory: Boolean(options.recordHistory)
+  };
+  dom.genericConfirmKicker.textContent = options.kicker || "Confirm";
+  dom.genericConfirmTitle.textContent = options.title || "Confirm action?";
+  dom.genericConfirmBody.textContent = options.message || "";
+  dom.genericConfirmButton.textContent = options.confirmLabel || "Confirm";
+  dom.genericConfirmButton.classList.toggle("danger-button", options.danger !== false);
+  dom.genericConfirmButton.classList.toggle("primary", options.danger === false);
+  dom.genericConfirmDialog.returnValue = "";
+  dom.genericConfirmDialog.showModal();
+  return true;
+}
+
+function handleGenericConfirmClose() {
+  const pending = state.genericConfirmAction;
+  state.genericConfirmAction = null;
+  if (dom.genericConfirmDialog.returnValue !== "confirm" || !pending?.onConfirm) return;
+  const historyBefore = pending.recordHistory ? getHistorySnapshot() : null;
+  try {
+    const result = pending.onConfirm();
+    if (result && typeof result.catch === "function") result.catch((error) => console.error(error));
+  } catch (error) {
+    console.error(error);
+  }
+  if (historyBefore) commitHistoryFromSnapshot(historyBefore);
+}
+
+function showGenericTextInput(options) {
+  if (!dom.genericTextDialog?.showModal) {
+    setStatus("Text input dialog is unavailable.");
+    return false;
+  }
+  state.genericTextAction = {
+    onConfirm: typeof options.onConfirm === "function" ? options.onConfirm : null,
+    recordHistory: Boolean(options.recordHistory)
+  };
+  dom.genericTextKicker.textContent = options.kicker || "Edit";
+  dom.genericTextTitle.textContent = options.title || "Edit value";
+  dom.genericTextLabel.textContent = options.label || "Value";
+  dom.genericTextInput.value = options.value || "";
+  dom.genericTextInput.maxLength = options.maxLength ? String(options.maxLength) : "";
+  dom.genericTextBody.textContent = options.message || "";
+  dom.genericTextButton.textContent = options.confirmLabel || "Apply";
+  dom.genericTextDialog.returnValue = "";
+  dom.genericTextDialog.showModal();
+  requestAnimationFrame(() => {
+    dom.genericTextInput.focus();
+    dom.genericTextInput.select();
+  });
+  return true;
+}
+
+function handleGenericTextClose() {
+  const pending = state.genericTextAction;
+  state.genericTextAction = null;
+  if (dom.genericTextDialog.returnValue !== "confirm" || !pending?.onConfirm) return;
+  const historyBefore = pending.recordHistory ? getHistorySnapshot() : null;
+  let changed = false;
+  try {
+    changed = pending.onConfirm(dom.genericTextInput.value) !== false;
+  } catch (error) {
+    console.error(error);
+  }
+  if (historyBefore && changed) commitHistoryFromSnapshot(historyBefore);
 }
 
 function showEventColumnDeleteConfirm(key) {
@@ -2337,7 +2555,15 @@ function showEventColumnDeleteConfirm(key) {
     return;
   }
 
-  if (window.confirm?.(message)) deleteEventColumn(key);
+  showGenericConfirm({
+    kicker: "Event Column",
+    title,
+    message,
+    confirmLabel: "Delete",
+    danger: true,
+    recordHistory: true,
+    onConfirm: () => deleteEventColumn(key)
+  });
   state.eventColumnDeleteKey = null;
 }
 
@@ -2390,7 +2616,15 @@ function showResetEventColumnsConfirm() {
     dom.eventColumnsResetDialog.showModal();
     return;
   }
-  if (window.confirm?.(message)) resetEventColumns();
+  showGenericConfirm({
+    kicker: "Events Sheet",
+    title: "Reset sheet columns?",
+    message,
+    confirmLabel: "Reset columns",
+    danger: true,
+    recordHistory: true,
+    onConfirm: resetEventColumns
+  });
 }
 
 function renderVariableRow(key, value) {
@@ -2402,7 +2636,7 @@ function renderVariableRow(key, value) {
         ${["string", "number", "boolean", "json"].map((option) => `<option value="${option}" ${option === type ? "selected" : ""}>${option}</option>`).join("")}
       </select>
       <input data-variable-key="${escapeAttr(key)}" data-variable-field="value" value="${escapeAttr(formatVariableValue(value))}">
-      <button class="icon-button danger-button" title="Delete variable" data-action="delete-variable" data-variable-key="${escapeAttr(key)}">x</button>
+      <button class="icon-button danger-button" type="button" title="Delete variable" data-action="delete-variable" data-variable-key="${escapeAttr(key)}">x</button>
     </div>
   `;
 }
@@ -2521,6 +2755,9 @@ function renderNodes(renderContext = getCanvasRenderContext()) {
       const width = size.width;
       const height = size.height;
       const icon = getNodeIcon(node);
+      const inlineEditField = node.id === state.inlineEditNodeId ? state.inlineEditField : "";
+      const inputPortStyle = `left:${node.x - 11}px; top:${node.y + height / 2}px; --node-color:${meta.color};`;
+      const outputPortStyle = `left:${node.x + width - 11}px; top:${node.y + height / 2}px; --node-color:${meta.color};`;
       const nodeClasses = [
         "node",
         isFrame ? `frame ${frameClass}` : "",
@@ -2530,28 +2767,138 @@ function renderNodes(renderContext = getCanvasRenderContext()) {
       ].filter(Boolean).join(" ");
       return `
         <article class="${nodeClasses}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px; width:${width}px; height:${height}px; --node-color:${meta.color}; ${match ? "outline:1px solid var(--accent-orange);" : ""}">
-          <button class="port input" data-port="input" data-node-id="${node.id}" title="Input"></button>
           <div class="node-header" data-drag-handle="true" data-node-id="${node.id}">
             <button class="node-icon" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(node.type)}" data-node-id="${node.id}" data-no-drag="true" data-icon-size="${getNodeIconSize(icon)}" title="Edit ${escapeAttr(getNodeTypeLabel(node.type))} icon" aria-label="Edit icon for all ${escapeAttr(getNodeTypeLabel(node.type))} nodes">${escapeHtml(icon)}</button>
             <span class="node-type">${escapeHtml(getNodeTypeLabel(node.type))}</span>
           <span class="node-id">${escapeHtml(getNodeDisplayId(node))}</span>
           </div>
           <div class="node-body">
-            <div class="node-title">${escapeHtml(getNodeDisplayTitle(node, "Untitled"))}</div>
+            ${renderNodeTitle(node, inlineEditField)}
             ${renderNodeCastChips(node)}
-            <div class="node-text">${escapeHtml(displayBody(node))}</div>
+            ${renderNodeText(node, inlineEditField)}
             ${hasNodeChoices(node) ? `<div class="node-meta">${node.choices.length} choices</div>` : ""}
           </div>
-          <button class="port output" data-port="output" data-node-id="${node.id}" title="Output"></button>
           <button class="node-resize-handle right" data-resize-handle="e" data-node-id="${node.id}" title="Resize width" aria-label="Resize width"></button>
           <button class="node-resize-handle bottom" data-resize-handle="s" data-node-id="${node.id}" title="Resize height" aria-label="Resize height"></button>
           <button class="node-resize-handle corner" data-resize-handle="se" data-node-id="${node.id}" title="Resize node" aria-label="Resize node"></button>
         </article>
+        <button class="port input" style="${inputPortStyle}" data-port="input" data-node-id="${node.id}" title="Input" aria-label="Input port"></button>
+        <button class="port output ${node.id === state.connectingFrom ? "active" : ""}" style="${outputPortStyle}" data-port="output" data-node-id="${node.id}" title="Output" aria-label="Output port"></button>
       `;
     })
     .join("");
 
   dom.matchCount.textContent = `${renderContext.matchCount} matches`;
+}
+
+function renderNodeTitle(node, inlineEditField) {
+  if (inlineEditField === "title") {
+    return `<input class="node-inline-editor node-inline-title" data-inline-node-field="title" data-node-id="${escapeAttr(node.id)}" data-no-drag="true" value="${escapeAttr(getInlineNodeFieldValue(node, "title"))}" aria-label="Edit node title">`;
+  }
+  return `<div class="node-title">${escapeHtml(getNodeDisplayTitle(node, "Untitled"))}</div>`;
+}
+
+function renderNodeText(node, inlineEditField) {
+  if (inlineEditField && inlineEditField !== "title") {
+    return `<textarea class="node-inline-editor node-inline-text" data-inline-node-field="${escapeAttr(inlineEditField)}" data-node-id="${escapeAttr(node.id)}" data-no-drag="true" aria-label="Edit node content">${escapeHtml(getInlineNodeFieldValue(node, inlineEditField))}</textarea>`;
+  }
+  return `<div class="node-text">${escapeHtml(displayBody(node))}</div>`;
+}
+
+function getInlineEditableField(node) {
+  if (!node) return "body";
+  if (node.type === "Condition" || hasNodeCondition(node)) return "condition";
+  if (node.type === "Set" || getNodeVariableKey(node)) return "value";
+  return "body";
+}
+
+function getActiveInlineEditField(node) {
+  return node?.id && node.id === state.inlineEditNodeId ? state.inlineEditField : "";
+}
+
+function getInlineNodeFieldValue(node, field) {
+  if (!INLINE_NODE_FIELD_KEYS.has(field)) return "";
+  const value = node?.[field];
+  return value == null ? "" : String(value);
+}
+
+function minInlineNodeEditHeight(field) {
+  return field === "title" ? 112 : 154;
+}
+
+function setInlineNodeField(nodeId, field, value) {
+  if (!INLINE_NODE_FIELD_KEYS.has(field)) return;
+  const node = getNode(nodeId);
+  if (!node) return;
+  invalidateCharacterRenderContext();
+  node[field] = value;
+  state.selectedNodeId = nodeId;
+  state.selectedNodeIds = [];
+  state.selectedLinkId = null;
+  state.panel = "node";
+  setProjectDirty(true);
+  renderNodePanel(node);
+  scheduleStoryPanelRender();
+  updateStatus();
+}
+
+function finishInlineNodeEdit(nodeId = state.inlineEditNodeId) {
+  if (!state.inlineEditNodeId && !state.inlineEditField) return;
+  state.inlineEditNodeId = null;
+  state.inlineEditField = null;
+  state.inlineEditPointerNodeId = null;
+  renderNodes();
+  renderLinks();
+  markCanvasSurfaceRenderedIfActive();
+  const node = getNode(nodeId);
+  if (node && state.panel === "node") renderNodePanel(node);
+  scheduleStoryPanelRender();
+  updateStatus();
+}
+
+function focusInlineNodeEditor(nodeId) {
+  const editor = getNodeElementById(nodeId)?.querySelector("[data-inline-node-field]");
+  if (!editor) return false;
+  try {
+    editor.focus({ preventScroll: true });
+  } catch (error) {
+    editor.focus();
+  }
+  if (typeof editor.setSelectionRange === "function") {
+    const position = editor.value.length;
+    editor.setSelectionRange(position, position);
+  }
+  return true;
+}
+
+function getCanvasNodeIdFromTarget(target) {
+  return target?.closest?.(".node[data-node-id]")?.dataset?.nodeId || "";
+}
+
+function rememberInlineEditPointerTarget(target) {
+  if (!state.inlineEditNodeId) {
+    state.inlineEditPointerNodeId = null;
+    return;
+  }
+  const nodeId = getCanvasNodeIdFromTarget(target);
+  state.inlineEditPointerNodeId = nodeId;
+  window.requestAnimationFrame(() => {
+    if (state.inlineEditPointerNodeId === nodeId) state.inlineEditPointerNodeId = null;
+  });
+}
+
+function isActiveInlineEditNodeTarget(target) {
+  return Boolean(state.inlineEditNodeId && getCanvasNodeIdFromTarget(target) === state.inlineEditNodeId);
+}
+
+function shouldKeepInlineNodeEditForTarget(target) {
+  return isActiveInlineEditNodeTarget(target) && !isCanvasNodeInlineEditBlockedTarget(target);
+}
+
+function shouldKeepInlineNodeEditOnFocusOut(nodeId, relatedTarget) {
+  if (!nodeId || nodeId !== state.inlineEditNodeId) return false;
+  if (relatedTarget && getCanvasNodeIdFromTarget(relatedTarget) === nodeId) return true;
+  return state.inlineEditPointerNodeId === nodeId;
 }
 
 function getCanvasRenderContext(query = state.search.trim().toLowerCase()) {
@@ -2753,7 +3100,7 @@ function renderLinks(renderContext = getCanvasRenderContext()) {
     linkSvg.push(`<path class="link-path ${link.id === state.selectedLinkId ? "selected" : ""}" d="${path}" marker-end="url(#arrow-head)" data-link-id="${link.id}"></path>`);
     if (link.label) {
       const mid = midpoint(getOutputPoint(from), getInputPoint(to));
-      linkSvg.push(`<text x="${mid.x}" y="${mid.y - 8}" fill="#a8a8a8" font-size="12" text-anchor="middle">${escapeHtml(link.label)}</text>`);
+      linkSvg.push(`<text class="link-label" x="${mid.x}" y="${mid.y - 8}" font-size="12" text-anchor="middle" data-link-id="${escapeAttr(link.id)}">${escapeHtml(link.label)}</text>`);
     }
   });
 
@@ -3077,7 +3424,7 @@ function renderStoryList(entries, parentId, depth, sequenceMap) {
     <div class="${listClass}" data-story-parent-id="${escapeAttr(parentId)}">
       ${entries.length
         ? entries.map((entry) => renderStoryEntry(entry, parentId, depth, sequenceMap)).join("")
-        : (depth ? `<div class="story-empty-drop">Drop nodes here</div>` : `<div class="empty-state">No entry path found.</div>`)}
+        : (depth ? `<div class="story-empty-drop">Drop nodes here</div>` : `<div class="nc-empty-state">No entry path found.</div>`)}
     </div>
   `;
 }
@@ -3168,13 +3515,38 @@ function getNodeElementById(id) {
   return dom.nodeLayer.querySelector(`.node[data-node-id="${id}"]`);
 }
 
-function patchNodeElementGeometry(node, element = getNodeElementById(node.id)) {
+function getNodePortElementsById(id) {
+  if (!dom.nodeLayer || !id) return null;
+  const safeId = CSS.escape(id);
+  return {
+    input: dom.nodeLayer.querySelector(`.port.input[data-node-id="${safeId}"]`),
+    output: dom.nodeLayer.querySelector(`.port.output[data-node-id="${safeId}"]`)
+  };
+}
+
+function patchNodePortGeometry(node, ports = getNodePortElementsById(node.id)) {
+  if (!ports) return false;
+  const size = nodeLayoutSize(node);
+  const top = `${node.y + size.height / 2}px`;
+  if (ports.input) {
+    ports.input.style.left = `${node.x - 11}px`;
+    ports.input.style.top = top;
+  }
+  if (ports.output) {
+    ports.output.style.left = `${node.x + size.width - 11}px`;
+    ports.output.style.top = top;
+  }
+  return Boolean(ports.input || ports.output);
+}
+
+function patchNodeElementGeometry(node, element = getNodeElementById(node.id), ports = getNodePortElementsById(node.id)) {
   if (!element) return false;
   const size = nodeLayoutSize(node);
   element.style.left = `${node.x}px`;
   element.style.top = `${node.y}px`;
   element.style.width = `${size.width}px`;
   element.style.height = `${size.height}px`;
+  patchNodePortGeometry(node, ports);
   return true;
 }
 
@@ -3252,11 +3624,27 @@ function scheduleStoryPanelRender() {
   if (state.storyPanelRenderTimer) return;
   state.storyPanelRenderTimer = window.setTimeout(() => {
     state.storyPanelRenderTimer = null;
-    if (state.panel === "story" || dom.storyPanel) renderStoryPanel();
+    if (initialized && dom.storyPanel) renderStoryPanel();
   }, 120);
 }
 
+function handleDocumentClickCapture(event) {
+  if (event.__narrativeCanvasClickHandled) return;
+  if (!isNarrativeCanvasClickDelegateTarget(event.target)) return;
+  syncDomScopeForEventTarget(event.target);
+  if (handleDocumentClickEvent(event)) {
+    event.__narrativeCanvasClickHandled = true;
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
+  }
+}
+
 function handleDocumentClick(event) {
+  if (event.__narrativeCanvasClickHandled) return;
+  handleDocumentClickEvent(event);
+}
+
+function handleDocumentClickEvent(event) {
   if (!isNarrativeCanvasTarget(event.target)) return;
 
   const mentionOption = event.target.closest("[data-mention-index]");
@@ -3266,12 +3654,13 @@ function handleDocumentClick(event) {
     if (character) {
       insertMention(character);
       event.preventDefault();
-      return;
+      return true;
     }
   }
   if (state.mention && !dom.mentionPopover?.contains(event.target) && event.target !== state.mention.target) {
     hideMentionPopover();
   }
+  if (getFormControlTarget(event.target)) return false;
 
   const layerTarget = event.target.closest("[data-layer-action]");
   const sidebarToggle = event.target.closest("[data-sidebar-toggle]");
@@ -3281,6 +3670,14 @@ function handleDocumentClick(event) {
   const port = event.target.closest("[data-port]");
   const link = event.target.closest("[data-link-id]");
   const node = event.target.closest("[data-node-id]");
+  const canvasNode = event.target.closest(".node[data-node-id]");
+
+  if (shouldKeepInlineNodeEditForTarget(event.target)) {
+    state.lastNodeClick = { id: null, time: 0 };
+    event.preventDefault();
+    requestAnimationFrame(() => focusInlineNodeEditor(state.inlineEditNodeId));
+    return true;
+  }
 
   if (layerTarget) {
     if (state.contextGroup) {
@@ -3288,59 +3685,84 @@ function handleDocumentClick(event) {
     } else {
       moveContextNode(layerTarget.dataset.layerAction);
     }
-    return;
+    return true;
   }
 
   if (sidebarToggle && dom.root?.contains(sidebarToggle)) {
     toggleSidebar(sidebarToggle.dataset.sidebarToggle);
-    return;
+    return true;
   }
 
   const insideContextMenu = Boolean(dom.nodeContextMenu?.contains(event.target));
   if (!insideContextMenu) {
     hideNodeContextMenu();
   } else if (actionTarget) {
+    event.preventDefault();
     handleAction(actionTarget);
     hideNodeContextMenu();
-    return;
+    return true;
   }
 
   if (port) {
     handlePortClick(port);
     event.stopPropagation();
-    return;
+    return true;
   }
 
   if (link) {
     state.selectedLinkId = link.dataset.linkId;
     clearNodeSelection();
     renderAll();
-    return;
+    return true;
   }
 
   if (panelTarget) {
     if (panelTarget.dataset.panel === "node") {
       openNodeInspector();
-      return;
+      return true;
     }
     state.panel = panelTarget.dataset.panel;
     renderInspector();
-    return;
+    return true;
   }
 
   if (fileTarget) {
     selectFile(fileTarget.dataset.fileId);
-    return;
+    return true;
   }
 
   if (actionTarget) {
+    event.preventDefault();
     handleAction(actionTarget);
-    return;
+    return true;
+  }
+
+  if (canvasNode && isCanvasNodeInlineEditClick(canvasNode.dataset.nodeId, event)) {
+    focusCanvasNodeForInlineEdit(canvasNode.dataset.nodeId);
+    event.preventDefault();
+    return true;
   }
 
   if (node) {
-    selectNode(node.dataset.nodeId);
+    focusCanvasNode(node.dataset.nodeId);
+    return true;
+  } else {
+    state.lastNodeClick = { id: null, time: 0 };
   }
+  return false;
+}
+
+function isCanvasNodeInlineEditClick(nodeId, event) {
+  if (!nodeId || isCanvasNodeInlineEditBlockedTarget(event.target)) return false;
+  const now = event.timeStamp || performance.now();
+  const last = state.lastNodeClick || { id: null, time: 0 };
+  const isRepeatClick = last.id === nodeId && now - last.time <= NODE_INLINE_EDIT_CLICK_INTERVAL_MS;
+  state.lastNodeClick = isRepeatClick ? { id: null, time: 0 } : { id: nodeId, time: now };
+  return isRepeatClick;
+}
+
+function isCanvasNodeInlineEditBlockedTarget(target) {
+  return Boolean(target?.closest?.("[data-port], [data-resize-handle], [data-action], button, input, textarea, select, [contenteditable='true']"));
 }
 
 function getFormControlTarget(target) {
@@ -3373,6 +3795,65 @@ function handleGlobalMenuDismiss(event) {
 function handleGlobalMenuKeyDown(event) {
   if (event.key !== "Escape" || !isNodeContextMenuOpen()) return;
   hideNodeContextMenu();
+}
+
+function handleGlobalAppPointerContext(event) {
+  state.lastAppInteractionAt = isNarrativeCanvasTarget(event.target) ? performance.now() : 0;
+}
+
+function handleGlobalAppFocusContext(event) {
+  if (!isNarrativeCanvasTarget(event.target)) return;
+  state.lastAppInteractionAt = performance.now();
+}
+
+function handleGlobalHistoryKeyDown(event) {
+  handleHistoryShortcutEvent(event);
+}
+
+function handleHistoryShortcutEvent(event) {
+  if (event.defaultPrevented || !isHistoryShortcut(event)) return false;
+  if (!isNarrativeCanvasShortcutContext(event.target)) return false;
+  const editTarget = getNativeEditingTarget(event.target) || getNativeEditingTarget(document.activeElement);
+  if (editTarget && shouldPreserveNativeHistoryShortcut(editTarget)) return false;
+  return applyHistoryShortcut(event);
+}
+
+function isHistoryShortcut(event) {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return false;
+  const key = String(event.key || "").toLowerCase();
+  return key === "z" || key === "y";
+}
+
+function applyHistoryShortcut(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const key = String(event.key || "").toLowerCase();
+  if (key === "y" || event.shiftKey) redoHistory();
+  else undoHistory();
+  return true;
+}
+
+function isNativeEditingTarget(target) {
+  return Boolean(getNativeEditingTarget(target));
+}
+
+function getNativeEditingTarget(target) {
+  return target?.closest?.("input, textarea, select, [contenteditable='true']") || null;
+}
+
+function shouldPreserveNativeHistoryShortcut(target) {
+  if (!isNarrativeCanvasTarget(target)) return true;
+  if (target.matches?.("select")) return false;
+  const key = getEditableHistoryKey(target);
+  if (!key) return true;
+  if (!state.editHistoryTarget || state.editHistoryTarget.key !== key) return false;
+  return getHistorySnapshot() !== state.editHistoryTarget.snapshot;
+}
+
+function isNarrativeCanvasShortcutContext(target) {
+  if (isNarrativeCanvasTarget(target)) return true;
+  if (isNarrativeCanvasTarget(document.activeElement)) return true;
+  return Boolean(state.lastAppInteractionAt && performance.now() - state.lastAppInteractionAt <= APP_SHORTCUT_CONTEXT_MS);
 }
 
 function isNodeContextMenuOpen() {
@@ -3493,6 +3974,7 @@ function handleAction(target) {
   if (action === "cancel-new-project") closeNewProjectConfirm();
   if (action === "open-project-file") openProjectFileFromUi();
   if (action === "reload-project-file") reloadProjectFileFromUi();
+  if (action === "clear-browser-storage") clearBrowserStorageFromUi();
   if (action === "add-character") addCharacter();
   if (action === "delete-character") deleteCharacter(target.dataset.characterId);
   if (action === "focus-character") focusCharacter(target.dataset.characterId);
@@ -3543,6 +4025,7 @@ function handleAction(target) {
   if (action === "delete-context-link") deleteContextLink();
   if (action === "reconnect-link-from") startLinkReconnect("from");
   if (action === "reconnect-link-to") startLinkReconnect("to");
+  if (action === "assign-choice-link") assignChoiceLink(target.dataset.linkId, target.dataset.choiceIndex);
   if (action === "focus-node") focusSelectedNode();
   if (action === "focus-canvas-node") focusCanvasNode(target.dataset.nodeId);
   if (action === "select-node") selectNode(target.dataset.nodeId);
@@ -3555,7 +4038,11 @@ function handleAction(target) {
 }
 
 async function openProjectFileFromUi() {
-  if (!confirmDiscardUnsavedProject("Open another project and discard unsaved changes?")) return;
+  if (!confirmDiscardUnsavedProject("Open another project and discard unsaved changes?", () => void openProjectFileFromUiConfirmed())) return;
+  await openProjectFileFromUiConfirmed();
+}
+
+async function openProjectFileFromUiConfirmed() {
   const host = window.NarrativeCanvasHost;
   if (host?.chooseProjectFile) {
     try {
@@ -3571,7 +4058,11 @@ async function openProjectFileFromUi() {
 }
 
 async function reloadProjectFileFromUi() {
-  if (!confirmDiscardUnsavedProject("Reload the current project and discard unsaved changes?")) return;
+  if (!confirmDiscardUnsavedProject("Reload the current project and discard unsaved changes?", () => void reloadProjectFileFromUiConfirmed())) return;
+  await reloadProjectFileFromUiConfirmed();
+}
+
+async function reloadProjectFileFromUiConfirmed() {
   const host = window.NarrativeCanvasHost;
   if (host?.loadProject) {
     const loaded = await loadCurrentVaultProject();
@@ -3583,8 +4074,53 @@ async function reloadProjectFileFromUi() {
   if (restored === false && !hasWebState) setStatus("No saved project to reload.");
 }
 
-function confirmDiscardUnsavedProject(message) {
-  return !state.hasUnsavedChanges || window.confirm?.(message) !== false;
+async function clearBrowserStorageFromUi() {
+  if (window.NarrativeCanvasHost) return;
+  showGenericConfirm({
+    kicker: "Project File",
+    title: "Clear browser storage?",
+    message: "Clear browser storage and load a blank project? This deletes the project saved in this browser.",
+    confirmLabel: "Clear storage",
+    danger: true,
+    onConfirm: () => clearBrowserStorageConfirmed()
+  });
+}
+
+async function clearBrowserStorageConfirmed() {
+  try {
+    window.localStorage?.removeItem(WEB_STORAGE_KEY);
+  } catch (error) {
+    console.error(error);
+    setStatus("Could not clear browser storage.");
+    return;
+  }
+
+  state.project = createBlankProject("Untitled");
+  markProjectStructureChanged({ nodeTypes: true });
+  state.selectedNodeId = "n0";
+  state.selectedLinkId = null;
+  state.selectedNodeIds = [];
+  state.panel = "project";
+  state.activeFileId = "adventure";
+  centerViewAtScale(DEFAULT_CANVAS_ZOOM, false);
+  resetHistory();
+  setProjectDirty(true);
+  renderAll();
+  const saved = await saveCurrentState({ silent: true });
+  setStatus(saved ? "Browser storage cleared. Blank project saved." : "Browser storage cleared. Blank project loaded.");
+}
+
+function confirmDiscardUnsavedProject(message, onConfirm) {
+  if (!state.hasUnsavedChanges) return true;
+  showGenericConfirm({
+    kicker: "Unsaved changes",
+    title: "Discard unsaved changes?",
+    message,
+    confirmLabel: "Discard",
+    danger: true,
+    onConfirm
+  });
+  return false;
 }
 
 function showPlaybookHelp() {
@@ -3647,14 +4183,33 @@ function showGroupContextMenu(clientX, clientY) {
 
 function showLinkContextMenu(linkId, clientX, clientY) {
   if (!dom.nodeContextMenu) return;
+  const link = getLink(linkId);
   state.contextNodeId = null;
   state.contextLinkId = linkId;
   dom.nodeContextMenu.innerHTML = `
+    ${renderChoiceLinkMenu(link)}
     <button data-action="reconnect-link-from">Reconnect from output</button>
     <button data-action="reconnect-link-to">Reconnect to input</button>
     <button class="context-menu-danger" data-action="delete-context-link">Delete link</button>
   `;
   positionContextMenu(clientX, clientY);
+}
+
+function renderChoiceLinkMenu(link) {
+  const source = link ? getNode(link.from) : null;
+  const choices = getChoiceBranchLabels(source);
+  if (!link || !choices.length) return "";
+  const currentIndex = normalizeChoiceIndex(link.choiceIndex);
+  return `
+    <div class="context-menu-label">Choice branch</div>
+    ${choices.map((choice, index) => `
+      <button data-action="assign-choice-link" data-link-id="${escapeAttr(link.id)}" data-choice-index="${index}" aria-current="${currentIndex === index ? "true" : "false"}">
+        <span class="context-menu-check">${currentIndex === index ? "✓" : ""}</span>
+        <span>${escapeHtml(choice)}</span>
+      </button>
+    `).join("")}
+    <div class="context-menu-label">Link</div>
+  `;
 }
 
 function positionContextMenu(clientX, clientY) {
@@ -3862,10 +4417,10 @@ function getEditableHistoryKey(target) {
   if (!target?.dataset) return "";
   if (target === dom.queryInput || target.hasAttribute?.("data-character-search") || target.hasAttribute?.("data-event-search")) return "";
   const parts = [];
-  ["projectField", "nodeField", "nodeCustomField", "characterField", "variableField", "eventField", "nodeCastField"].forEach((name) => {
+  ["projectField", "nodeField", "inlineNodeField", "nodeCustomField", "characterField", "variableField", "eventField", "nodeCastField"].forEach((name) => {
     if (target.dataset[name]) parts.push(`${name}:${target.dataset[name]}`);
   });
-  ["characterId", "variableKey", "eventNodeId", "nodeCastIndex"].forEach((name) => {
+  ["nodeId", "characterId", "variableKey", "eventNodeId", "nodeCastIndex"].forEach((name) => {
     if (target.dataset[name]) parts.push(`${name}:${target.dataset[name]}`);
   });
   return parts.join("|");
@@ -3887,6 +4442,14 @@ function handleEditFocusOut(event) {
     setProjectField("variables", target.value);
   }
   commitFocusedEdit(event.target);
+  if (target?.dataset?.inlineNodeField) {
+    if (event.relatedTarget && dom.mentionPopover?.contains(event.relatedTarget)) return;
+    if (shouldKeepInlineNodeEditOnFocusOut(target.dataset.nodeId, event.relatedTarget)) {
+      requestAnimationFrame(() => focusInlineNodeEditor(target.dataset.nodeId));
+      return;
+    }
+    finishInlineNodeEdit(target.dataset.nodeId);
+  }
 }
 
 function commitFocusedEdit(target) {
@@ -3957,6 +4520,11 @@ function handleInput(event) {
     return;
   }
 
+  if (target.dataset.inlineNodeField) {
+    setInlineNodeField(target.dataset.nodeId, target.dataset.inlineNodeField, target.value);
+    return;
+  }
+
   if (target.dataset.projectField) {
     if (target.dataset.projectField === "variables") {
       resizePlaybookJsonTextarea(target);
@@ -4005,7 +4573,13 @@ function handleChange(event) {
     commitFocusedEdit(target);
     return;
   }
+  if (target.dataset.inlineNodeField) {
+    setInlineNodeField(target.dataset.nodeId, target.dataset.inlineNodeField, target.value);
+    commitFocusedEdit(target);
+    return;
+  }
   if (target.dataset.projectField) {
+    if (target.dataset.projectField === "variables" && target.dataset.playbookJsonVersion !== String(state.dirtyVersion)) return;
     setProjectField(target.dataset.projectField, target.value);
     commitFocusedEdit(target);
     return;
@@ -4017,13 +4591,14 @@ function handleChange(event) {
 }
 
 function handleKeyDown(event) {
+  if (event.defaultPrevented) return;
+  if (handleHistoryShortcutEvent(event)) return;
   if (!isNarrativeCanvasTarget(event.target)) return;
   if (handleMentionKeyDown(event)) return;
-  const isField = event.target.matches("input, textarea, select");
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z" && !isField) {
+  const isField = isNativeEditingTarget(event.target);
+  if (event.target.dataset?.inlineNodeField && event.key === "Escape") {
     event.preventDefault();
-    if (event.shiftKey) redoHistory();
-    else undoHistory();
+    finishInlineNodeEdit(event.target.dataset.nodeId);
     return;
   }
   if (isField) return;
@@ -4039,6 +4614,8 @@ function handleKeyDown(event) {
 const MENTION_SELECTOR = [
   "textarea[data-node-field]",
   "input[data-node-field='title']",
+  "textarea[data-inline-node-field]",
+  "input[data-inline-node-field='title']",
   "textarea[data-event-field]",
   "textarea[data-character-field]",
   "input[data-character-field='name']",
@@ -4085,27 +4662,50 @@ function updateMentionFromTarget(target) {
 function renderMentionPopover() {
   if (!dom.mentionPopover || !state.mention) return;
   const { characters, activeIndex } = state.mention;
-  dom.mentionPopover.hidden = false;
   dom.mentionPopover.innerHTML = characters.map((character, index) => `
     <button type="button" class="mention-option ${index === activeIndex ? "active" : ""}" data-mention-index="${index}" role="option">
       <strong>${escapeHtml(character.name || "Unnamed")}</strong>
       ${character.role ? `<small>${escapeHtml(character.role)}</small>` : ""}
     </button>
   `).join("");
+  dom.mentionPopover.hidden = false;
+  dom.mentionPopover.style.display = "grid";
+  dom.mentionPopover.setAttribute("aria-hidden", "false");
+}
+
+function handleMentionPopoverPointerDown(event) {
+  event.preventDefault();
 }
 
 function positionMentionPopover(target) {
   if (!dom.mentionPopover) return;
   const rect = target.getBoundingClientRect();
-  dom.mentionPopover.style.top = `${rect.bottom + 4}px`;
-  dom.mentionPopover.style.left = `${rect.left}px`;
-  dom.mentionPopover.style.minWidth = `${Math.min(Math.max(rect.width, 180), 320)}px`;
+  const margin = 8;
+  const gap = 4;
+  const maxWidth = Math.max(180, Math.min(320, window.innerWidth - margin * 2));
+  const width = Math.min(Math.max(rect.width, 180), maxWidth);
+  const spaceBelow = window.innerHeight - rect.bottom - margin;
+  const spaceAbove = rect.top - margin;
+  const openBelow = spaceBelow >= 120 || spaceBelow >= spaceAbove;
+  const availableHeight = Math.max(96, (openBelow ? spaceBelow : spaceAbove) - gap);
+  const maxHeight = Math.min(260, availableHeight);
+  const left = clamp(rect.left, margin, Math.max(margin, window.innerWidth - width - margin));
+  const top = openBelow
+    ? Math.min(rect.bottom + gap, window.innerHeight - margin - maxHeight)
+    : Math.max(margin, rect.top - gap - maxHeight);
+  dom.mentionPopover.style.left = `${left}px`;
+  dom.mentionPopover.style.top = `${top}px`;
+  dom.mentionPopover.style.minWidth = `${width}px`;
+  dom.mentionPopover.style.maxWidth = `${maxWidth}px`;
+  dom.mentionPopover.style.maxHeight = `${maxHeight}px`;
 }
 
 function hideMentionPopover() {
   if (!dom.mentionPopover) return;
   state.mention = null;
   dom.mentionPopover.hidden = true;
+  dom.mentionPopover.style.display = "none";
+  dom.mentionPopover.setAttribute("aria-hidden", "true");
   dom.mentionPopover.innerHTML = "";
 }
 
@@ -4153,21 +4753,49 @@ function insertMention(character) {
   hideMentionPopover();
   target.dispatchEvent(new Event("input", { bubbles: true }));
   target.dispatchEvent(new Event("change", { bubbles: true }));
+  hideMentionPopover();
 
-  if (target.dataset.nodeField || target.dataset.nodeCustomField || target.dataset.eventField) {
-    const node = getNode(state.selectedNodeId);
+  if (target.dataset.nodeField || target.dataset.inlineNodeField || target.dataset.nodeCustomField || target.dataset.eventField) {
+    const node = getNode(target.dataset.nodeId || state.selectedNodeId);
     if (node && !isEventSheetNode(node)) {
       const cast = normalizeNodeCast(node.cast);
       if (!cast.some((entry) => entry.characterId === character.id && entry.role === "Mentioned")) {
         cast.push({ characterId: character.id, role: "Mentioned" });
         node.cast = cast;
-        renderCharacterAwareSurfaces(node);
+        if (target.dataset.inlineNodeField) {
+          invalidateCharacterRenderContext();
+          setProjectDirty(true);
+          renderNodePanel(node);
+          renderProjectPanel();
+          scheduleStoryPanelRender();
+          updateStatus();
+        } else {
+          renderCharacterAwareSurfaces(node);
+        }
       }
     }
   }
 }
 
 function handleStoryPointerDown(event) {
+  const columnResizeHandle = event.target.closest && event.target.closest("[data-event-column-resize]");
+  if (columnResizeHandle && dom.eventsPanel?.contains(columnResizeHandle)) {
+    const key = columnResizeHandle.dataset.eventColumnResize;
+    const column = getEventColumnByKey(key);
+    if (!column) return;
+    const th = columnResizeHandle.closest("th");
+    const startWidth = th ? th.getBoundingClientRect().width : parseFloat(normalizeEventColumnWidth(column.width));
+    state.eventColumnResize = {
+      key,
+      startX: event.clientX,
+      startWidth: Math.max(60, startWidth),
+      lastWidth: Math.max(60, startWidth),
+      active: false
+    };
+    dom.root?.classList.add("event-column-resizing");
+    event.preventDefault();
+    return;
+  }
   const eventRowHandle = event.target.closest && event.target.closest("[data-event-row-drag]");
   if (eventRowHandle && dom.eventsPanel?.contains(eventRowHandle)) {
     const nodeId = eventRowHandle.dataset.eventRowDrag;
@@ -4197,6 +4825,67 @@ function handleStoryPointerDown(event) {
   };
   item.classList.add("dragging");
   event.preventDefault();
+}
+
+function handleEventColumnResizeMove(event) {
+  if (!state.eventColumnResize) return;
+  const drag = state.eventColumnResize;
+  const delta = event.clientX - drag.startX;
+  if (Math.abs(delta) < 3 && !drag.active) return;
+  drag.active = true;
+  const nextWidth = Math.max(60, Math.round(drag.startWidth + delta));
+  drag.lastWidth = nextWidth;
+  applyEventColumnWidthToDom(drag.key, nextWidth);
+  event.preventDefault();
+}
+
+function handleEventColumnResizeUp(event) {
+  if (!state.eventColumnResize) return;
+  const drag = state.eventColumnResize;
+  state.eventColumnResize = null;
+  dom.root?.classList.remove("event-column-resizing");
+  if (!drag.active) return;
+  const historyBefore = getHistorySnapshot();
+  setEventColumnWidth(drag.key, `${drag.lastWidth}px`);
+  commitHistoryFromSnapshot(historyBefore);
+}
+
+function applyEventColumnWidthToDom(key, width) {
+  const widthStr = `${width}px`;
+  const cellStyle = `width:${widthStr}; min-width:${widthStr};`;
+  const safeKey = CSS.escape(key);
+  dom.eventsPanel?.querySelectorAll(`[data-event-column-key="${safeKey}"]`).forEach((th) => {
+    th.style.cssText = cellStyle;
+    const table = th.closest("table");
+    const colIndex = th.cellIndex;
+    const col = table?.querySelector("colgroup")?.children?.[colIndex];
+    if (col) col.style.width = widthStr;
+  });
+  dom.eventsPanel?.querySelectorAll(`[data-event-field="${safeKey}"]`).forEach((control) => {
+    const td = control.closest("td");
+    if (td) td.style.cssText = cellStyle;
+  });
+}
+
+function setEventColumnWidth(key, width) {
+  const normalized = normalizeEventColumnWidth(width);
+  const sheet = getProjectEventSheet();
+  let schemaColumn = sheet.columns.find((item) => item.key === key);
+  if (!schemaColumn) {
+    const defaultColumn = eventSheetColumns.find((item) => item.key === key);
+    if (defaultColumn) {
+      schemaColumn = normalizeEventSheetColumn(defaultColumn);
+      sheet.columns.push(schemaColumn);
+    }
+  }
+  if (!schemaColumn || schemaColumn.width === normalized) return;
+  const scrollState = captureEventSheetScrollState();
+  schemaColumn.width = normalized;
+  state.project.eventSheet = sheet;
+  markProjectStructureChanged();
+  setProjectDirty(true);
+  renderEventsSheetPage();
+  restoreEventSheetScrollState(scrollState);
 }
 
 function handleEventRowPointerMove(event) {
@@ -4249,6 +4938,10 @@ function markEventRowDropPlacement(placement) {
 }
 
 function handleStoryPointerMove(event) {
+  if (state.eventColumnResize) {
+    handleEventColumnResizeMove(event);
+    return;
+  }
   if (state.eventRowDrag) {
     handleEventRowPointerMove(event);
     return;
@@ -4265,6 +4958,10 @@ function handleStoryPointerMove(event) {
 }
 
 function handleStoryPointerUp(event) {
+  if (state.eventColumnResize) {
+    handleEventColumnResizeUp(event);
+    return;
+  }
   if (state.eventRowDrag) {
     handleEventRowPointerUp(event);
     return;
@@ -4362,13 +5059,51 @@ function isNarrativeCanvasTarget(target) {
     || dom.confirmDialog?.contains(target)
     || dom.eventColumnDeleteDialog?.contains(target)
     || dom.eventColumnsResetDialog?.contains(target)
+    || dom.genericConfirmDialog?.contains(target)
+    || dom.genericTextDialog?.contains(target)
     || dom.playbookHelpDialog?.contains(target)
     || dom.playRuleDialog?.contains(target)
     || dom.nodeRequiredDialog?.contains(target)
   );
 }
 
+function isNarrativeCanvasClickDelegateTarget(target) {
+  if (!target?.closest) return false;
+  const actionable = target.closest("[data-mention-index], [data-layer-action], [data-sidebar-toggle], [data-action], [data-file-id], [data-panel], [data-port], [data-link-id], [data-node-id], .node[data-node-id]");
+  return Boolean(actionable && getNarrativeCanvasScopeForTarget(target));
+}
+
+function getNarrativeCanvasScopeForTarget(target) {
+  if (!target?.closest) return null;
+  const host = target.closest(".narrative-canvas-plugin-host");
+  if (host?.querySelector?.(".app-shell")) return host;
+  if (dom.root?.contains(target)) return dom.scope || document;
+  const shell = target.closest(".app-shell");
+  if (shell) return shell.closest(".narrative-canvas-plugin-host") || document;
+  return null;
+}
+
+function syncDomScopeForEventTarget(target) {
+  const nextScope = getNarrativeCanvasScopeForTarget(target);
+  if (!nextScope || nextScope === dom.scope) return;
+  eventController?.abort();
+  if (window.NarrativeCanvasHost && nextScope.classList?.contains("narrative-canvas-plugin-host")) {
+    window.NarrativeCanvasHost.root = nextScope;
+  }
+  bindDom(nextScope);
+  bindEvents();
+}
+
 function handleViewportPointerDown(event) {
+  rememberInlineEditPointerTarget(event.target);
+  if (shouldKeepInlineNodeEditForTarget(event.target)) {
+    event.preventDefault();
+    requestAnimationFrame(() => focusInlineNodeEditor(state.inlineEditNodeId));
+    return;
+  }
+  if (state.inlineEditNodeId && !isActiveInlineEditNodeTarget(event.target)) {
+    finishInlineNodeEdit(state.inlineEditNodeId);
+  }
   if (event.target.closest("[data-no-drag]")) return;
 
   const resizeHandle = event.target.closest("[data-resize-handle]");
@@ -4388,6 +5123,7 @@ function handleViewportPointerDown(event) {
       width: size.width,
       height: size.height,
       element: getNodeElementById(node.id),
+      ports: getNodePortElementsById(node.id),
       linkRefs: collectLinkElementRefs(getIncidentLinks(node.id))
     };
     dom.viewport.setPointerCapture(event.pointerId);
@@ -4408,6 +5144,7 @@ function handleViewportPointerDown(event) {
       nodeX: node.x,
       nodeY: node.y,
       element: getNodeElementById(node.id),
+      ports: getNodePortElementsById(node.id),
       linkRefs: collectLinkElementRefs(getIncidentLinks(node.id))
     };
     dom.viewport.setPointerCapture(event.pointerId);
@@ -4546,6 +5283,15 @@ function finishMarquee(event) {
 }
 
 function handleViewportDoubleClick(event) {
+  const nodeElement = event.target.closest?.(".node[data-node-id]");
+  if (nodeElement) {
+    if (isCanvasNodeInlineEditBlockedTarget(event.target)) return;
+    cancelPendingConnection();
+    focusCanvasNodeForInlineEdit(nodeElement.dataset.nodeId);
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   if (event.target !== dom.viewport && event.target !== dom.content && event.target !== dom.nodeLayer && event.target !== dom.linkLayer) return;
   if (cancelPendingConnection()) {
     event.preventDefault();
@@ -4600,7 +5346,7 @@ function handleViewportPointerMove(event) {
       ));
     }
     // Patch only this node + its links in place; full resync runs on pointer-up.
-    if (patchNodeElementGeometry(node, state.resizingNode.element)) {
+    if (patchNodeElementGeometry(node, state.resizingNode.element, state.resizingNode.ports)) {
       patchLinkElementRefs(state.resizingNode.linkRefs);
     } else {
       const context = getCanvasRenderContext();
@@ -4612,7 +5358,7 @@ function handleViewportPointerMove(event) {
     if (!node) return;
     node.x = Math.round(state.draggingNode.nodeX + (event.clientX - state.draggingNode.startX) / state.view.scale);
     node.y = Math.round(state.draggingNode.nodeY + (event.clientY - state.draggingNode.startY) / state.view.scale);
-    if (patchNodeElementGeometry(node, state.draggingNode.element)) {
+    if (patchNodeElementGeometry(node, state.draggingNode.element, state.draggingNode.ports)) {
       patchLinkElementRefs(state.draggingNode.linkRefs);
     } else {
       const context = getCanvasRenderContext();
@@ -4693,6 +5439,7 @@ function handlePortClick(port) {
       }
       const historyBefore = getHistorySnapshot();
       link.to = nodeId;
+      syncChoiceBranchLinksForNode(link.from, { markDirty: false, preferredLinkId: link.id });
       invalidateLinkIndexes();
       markProjectStructureChanged();
       finishLinkReconnect(link);
@@ -4710,6 +5457,7 @@ function handlePortClick(port) {
       }
       const historyBefore = getHistorySnapshot();
       link.from = nodeId;
+      syncChoiceBranchLinksForNode(link.from, { markDirty: false, preferredLinkId: link.id });
       invalidateLinkIndexes();
       markProjectStructureChanged();
       finishLinkReconnect(link);
@@ -4725,6 +5473,7 @@ function handlePortClick(port) {
     renderLinks();
     return;
   }
+
   if (kind === "input" && state.connectingFrom && state.connectingFrom !== nodeId) {
     const historyBefore = getHistorySnapshot();
     const link = {
@@ -4733,6 +5482,7 @@ function handlePortClick(port) {
       to: nodeId
     };
     state.project.links.push(link);
+    syncChoiceBranchLinksForNode(link.from, { markDirty: false, preferredLinkId: link.id });
     markProjectStructureChanged();
     clearStoryOrderOverrides();
     clearEventRowOrderOverrides();
@@ -4742,10 +5492,11 @@ function handlePortClick(port) {
     state.selectedLinkId = link.id;
     clearNodeSelection();
     renderAll();
-    setStatus("Link created.");
+    setStatus(link.label ? `Link created: ${link.label}.` : "Link created.");
     commitHistoryFromSnapshot(historyBefore);
     return;
   }
+
   state.connectingFrom = null;
   state.connectingTo = null;
   dom.hint.classList.remove("show");
@@ -4821,8 +5572,21 @@ function deleteCustomNodeType(type) {
   const message = hasNodes
     ? `Delete "${label}" from the Node Library schema? Existing canvas nodes stay in the project with their current data, but this type's field definition is removed.`
     : `Delete "${label}" from the Node Library schema? ${isDefault ? "Restore default types can bring this template back." : "Custom deleted types can only come back by importing or recreating them."}`;
-  if (window.confirm && !window.confirm(message)) return;
+  showGenericConfirm({
+    kicker: "Node Library",
+    title: `Delete ${label}?`,
+    message,
+    confirmLabel: "Delete",
+    danger: true,
+    recordHistory: true,
+    onConfirm: () => deleteCustomNodeTypeConfirmed(type)
+  });
+}
 
+function deleteCustomNodeTypeConfirmed(type) {
+  const typeDef = getProjectNodeTypes().find((item) => item.type === type);
+  if (!typeDef) return;
+  const label = typeDef.label || type;
   state.project.nodeTypes = getProjectNodeTypes().filter((item) => item.type !== type);
   markProjectStructureChanged({ nodeTypes: true });
   renderPalette();
@@ -4927,10 +5691,6 @@ function addCharacter() {
 
 function deleteCharacter(id) {
   const characters = getCharacters();
-  if (characters.length <= 1) {
-    setStatus("Keep at least one character in the project.");
-    return;
-  }
   const character = characters.find((item) => item.id === id);
   state.project.characters = characters.filter((item) => item.id !== id);
   invalidateCharacterRenderContext();
@@ -4992,8 +5752,7 @@ function clearCharacterFocus() {
 function clearCharacterSearch() {
   state.characterSearch = "";
   resetDocumentRenderLimit("characters");
-  const input = dom.charactersPanel?.querySelector("[data-character-search]");
-  if (input) input.value = "";
+  if (dom.characterSearchInput) dom.characterSearchInput.value = "";
   renderCharacterGridForSearch();
   setStatus("Character search cleared.");
 }
@@ -5094,6 +5853,7 @@ function addVariable() {
   variables[key] = "";
   state.project.variables = variables;
   state.activeFileId = "variables";
+  setProjectDirty(true);
   renderPlaybookSurfaces({ focusJsonToken: JSON.stringify(key) });
   setStatus("Variable added.");
 }
@@ -5144,9 +5904,8 @@ function addPlaybookRule(kind) {
   if (dom.playRuleDialog?.open) dom.playRuleDialog.close();
   let target = dialogTarget;
   if (!target && !dom.playRuleTargetInput) {
-    const prompted = window.prompt?.("Node type, label, or node id for this Play rule", defaultTarget);
-    if (prompted == null) return;
-    target = String(prompted).trim();
+    setStatus("Play rule dialog is unavailable.");
+    return;
   }
   if (!target) target = defaultTarget;
   if (!target) return;
@@ -5254,13 +6013,10 @@ function getDefaultPlaybookRuleTarget(scripts) {
 function deleteVariable(key) {
   const variables = normalizeVariablesObject(state.project.variables);
   if (!key || !Object.prototype.hasOwnProperty.call(variables, key)) return;
-  if (Object.keys(variables).length <= 1) {
-    setStatus("Keep at least one variable in the project.");
-    return;
-  }
   delete variables[key];
   state.project.variables = variables;
   state.activeFileId = "variables";
+  setProjectDirty(true);
   renderPlaybookSurfaces();
   setStatus(`${key} deleted.`);
 }
@@ -5332,8 +6088,27 @@ function focusCanvasNode(id) {
   state.panel = "node";
   renderAll();
   requestAnimationFrame(() => {
-    centerCanvasOnNode(node, DEFAULT_CANVAS_ZOOM);
+    centerCanvasOnNode(node, NODE_FOCUS_ZOOM);
     setStatus(`${node.title || getNodeDisplayId(node)} focused.`);
+  });
+}
+
+function focusCanvasNodeForInlineEdit(id) {
+  const node = getNode(id);
+  if (!node) return;
+  state.activeFileId = "adventure";
+  state.selectedNodeId = id;
+  state.selectedNodeIds = [];
+  state.selectedLinkId = null;
+  state.panel = "node";
+  state.inlineEditNodeId = id;
+  state.inlineEditField = getInlineEditableField(node);
+  renderAll();
+  centerCanvasOnNode(node, NODE_FOCUS_ZOOM);
+  focusInlineNodeEditor(id);
+  setStatus(`${node.title || getNodeDisplayId(node)} focused for editing.`);
+  requestAnimationFrame(() => {
+    focusInlineNodeEditor(id);
   });
 }
 
@@ -5346,7 +6121,7 @@ function focusCharacterNode(id) {
   state.panel = "story";
   renderAll();
   requestAnimationFrame(() => {
-    centerCanvasOnNode(node);
+    centerCanvasOnNode(node, NODE_FOCUS_ZOOM);
     scrollStoryNodeIntoView(id);
     setStatus(`${node.title || getNodeDisplayId(node)} focused.`);
   });
@@ -5386,14 +6161,24 @@ function editNodeType(type) {
     return;
   }
 
-  const nextName = window.prompt?.("Node type name", typeDef.label || typeDef.type);
-  if (nextName == null) return;
-  applyNodeTypeValues(typeDef.type, {
-    label: nextName,
-    kind: typeDef.kind,
-    fields: typeDef.fields,
-    color: typeDef.color,
-    hidden: typeDef.hidden
+  showGenericTextInput({
+    kicker: "Node Type",
+    title: `Rename ${typeDef.label}`,
+    label: "Name",
+    value: typeDef.label || typeDef.type,
+    maxLength: 40,
+    confirmLabel: "Apply",
+    recordHistory: true,
+    onConfirm: (nextName) => {
+      applyNodeTypeValues(typeDef.type, {
+        label: nextName,
+        kind: typeDef.kind,
+        fields: typeDef.fields,
+        color: typeDef.color,
+        hidden: typeDef.hidden
+      });
+      return true;
+    }
   });
 }
 
@@ -5479,9 +6264,20 @@ function editNodeTypeBadge(type) {
     return;
   }
 
-  const nextValue = window.prompt?.("Node type icon text or emoji (leave blank to use type initial)", currentIcon);
-  if (nextValue == null) return;
-  applyNodeTypeBadgeValue(typeDef.type, nextValue);
+  showGenericTextInput({
+    kicker: "Node Icon",
+    title: `Edit icon for ${typeDef.label}`,
+    label: "Custom icon",
+    value: currentIcon,
+    maxLength: 8,
+    message: "Leave blank to use the type initial.",
+    confirmLabel: "Apply",
+    recordHistory: true,
+    onConfirm: (nextValue) => {
+      applyNodeTypeBadgeValue(typeDef.type, nextValue);
+      return true;
+    }
+  });
 }
 
 function applyNodeTypeBadgeDialog() {
@@ -5566,13 +6362,17 @@ function setNodeField(field, value) {
     node[field] = value;
   }
   if (field === "type") markProjectStructureChanged({ nodeTypes: true });
+  const choiceLinksChanged = field === "choices" || field === "type"
+    ? syncChoiceBranchLinksForNode(node.id, { markDirty: false })
+    : false;
   setProjectDirty(true);
   // Incremental: rebuild only the visible nodes (cheap) and patch this node's
   // incident links in place. The minimap only changes when position changes, and
   // the (potentially large) story panel is refreshed on a short debounce instead
   // of on every keystroke.
   renderNodes();
-  patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
+  if (choiceLinksChanged) renderLinks();
+  else patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
   markCanvasSurfaceRenderedIfActive();
   if (field === "x" || field === "y") renderMinimap();
   if (field === "type") {
@@ -5597,9 +6397,13 @@ function setNodeCustomField(key, value, rerender) {
     if (!node.customFields || typeof node.customFields !== "object" || Array.isArray(node.customFields)) node.customFields = {};
     node.customFields[key] = value;
   }
+  const choiceLinksChanged = key === "choices"
+    ? syncChoiceBranchLinksForNode(node.id, { markDirty: false })
+    : false;
   setProjectDirty(true);
   renderNodes();
-  patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
+  if (choiceLinksChanged) renderLinks();
+  else patchLinkElementRefs(collectLinkElementRefs(getIncidentLinks(node.id)));
   markCanvasSurfaceRenderedIfActive();
   scheduleStoryPanelRender();
   renderProjectPanel();
@@ -5621,6 +6425,7 @@ function setEventField(nodeId, field, value, rerender) {
     node[field] = value;
   }
   if (field === "eventDescription" && !node.body) node.body = value;
+  if (field === "choices") syncChoiceBranchLinksForNode(node.id, { markDirty: false });
   setProjectDirty(true);
   renderNodes();
   if (isCanvasFileActive()) {
@@ -5694,6 +6499,28 @@ function deleteContextLink() {
   setStatus("Link deleted.");
 }
 
+function assignChoiceLink(linkId, choiceIndexValue) {
+  const link = getLink(linkId || state.contextLinkId || state.selectedLinkId);
+  const source = link ? getNode(link.from) : null;
+  const choiceIndex = normalizeChoiceIndex(choiceIndexValue);
+  const choices = getChoiceBranchLabels(source);
+  if (!link || choiceIndex == null || !choices[choiceIndex]) {
+    setStatus("Could not assign choice branch.");
+    return;
+  }
+  link.choiceIndex = choiceIndex;
+  link.label = choices[choiceIndex];
+  syncChoiceBranchLinksForNode(link.from, { markDirty: false, preferredLinkId: link.id });
+  state.selectedLinkId = link.id;
+  clearNodeSelection();
+  clearStoryOrderOverrides();
+  clearEventRowOrderOverrides();
+  hideNodeContextMenu();
+  renderAll();
+  setProjectDirty(true);
+  setStatus(`Choice branch set: ${choices[choiceIndex]}.`);
+}
+
 function startLinkReconnect(end) {
   const link = getLink(state.contextLinkId || state.selectedLinkId);
   if (!link || !["from", "to"].includes(end)) return;
@@ -5744,7 +6571,7 @@ function focusSelectedNode() {
   state.activeFileId = "adventure";
   state.panel = "node";
   renderAll();
-  centerCanvasOnNode(node, DEFAULT_CANVAS_ZOOM);
+  centerCanvasOnNode(node, NODE_FOCUS_ZOOM);
   setStatus(`${node.title || getNodeDisplayId(node)} focused.`);
 }
 
@@ -6066,7 +6893,7 @@ function createBlankProject(title = "Untitled") {
     variables: defaultVariables(),
     nodeTypes: defaultNodeTypeList(),
     customNodeTypes: [],
-    characters: defaultCharacters(),
+    characters: [],
     nodes: [normalizeNode({ id: "n0", type: "Entry", title: "Start", body: "Adventure Begins", x: 120, y: 120 })],
     links: []
   };
@@ -6116,7 +6943,14 @@ function showNewProjectConfirm() {
     });
     return;
   }
-  if (window.confirm("Discard the current canvas and create a blank one?")) void newProject("Untitled");
+  showGenericConfirm({
+    kicker: "New Canvas",
+    title: "Create a blank project?",
+    message: "Discard the current canvas and create a blank one?",
+    confirmLabel: "Create",
+    danger: true,
+    onConfirm: () => newProject("Untitled")
+  });
 }
 
 function confirmNewProject() {
@@ -6311,7 +7145,7 @@ async function loadSavedState(announce = true) {
     }
   }
 
-  if (!host) {
+  if (!host && shouldLoadWebState()) {
     const saved = loadWebState();
     if (saved) {
       const restoredView = applySavedState(saved);
@@ -6322,6 +7156,14 @@ async function loadSavedState(announce = true) {
   }
 
   return false;
+}
+
+function shouldLoadWebState() {
+  try {
+    return !new URLSearchParams(window.location.search).has("smoke");
+  } catch (_error) {
+    return true;
+  }
 }
 
 function buildSavedState() {
@@ -6530,9 +7372,12 @@ async function exportImage() {
   const slug = slugify(state.project.title || "narrative-canvas");
   try {
     const svg = buildExportSvg();
-    const blob = await svgToPngBlob(svg, preset.scale);
-    downloadBlob(blob, `${slug}${preset.suffix}.png`);
-    setStatus(`Image exported at ${preset.label}.`);
+    const rasterPlan = getExportRasterPlan(svg, preset.scale);
+    const blob = await svgToPngBlob(svg, rasterPlan.scale);
+    downloadBlob(blob, `${slug}${getExportImageSuffix(preset, rasterPlan)}.png`);
+    setStatus(rasterPlan.limited
+      ? `Image exported at ${formatExportScaleLabel(rasterPlan.scale)} to fit browser PNG limits.`
+      : `Image exported at ${preset.label}.`);
   } catch (error) {
     console.error(error);
     downloadBlob(new Blob([buildExportSvg()], { type: "image/svg+xml" }), `${slug}.svg`);
@@ -6559,7 +7404,8 @@ async function exportAll() {
     const svg = buildExportSvg();
     const imagePreset = getExportImageScalePreset();
     try {
-      files.push({ name: `${slug}${imagePreset.suffix}.png`, blob: await svgToPngBlob(svg, imagePreset.scale) });
+      const rasterPlan = getExportRasterPlan(svg, imagePreset.scale);
+      files.push({ name: `${slug}${getExportImageSuffix(imagePreset, rasterPlan)}.png`, blob: await svgToPngBlob(svg, rasterPlan.scale) });
     } catch (error) {
       console.error(error);
       files.push({ name: `${slug}.svg`, blob: new Blob([svg], { type: "image/svg+xml" }) });
@@ -6626,7 +7472,7 @@ function buildCharactersJsonDocument() {
 }
 
 function buildScriptDocument() {
-  state.project.variables = ensureNonEmptyVariables(state.project.variables);
+  state.project.variables = normalizeVariablesObject(state.project.variables);
   return {
     variables: state.project.variables,
     nodeTypes: getScriptNodeTypes()
@@ -6634,13 +7480,20 @@ function buildScriptDocument() {
 }
 
 function applyScriptJson(value) {
-  const parsed = JSON.parse(value || "{}");
+  let parsed;
+  try {
+    parsed = JSON.parse(value || "{}");
+  } catch (error) {
+    const parseError = new Error("Playbook JSON is invalid.");
+    parseError.cause = error;
+    throw parseError;
+  }
   if (isScriptDocument(parsed)) {
-    state.project.variables = ensureNonEmptyVariables(parsed.variables);
+    state.project.variables = normalizeVariablesObject(parsed.variables);
     state.project.script = normalizeScriptConfig(parsed);
     return;
   }
-  state.project.variables = ensureNonEmptyVariables(parsed);
+  state.project.variables = normalizeVariablesObject(parsed);
   state.project.script = normalizeScriptConfig(state.project.script);
 }
 
@@ -6942,20 +7795,44 @@ function normalizeProject(project) {
   const nodeTypesList = normalizeProjectNodeTypes(project.nodeTypes, project.customNodeTypes);
   const eventFrameTypes = new Set(nodeTypesList.filter((typeDef) => isEventFrameKind(typeDef.kind)).map((typeDef) => typeDef.type));
   const eventSheet = normalizeEventSheetConfig(project.eventSheet, project.eventSheetHiddenColumns);
-  return {
+  const normalized = {
     title: project.title || "Sample",
     notes: project.notes || "",
-    variables: ensureNonEmptyVariables(project.variables),
+    variables: normalizeVariablesObject(project.variables),
     script: normalizeScriptConfig(project.script),
     eventSheet,
     eventRowOrder: normalizeEventRowOrder(project.eventRowOrder),
     nodeTypes: nodeTypesList,
     customNodeTypes: [],
-    characters: ensureNonEmptyCharacters(Array.isArray(project.characters) ? project.characters : inferCharacters(project)),
+    characters: normalizeProjectCharacters(project),
     deletedNodes: Array.isArray(project.deletedNodes) ? project.deletedNodes : [],
     nodes: Array.isArray(project.nodes) ? project.nodes.map((node) => normalizeNode(node, eventFrameTypes, eventSheet.columns)) : [],
-    links: Array.isArray(project.links) ? project.links : []
+    links: normalizeLinks(project.links)
   };
+  syncProjectChoiceBranchLinks(normalized);
+  return normalized;
+}
+
+function normalizeLinks(links) {
+  if (!Array.isArray(links)) return [];
+  return links.map((link, index) => normalizeLink(link, index)).filter(Boolean);
+}
+
+function normalizeLink(link, index) {
+  if (!link || typeof link !== "object" || Array.isArray(link)) return null;
+  const normalized = {
+    ...link,
+    id: String(link.id || `l${index + 1}`),
+    from: String(link.from || ""),
+    to: String(link.to || "")
+  };
+  const label = normalizeOptionalString(link.label).trim();
+  if (label) normalized.label = label;
+  else delete normalized.label;
+  const choiceIndex = normalizeChoiceIndex(link.choiceIndex);
+  if (choiceIndex == null) delete normalized.choiceIndex;
+  else normalized.choiceIndex = choiceIndex;
+  return normalized;
 }
 
 function normalizeEventRowOrder(value) {
@@ -7022,7 +7899,7 @@ function normalizeCustomNodeType(typeDef) {
     label,
     badge: normalizeNodeTypeBadge(getNormalizedNodeTypeBadge(type, label, typeDef?.badge, typeDef?.badgeCustom)) || getDefaultNodeTypeBadge(label),
     color: normalizeNodeTypeColor(type, kind, typeDef?.color),
-    width: clamp(Number(typeDef?.width) || (isFrameKind(kind) ? 420 : 230), 160, isFrameKind(kind) ? 860 : 420),
+    width: clamp(Number(typeDef?.width) || (isFrameKind(kind) ? 420 : 200), 160, isFrameKind(kind) ? 860 : 420),
     custom: Boolean(typeDef?.custom),
     badgeCustom: Boolean(typeDef?.badgeCustom),
     kind,
@@ -7285,6 +8162,9 @@ function renderPreviewNode(nodeId) {
 
   if (!state.playPath.includes(node.id)) state.playPath.push(node.id);
   const runtimeChoices = getRuntimeChoices(node, runtimeScript);
+  if (runtimeChoices.length && nextLinks.length) {
+    nextLinks = getChoiceOrderedLinks(nextLinks);
+  }
   const progress = getPreviewProgress(node, nextLinks, runtimeChoices);
   const { pageNumber, pageTotal, nextPathId } = progress;
   const previousButton = pageNumber > 1
@@ -7306,8 +8186,7 @@ function renderPreviewNode(nodeId) {
 
   if (runtimeChoices.length && nextLinks.length) {
     dom.playActions.innerHTML = previousButton + nextLinks.map((link, index) => {
-      const target = getNode(link.to);
-      const label = runtimeChoices[index] || link.label || target?.title || "Continue";
+      const label = getChoiceBranchButtonLabel(link, runtimeChoices, index);
       return `<button class="play-action" type="button" data-action="play-next" data-node-id="${link.to}">${escapeHtml(label)}</button>`;
     }).join("");
     return;
@@ -7466,6 +8345,161 @@ function parseChoiceLines(value) {
   return String(value || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
 }
 
+function getChoiceBranchLabels(node) {
+  return parseChoiceLines(node?.choices);
+}
+
+function normalizeChoiceIndex(value) {
+  if (value == null || value === "") return null;
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+function syncProjectChoiceBranchLinks(project) {
+  if (!project || !Array.isArray(project.nodes) || !Array.isArray(project.links)) return false;
+  const nodeMap = new Map(project.nodes.map((node) => [node.id, node]));
+  const outgoing = new Map();
+  let changed = false;
+  project.links.forEach((link) => {
+    const source = nodeMap.get(link.from);
+    if (!source || !getChoiceBranchLabels(source).length) {
+      if (link.choiceIndex != null) {
+        delete link.choiceIndex;
+        changed = true;
+      }
+      return;
+    }
+    if (!outgoing.has(link.from)) outgoing.set(link.from, []);
+    outgoing.get(link.from).push(link);
+  });
+  project.nodes.forEach((node) => {
+    changed = syncChoiceOutgoingLinks(node, outgoing.get(node.id) || [], nodeMap) || changed;
+  });
+  return changed;
+}
+
+function syncChoiceBranchLinksForNode(nodeId, options = {}) {
+  const node = getNode(nodeId);
+  if (!node || !Array.isArray(state.project.links)) return false;
+  const outgoing = state.project.links.filter((link) => link.from === nodeId);
+  const changed = syncChoiceOutgoingLinks(node, outgoing, getNodeIndex(), options.preferredLinkId || "");
+  if (!changed) return false;
+  invalidateLinkIndexes();
+  if (options.markDirty !== false) setProjectDirty(true);
+  return true;
+}
+
+function syncChoiceOutgoingLinks(node, outgoing, nodeMap = null, preferredLinkId = "") {
+  if (!Array.isArray(outgoing) || !outgoing.length) return false;
+  const choices = getChoiceBranchLabels(node);
+  let changed = false;
+  if (!choices.length) {
+    outgoing.forEach((link) => {
+      if (link.choiceIndex != null) {
+        delete link.choiceIndex;
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  const ordered = preferredLinkId
+    ? outgoing.slice().sort((a, b) => (a.id === preferredLinkId ? -1 : b.id === preferredLinkId ? 1 : 0))
+    : outgoing;
+  const used = new Set();
+  ordered.forEach((link) => {
+    const index = normalizeChoiceIndex(link.choiceIndex);
+    if (index != null && index < choices.length && !used.has(index)) {
+      if (link.choiceIndex !== index) {
+        link.choiceIndex = index;
+        changed = true;
+      }
+      used.add(index);
+      return;
+    }
+    if (link.choiceIndex != null) {
+      delete link.choiceIndex;
+      changed = true;
+    }
+  });
+
+  ordered.forEach((link) => {
+    if (normalizeChoiceIndex(link.choiceIndex) != null) return;
+    const index = findUnusedChoiceIndexForLink(link, choices, used, nodeMap);
+    if (index == null) return;
+    link.choiceIndex = index;
+    used.add(index);
+    changed = true;
+  });
+
+  outgoing.forEach((link) => {
+    const index = normalizeChoiceIndex(link.choiceIndex);
+    const label = index == null ? "" : choices[index];
+    if (label && link.label !== label) {
+      link.label = label;
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function findUnusedChoiceIndexForLink(link, choices, used, nodeMap = null) {
+  const candidates = [
+    normalizeChoiceMatchText(link.label),
+    normalizeChoiceMatchText(nodeMap?.get(link.to)?.title)
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const exact = choices.findIndex((choice, index) => !used.has(index) && normalizeChoiceMatchText(choice) === candidate);
+    if (exact >= 0) return exact;
+  }
+  for (const candidate of candidates) {
+    const partial = choices.findIndex((choice, index) => !used.has(index) && choiceCandidateMatches(candidate, choice));
+    if (partial >= 0) return partial;
+  }
+  return findFirstUnusedChoiceIndex(choices, used);
+}
+
+function findFirstUnusedChoiceIndex(choices, used) {
+  for (let index = 0; index < choices.length; index += 1) {
+    if (!used.has(index)) return index;
+  }
+  return null;
+}
+
+function choiceCandidateMatches(candidate, choice) {
+  const choiceText = normalizeChoiceMatchText(choice);
+  if (!candidate || !choiceText) return false;
+  if (choiceText.startsWith(candidate) || candidate.startsWith(choiceText)) return true;
+  const tokens = candidate.split(/\s+/).filter(Boolean);
+  return Boolean(tokens.length) && tokens.every((token) => choiceText.includes(token));
+}
+
+function normalizeChoiceMatchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
+    .trim();
+}
+
+function getChoiceOrderedLinks(links) {
+  return links
+    .map((link, order) => ({ link, order, choiceIndex: normalizeChoiceIndex(link.choiceIndex) }))
+    .sort((a, b) => {
+      const aIndexed = a.choiceIndex != null;
+      const bIndexed = b.choiceIndex != null;
+      if (aIndexed && bIndexed) return a.choiceIndex - b.choiceIndex || a.order - b.order;
+      if (aIndexed !== bIndexed) return aIndexed ? -1 : 1;
+      return a.order - b.order;
+    })
+    .map((entry) => entry.link);
+}
+
+function getChoiceBranchButtonLabel(link, runtimeChoices, fallbackIndex) {
+  const choiceIndex = normalizeChoiceIndex(link.choiceIndex);
+  if (choiceIndex != null && runtimeChoices[choiceIndex]) return runtimeChoices[choiceIndex];
+  return link.label || runtimeChoices[fallbackIndex] || getNode(link.to)?.title || "Continue";
+}
+
 function evaluateCondition(source) {
   const match = String(source || "").match(/^\s*([a-zA-Z_][\w-]*)\s*(==|!=)\s*(.+?)\s*$/);
   if (!match) return false;
@@ -7489,7 +8523,7 @@ function getCharacters() {
   if (!Array.isArray(state.project.characters)) {
     state.project.characters = inferCharacters(state.project);
   }
-  state.project.characters = ensureNonEmptyCharacters(state.project.characters);
+  state.project.characters = normalizeCharacters(state.project.characters);
   return state.project.characters;
 }
 
@@ -7553,10 +8587,6 @@ function normalizeNodeCast(cast) {
 function normalizeCastRole(value) {
   const role = String(value || "").trim();
   return CAST_RELATIONS.includes(role) ? role : "Present";
-}
-
-function getCharacterDialogNodes(name) {
-  return state.project.nodes.filter((node) => node.type === "Dialog" && node.title === name);
 }
 
 function uniqueCharacterName(baseName) {
@@ -7781,10 +8811,6 @@ function compareCharacterBacklinkItems(a, b, sequenceMap) {
   return a.node.y - b.node.y || a.node.x - b.node.x || a.node.id.localeCompare(b.node.id);
 }
 
-function countCharacterBacklinks(character) {
-  return getCharacterBacklinkGroups(character).reduce((total, group) => total + group.items.length, 0);
-}
-
 function getTotalCharacterLinkCount() {
   return getCharacterRenderContext().linkCount;
 }
@@ -7978,13 +9004,16 @@ function getStoryEntriesForParent(parentId) {
 
 function getSmallestContainingFrame(node, frames) {
   const nodeBounds = getNodeBounds(node);
+  const nodeCenter = boundsCenter(nodeBounds);
+  const nodeArea = boundsArea(nodeBounds);
   let smallest = null;
   let smallestArea = Number.POSITIVE_INFINITY;
   frames.forEach((frame) => {
     if (frame.id === node.id) return;
     const frameBounds = getNodeBounds(frame);
-    if (!boundsContainBounds(frameBounds, nodeBounds)) return;
+    if (!boundsContainPoint(frameBounds, nodeCenter)) return;
     const area = boundsArea(frameBounds);
+    if (isFrameNode(node) && area <= nodeArea) return;
     if (area < smallestArea) {
       smallest = frame;
       smallestArea = area;
@@ -8008,6 +9037,13 @@ function getNodeBounds(node) {
   };
 }
 
+function boundsCenter(bounds) {
+  return {
+    x: bounds.left + (bounds.right - bounds.left) / 2,
+    y: bounds.top + (bounds.bottom - bounds.top) / 2
+  };
+}
+
 function nodeLayoutSize(node) {
   if (!node || typeof node !== "object") {
     return { width: FALLBACK_NODE_META.width, height: minNodeHeight(null) };
@@ -8018,7 +9054,9 @@ function nodeLayoutSize(node) {
   const cached = nodeLayoutSizeCache.get(node);
   if (cached && cached.signature === signature) return cached.size;
   const width = manualWidth || defaultNodeWidth(node);
-  const height = manualHeight || defaultNodeHeight(node, width);
+  const baseHeight = manualHeight || defaultNodeHeight(node, width);
+  const inlineEditField = getActiveInlineEditField(node);
+  const height = inlineEditField ? Math.max(baseHeight, minInlineNodeEditHeight(inlineEditField)) : baseHeight;
   const size = { width, height };
   nodeLayoutSizeCache.set(node, { signature, size });
   return size;
@@ -8029,6 +9067,13 @@ function boundsContainBounds(container, child) {
     && child.top >= container.top
     && child.right <= container.right
     && child.bottom <= container.bottom;
+}
+
+function boundsContainPoint(container, point) {
+  return point.x >= container.left
+    && point.x <= container.right
+    && point.y >= container.top
+    && point.y <= container.bottom;
 }
 
 function boundsArea(bounds) {
@@ -8249,6 +9294,38 @@ function getProjectBounds() {
   };
 }
 
+function getExportBounds(nodes, links) {
+  if (!nodes.length) return { x: 0, y: 0, width: 800, height: 500 };
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxRight = Number.NEGATIVE_INFINITY;
+  let maxBottom = Number.NEGATIVE_INFINITY;
+  nodes.forEach((node) => {
+    const size = nodeLayoutSize(node);
+    minX = Math.min(minX, node.x);
+    minY = Math.min(minY, node.y);
+    maxRight = Math.max(maxRight, node.x + size.width);
+    maxBottom = Math.max(maxBottom, node.y + size.height);
+  });
+  links.forEach((link) => {
+    const from = nodeMap.get(link.from);
+    const to = nodeMap.get(link.to);
+    if (!from || !to) return;
+    const bounds = getLinkCurveBounds(getOutputPoint(from), getInputPoint(to));
+    minX = Math.min(minX, bounds.left);
+    minY = Math.min(minY, bounds.top);
+    maxRight = Math.max(maxRight, bounds.right);
+    maxBottom = Math.max(maxBottom, bounds.bottom);
+  });
+  return {
+    x: minX,
+    y: minY,
+    width: maxRight - minX,
+    height: maxBottom - minY
+  };
+}
+
 function getEventRowGroups() {
   const typeOrder = new Map(getProjectNodeTypes().map((typeDef, index) => [typeDef.type, index]));
   const groups = new Map();
@@ -8429,13 +9506,15 @@ function formatCsvCell(value) {
 
 function buildExportSvg() {
   const margin = 90;
-  const bounds = getProjectBounds();
+  const nodes = getExportRenderNodes();
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const renderLinks = state.project.links.filter((link) => nodeIds.has(link.from) && nodeIds.has(link.to));
+  const bounds = getExportBounds(nodes, renderLinks);
   const width = Math.ceil(bounds.width + margin * 2);
   const height = Math.ceil(bounds.height + margin * 2);
   const offset = { x: margin - bounds.x, y: margin - bounds.y };
-  const nodes = getCanvasRenderNodes();
 
-  const links = state.project.links.map((link) => renderExportLink(link, offset)).join("");
+  const links = renderLinks.map((link) => renderExportLink(link, offset)).join("");
   const nodeMarkup = nodes.map((node) => renderExportNode(node, offset)).join("");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -8457,6 +9536,10 @@ function buildExportSvg() {
   ${links}
   ${nodeMarkup}
 </svg>`;
+}
+
+function getExportRenderNodes() {
+  return getCanvasLayerItems().map((item) => item.node);
 }
 
 function renderExportNode(node, offset) {
@@ -8520,10 +9603,6 @@ function exportOutputPoint(node, offset) {
   return { x: node.x + offset.x + size.width + LINK_PORT_ANCHOR_OFFSET, y: node.y + offset.y + size.height / 2 };
 }
 
-function exportNodeHeight(node) {
-  return nodeLayoutSize(node).height;
-}
-
 function renderSvgLines(lines, x, y, lineHeight, fontSize, fill, weight) {
   return `<text x="${x}" y="${y}" fill="${fill}" font-family="system-ui, sans-serif" font-size="${fontSize}" font-weight="${weight}">${lines.map((line, index) => `<tspan x="${x}" dy="${index === 0 ? 0 : lineHeight}">${escapeSvg(line)}</tspan>`).join("")}</text>`;
 }
@@ -8549,16 +9628,60 @@ function wrapSvgText(value, maxChars, maxLines) {
   return [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1].slice(0, Math.max(0, maxChars - 1))}...`];
 }
 
+function getExportRasterPlan(svg, requestedScale = 1) {
+  const size = getSvgDimensions(svg);
+  const requested = normalizeExportImageScale(requestedScale);
+  const scale = getSafeExportRasterScale(size.width, size.height, requested);
+  return {
+    ...size,
+    requestedScale: requested,
+    scale,
+    outputWidth: Math.max(1, Math.ceil(size.width * scale)),
+    outputHeight: Math.max(1, Math.ceil(size.height * scale)),
+    limited: scale < requested - 0.001
+  };
+}
+
+function getSvgDimensions(svg) {
+  const width = Number((String(svg).match(/\swidth="([\d.]+)"/) || [])[1]);
+  const height = Number((String(svg).match(/\sheight="([\d.]+)"/) || [])[1]);
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : 800,
+    height: Number.isFinite(height) && height > 0 ? height : 500
+  };
+}
+
+function getSafeExportRasterScale(width, height, requestedScale = 1) {
+  const requested = Math.max(EXPORT_IMAGE_MIN_SCALE, normalizeExportImageScale(requestedScale));
+  const safeWidth = Math.max(1, Number(width) || 1);
+  const safeHeight = Math.max(1, Number(height) || 1);
+  const dimensionLimit = Math.min(EXPORT_IMAGE_MAX_DIMENSION / safeWidth, EXPORT_IMAGE_MAX_DIMENSION / safeHeight);
+  const areaLimit = Math.sqrt(EXPORT_IMAGE_MAX_PIXELS / Math.max(1, safeWidth * safeHeight));
+  return Math.max(EXPORT_IMAGE_MIN_SCALE, Math.min(requested, dimensionLimit, areaLimit));
+}
+
+function getExportImageSuffix(preset, rasterPlan) {
+  return rasterPlan.limited ? `@${formatExportScaleValue(rasterPlan.scale)}x` : preset.suffix;
+}
+
+function formatExportScaleLabel(scale) {
+  return `${formatExportScaleValue(scale)}x`;
+}
+
+function formatExportScaleValue(scale) {
+  return String(Math.round(scale * 100) / 100).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+}
+
 function svgToPngBlob(svg, scale = 1) {
   return new Promise((resolve, reject) => {
     const svgBlob = new Blob([svg], { type: "image/svg+xml" });
     const url = URL.createObjectURL(svgBlob);
     const image = new Image();
     image.onload = () => {
-      const outputScale = normalizeExportImageScale(scale);
+      const outputScale = getSafeExportRasterScale(image.naturalWidth, image.naturalHeight, scale);
       const canvas = document.createElement("canvas");
-      canvas.width = Math.ceil(image.naturalWidth * outputScale);
-      canvas.height = Math.ceil(image.naturalHeight * outputScale);
+      canvas.width = Math.max(1, Math.ceil(image.naturalWidth * outputScale));
+      canvas.height = Math.max(1, Math.ceil(image.naturalHeight * outputScale));
       const context = canvas.getContext("2d");
       context.fillStyle = "#202020";
       context.fillRect(0, 0, canvas.width, canvas.height);
@@ -8616,6 +9739,11 @@ function getOutgoingIndex() {
     if (!map.has(link.from)) map.set(link.from, []);
     map.get(link.from).push(link);
   });
+  map.forEach((items, sourceId) => {
+    if (items.some((link) => normalizeChoiceIndex(link.choiceIndex) != null)) {
+      map.set(sourceId, getChoiceOrderedLinks(items));
+    }
+  });
   state.outgoingIndex = { links, length: links.length, map };
   return map;
 }
@@ -8664,9 +9792,7 @@ function getNearestLinkAtClientPoint(clientX, clientY) {
 }
 
 function distancePointToLink(point, from, to) {
-  const dx = Math.max(80, Math.abs(to.x - from.x) * 0.45);
-  const c1 = { x: from.x + dx, y: from.y };
-  const c2 = { x: to.x - dx, y: to.y };
+  const { c1, c2 } = getLinkControlPoints(from, to);
   let previous = from;
   let minDistance = Number.POSITIVE_INFINITY;
   for (let index = 1; index <= 28; index += 1) {
@@ -8676,6 +9802,30 @@ function distancePointToLink(point, from, to) {
     previous = current;
   }
   return minDistance;
+}
+
+function getLinkCurveBounds(from, to) {
+  const { c1, c2 } = getLinkControlPoints(from, to);
+  let minX = Math.min(from.x, to.x);
+  let minY = Math.min(from.y, to.y);
+  let maxX = Math.max(from.x, to.x);
+  let maxY = Math.max(from.y, to.y);
+  for (let index = 1; index < 32; index += 1) {
+    const point = cubicPoint(from, c1, c2, to, index / 32);
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  return { left: minX, top: minY, right: maxX, bottom: maxY };
+}
+
+function getLinkControlPoints(from, to) {
+  const dx = Math.max(80, Math.abs(to.x - from.x) * 0.45);
+  return {
+    c1: { x: from.x + dx, y: from.y },
+    c2: { x: to.x - dx, y: to.y }
+  };
 }
 
 function cubicPoint(p0, p1, p2, p3, t) {
@@ -8704,10 +9854,6 @@ function getInputPoint(node) {
 function getOutputPoint(node) {
   const size = nodeLayoutSize(node);
   return { x: node.x + size.width + LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
-}
-
-function nodeWidth(node) {
-  return nodeLayoutSize(node).width;
 }
 
 function nodeHeight(node) {
@@ -8753,6 +9899,7 @@ function getNodeLayoutSignature(node, manualWidth, manualHeight) {
     state.structureVersion,
     manualWidth || "",
     manualHeight || "",
+    getActiveInlineEditField(node) || "",
     node?.type || "",
     getNodeTypeLabel(node?.type),
     getNodeDisplayTitle(node, "Untitled"),
@@ -8848,8 +9995,8 @@ function nodeSize(node) {
 }
 
 function linkPath(from, to) {
-  const dx = Math.max(80, Math.abs(to.x - from.x) * 0.45);
-  return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y}, ${to.x - dx} ${to.y}, ${to.x} ${to.y}`;
+  const { c1, c2 } = getLinkControlPoints(from, to);
+  return `M ${from.x} ${from.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${to.x} ${to.y}`;
 }
 
 function midpoint(a, b) {
@@ -9083,6 +10230,7 @@ function nextId(prefix, items) {
 }
 
 function updateStatus() {
+  if (!dom.statusText) return;
   if (!state.statusOverride) {
     if (state.activeFileId === "characters") {
       dom.statusText.textContent = `${fileViews.characters} - ${getCharacters().length} characters, ${getTotalCharacterLinkCount()} character links`;
@@ -9103,11 +10251,13 @@ function updateStatus() {
 }
 
 function setStatus(message) {
+  if (!dom.statusText) return;
   state.statusOverride = true;
   dom.statusText.textContent = message;
-  window.clearTimeout(state.statusTimer);
+  clearStatusTimer(false);
   state.statusTimer = window.setTimeout(() => {
     state.statusOverride = false;
+    state.statusTimer = null;
     updateStatus();
   }, 1800);
 }

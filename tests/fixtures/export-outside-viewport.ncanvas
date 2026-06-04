@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "savedAt": "2026-06-05T00:00:00.000Z",
+  "project": {
+    "title": "Export Outside Viewport",
+    "notes": "Fixture for image export including nodes outside the current viewport.",
+    "variables": {},
+    "nodes": [
+      {
+        "id": "n0",
+        "type": "Entry",
+        "title": "Near Start",
+        "body": "This node starts inside the default viewport.",
+        "x": 80,
+        "y": 120
+      },
+      {
+        "id": "n1",
+        "type": "Content",
+        "title": "Far Target",
+        "body": "This node starts outside the default viewport and must still be exported.",
+        "x": 3600,
+        "y": 120
+      }
+    ],
+    "links": [
+      {
+        "id": "l0",
+        "from": "n0",
+        "to": "n1",
+        "label": "far-link"
+      }
+    ]
+  },
+  "ui": {
+    "selectedNodeId": "n0",
+    "panel": "project",
+    "activeFileId": "adventure",
+    "theme": "dark",
+    "view": {
+      "x": 0,
+      "y": 0,
+      "scale": 1
+    }
+  }
+}

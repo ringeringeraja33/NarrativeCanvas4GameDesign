@@ -38,26 +38,27 @@
           <div class="project-file-actions">
             <button class="small-button" data-action="open-project-file" type="button">Open</button>
             <button class="small-button" data-action="reload-project-file" type="button">Reload</button>
+            <button class="small-button" data-action="clear-browser-storage" data-web-only type="button">Clear storage</button>
           </div>
         </section>
 
         <section class="nav-section">
           <h2>Files</h2>
-          <button class="tree-item active" data-file-id="adventure">
+          <button class="nc-file-item active" data-file-id="adventure">
             <span class="file-dot"></span>
-            <span class="tree-item-label">Narrative.canvas</span>
+            <span class="nc-file-item-label">Narrative.canvas</span>
           </button>
-          <button class="tree-item" data-file-id="events">
+          <button class="nc-file-item" data-file-id="events">
             <span class="file-dot muted"></span>
-            <span class="tree-item-label">Events Sheet.csv</span>
+            <span class="nc-file-item-label">Events Sheet.csv</span>
           </button>
-          <button class="tree-item" data-file-id="characters">
+          <button class="nc-file-item" data-file-id="characters">
             <span class="file-dot muted"></span>
-            <span class="tree-item-label">Characters.md</span>
+            <span class="nc-file-item-label">Characters.md</span>
           </button>
-          <button class="tree-item" data-file-id="variables">
+          <button class="nc-file-item" data-file-id="variables">
             <span class="file-dot muted"></span>
-            <span class="tree-item-label">Playbook.json</span>
+            <span class="nc-file-item-label">Playbook.json</span>
           </button>
         </section>
 
@@ -82,12 +83,18 @@
       <div class="sidebar-resizer sidebar-resizer-left" data-sidebar-resizer="left" role="separator" aria-orientation="vertical" aria-label="Resize left sidebar"></div>
 
       <main class="canvas-workspace">
+        <header class="workspace-global-bar">
+          <div class="workspace-file-label">
+            <span class="pane-kicker">File</span>
+            <strong id="activeFileTab">Narrative.canvas</strong>
+          </div>
+          <span class="project-history" role="group" aria-label="History">
+            <button id="undoButton" class="icon-button history-button" data-action="undo" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
+            <button id="redoButton" class="icon-button history-button" data-action="redo" type="button" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" aria-label="Redo" disabled>↷</button>
+          </span>
+        </header>
         <header id="workspaceToolbar" class="canvas-workspace-tabs">
           <div class="toolbar-group">
-            <span class="auto-layout-controls" data-files="adventure" role="group" aria-label="Auto layout">
-              <button class="toolbar-button compact-button" data-action="auto-layout" data-layout-orientation="horizontal" title="Auto layout left to right">Layout H</button>
-              <button class="toolbar-button compact-button" data-action="auto-layout" data-layout-orientation="vertical" title="Auto layout top to bottom">Layout V</button>
-            </span>
             <button class="toolbar-button" data-action="zoom-out" data-files="adventure" title="Zoom out">-</button>
             <span id="zoomReadout" class="zoom-readout" data-files="adventure">100%</span>
             <button class="toolbar-button" data-action="zoom-in" data-files="adventure" title="Zoom in">+</button>
@@ -106,17 +113,12 @@
                 </select>
               </label>
             </span>
-            <button class="toolbar-button" data-action="export-html" data-files="adventure" title="Export printable HTML">HTML</button>
           </div>
           <input id="fileInput" type="file" accept="application/json,.json,.ncanvas,.narrativecanvas" hidden>
         </header>
 
         <section id="canvasPanel" class="canvas-workspace-view canvas-panel active">
           <div class="canvas-frame">
-            <div class="canvas-history" role="group" aria-label="History">
-              <button id="undoButton" class="canvas-history-button" data-action="undo" type="button" title="Undo (Cmd/Ctrl+Z)" aria-label="Undo" disabled>↶</button>
-              <button id="redoButton" class="canvas-history-button" data-action="redo" type="button" title="Redo (Cmd/Ctrl+Shift+Z)" aria-label="Redo" disabled>↷</button>
-            </div>
             <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
               <div id="canvasContent" class="canvas-content">
                 <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
@@ -134,11 +136,21 @@
 
         <footer class="status-bar">
           <div id="statusText">Ready</div>
-          <label class="canvas-search-box">
-            Query
-            <input id="queryInput" type="search" placeholder="Find nodes">
-          </label>
-          <div id="matchCount">0 matches</div>
+          <div id="workspaceSearchControls" class="nc-workspace-search-controls" aria-label="Search">
+            <label class="workspace-search-box canvas-search-box" data-search-scope="adventure">
+              Query
+              <input id="queryInput" type="search" placeholder="Find nodes">
+            </label>
+            <label class="workspace-search-box character-search-box" data-search-scope="characters" hidden>
+              Find
+              <input id="characterSearchInput" type="search" data-character-search placeholder="Find character" spellcheck="false">
+            </label>
+            <label class="workspace-search-box event-search-box" data-search-scope="events" hidden>
+              Find
+              <input id="eventSearchInput" type="search" data-event-search placeholder="Find event" spellcheck="false">
+            </label>
+            <div id="matchCount" data-search-scope="adventure">0 matches</div>
+          </div>
         </footer>
       </main>
 
@@ -241,7 +253,39 @@
       </form>
     </dialog>
 
-    <dialog id="playbookHelpDialog" class="notice-dialog playbook-help-dialog" aria-label="Playbook help">
+    <dialog id="genericConfirmDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span id="genericConfirmKicker" class="pane-kicker">Confirm</span>
+          <h2 id="genericConfirmTitle">Confirm action?</h2>
+          <p id="genericConfirmBody" class="confirm-body"></p>
+        </header>
+        <footer class="confirm-actions">
+          <button id="genericConfirmButton" class="small-button danger-button" value="confirm">Confirm</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="genericTextDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span id="genericTextKicker" class="pane-kicker">Edit</span>
+          <h2 id="genericTextTitle">Edit value</h2>
+          <label class="field confirm-field">
+            <span id="genericTextLabel">Value</span>
+            <input id="genericTextInput" type="text" spellcheck="false" autocomplete="off">
+          </label>
+          <p id="genericTextBody" class="confirm-body"></p>
+        </header>
+        <footer class="confirm-actions">
+          <button id="genericTextButton" class="small-button primary" value="confirm">Apply</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="playbookHelpDialog" class="nc-notice-dialog playbook-help-dialog" aria-label="Playbook help">
       <form method="dialog" class="notice-shell playbook-help-shell">
         <header>
           <span class="pane-kicker">Playbook</span>
@@ -282,7 +326,7 @@
       </form>
     </dialog>
 
-    <dialog id="playRuleDialog" class="notice-dialog playbook-rule-dialog" aria-label="Add play rule">
+    <dialog id="playRuleDialog" class="nc-notice-dialog playbook-rule-dialog" aria-label="Add play rule">
       <form method="dialog" class="notice-shell playbook-rule-shell">
         <header>
           <span class="pane-kicker">Playbook</span>
@@ -365,7 +409,7 @@
             <span>Color</span>
             <input id="nodeTypeColorInput" type="color">
           </label>
-          <label class="checkbox-field">
+          <label class="nc-checkbox-field">
             <input id="nodeTypeHiddenInput" type="checkbox">
             <span>Hide from library</span>
           </label>
@@ -377,7 +421,7 @@
       </form>
     </dialog>
 
-    <dialog id="nodeRequiredDialog" class="notice-dialog" aria-label="Node selection required">
+    <dialog id="nodeRequiredDialog" class="nc-notice-dialog" aria-label="Node selection required">
       <section class="notice-shell">
         <span class="pane-kicker">Node Inspector</span>
         <p>Select a node first to open the Node inspector.</p>
