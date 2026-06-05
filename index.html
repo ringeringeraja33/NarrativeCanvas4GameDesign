@@ -106,10 +106,10 @@
               <label class="export-image-scale-label" title="Image export resolution">
                 <span class="visually-hidden">Image resolution</span>
                 <select id="exportImageScale" class="toolbar-select" title="Image resolution">
-                  <option value="1">1x PNG</option>
-                  <option value="2">2x PNG</option>
-                  <option value="3">3x PNG</option>
-                  <option value="4">4x PNG</option>
+                  <option value="1">4096 x 4096</option>
+                  <option value="2">6144 x 6144</option>
+                  <option value="3">8192 x 8192</option>
+                  <option value="4">12000 x 12000</option>
                 </select>
               </label>
             </span>
@@ -179,6 +179,12 @@
         <section id="nodePanel" class="inspector-panel"></section>
         <section id="storyPanel" class="inspector-panel"></section>
       </aside>
+
+      <button id="languageToggle" class="language-toggle-button" data-web-only data-action="toggle-language" type="button" title="Switch language" aria-label="Switch language">
+        <span class="language-toggle-option" data-lang="en">EN</span>
+        <span class="language-toggle-divider" aria-hidden="true">/</span>
+        <span class="language-toggle-option" data-lang="zh">中</span>
+      </button>
     </div>
 
     <div id="mentionPopover" class="mention-popover" hidden role="listbox" aria-label="Character mentions"></div>
@@ -295,11 +301,12 @@
           <section>
             <h3>Can do</h3>
             <ul>
-              <li>Store project variables for text like <code>{traveler}</code>.</li>
-              <li>Tell Play which node field becomes title, body, or choice buttons.</li>
-              <li>Write variables when a node is visited.</li>
-              <li>Read simple condition fields such as <code>flag == true</code>.</li>
-              <li>Insert starter rules with the toolbar, then edit the JSON directly.</li>
+                <li>Store project variables for text like <code>{traveler}</code>.</li>
+                <li>Build category-based state lines such as <code>Set Variable TalkWChief to True</code>.</li>
+                <li>Tell Play which node field becomes title, body, or choice buttons.</li>
+                <li>Write variables when a node is visited.</li>
+                <li>Read simple condition fields such as <code>flag == true</code>.</li>
+                <li>Use the builder for common rules and Advanced JSON for exact edits.</li>
             </ul>
           </section>
           <section>
@@ -312,10 +319,13 @@
             </ul>
           </section>
         </div>
-        <pre class="playbook-example"><code>{
-  "variables": { "flag": false },
-  "nodeTypes": {
-    "Choice": { "body": "{body}", "choices": "choices" },
+  <pre class="playbook-example"><code>{
+    "variables": { "flag": false },
+    "actions": [
+      { "trigger": "onVisit", "target": "Dialog", "op": "set", "category": "Variable", "key": "TalkWChief", "value": "True" }
+    ],
+    "nodeTypes": {
+      "Choice": { "body": "{body}", "choices": "choices" },
     "Set": { "set": { "key": "variable", "value": "value" } },
     "Condition": { "condition": "condition" }
   }

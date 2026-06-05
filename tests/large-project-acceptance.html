@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Narrative Canvas Large Project Acceptance</title>
+    <style>
+      body { margin: 0; padding: 16px; font-family: system-ui, sans-serif; background: #111; color: #eee; }
+      iframe { width: 1280px; height: 820px; border: 1px solid #555; }
+      #acceptance-report { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body data-acceptance-status="running">
+    <h1>Narrative Canvas Large Project Acceptance</h1>
+    <pre id="acceptance-report">running</pre>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const beaconPort = params.get("port") || "";
+      const sizes = (params.get("sizes") || "30000,100000")
+        .split(",").map((value) => Number.parseInt(value.trim(), 10)).filter((value) => value > 0);
+      const hosts = (params.get("hosts") || "web,plugin")
+        .split(",").map((value) => value.trim()).filter(Boolean);
+      const budgetScale = Math.max(0.1, Number.parseFloat(params.get("budgetScale") || "1") || 1);
+      const continueOnFailure = params.get("continueOnFailure") === "1";
+      const report = { startedAt: new Date().toISOString(), sizes, hosts, budgetScale, continueOnFailure, runs: [], failures: [], error: null };
+
+      function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+      function nextFrame() {
+        return new Promise((resolve) => {
+          let done = false;
+          const finish = () => { if (!done) { done = true; resolve(); } };
+          requestAnimationFrame(finish);
+          setTimeout(finish, 60);
+        });
+      }
+
+      async function waitFor(predicate, timeout = 30000) {
+        const started = performance.now();
+        while (performance.now() - started < timeout) {
+          if (predicate()) return true;
+          await wait(25);
+        }
+        return false;
+      }
+
+      function round(value) { return Math.round(value * 10) / 10; }
+
+      function phase(name) {
+        if (!beaconPort) return;
+        try {
+          const image = new Image();
+          image.src = `http://127.0.0.1:${beaconPort}/phase?data=${encodeURIComponent(name)}`;
+        } catch (_error) {}
+      }
+
+      const projectBaseUrl = new URL("../", window.location.href);
+      function assetUrl(path) { return new URL(path, projectBaseUrl).href; }
+
+      function extractBodyHtml(html) {
+        const match = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        const bodyHtml = match ? match[1] : html;
+        return bodyHtml
+          .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+          .replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, "");
+      }
+
+      function scopeCanvasCss(source) {
+        const keyframes = [];
+        let css = source
+          .replace(/:root/g, ".narrative-canvas-plugin-host")
+          .replace(/(^|})\s*html\s*,\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {")
+          .replace(/(^|})\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {");
+
+        css = css.replace(/@keyframes\s+[-_a-zA-Z0-9]+\s*{(?:[^{}]|{[^{}]*})*}/g, (match) => {
+          const token = `__NARRATIVE_CANVAS_KEYFRAMES_${keyframes.length}__`;
+          keyframes.push(match);
+          return token;
+        });
+
+        css = css.replace(/(^|[{}])\s*([^@{}][^{]+)\s*{/g, (match, boundary, selectorText) => {
+          const selectors = selectorText
+            .split(",")
+            .map((selector) => selector.trim())
+            .filter(Boolean)
+            .map((selector) => selector.startsWith(".narrative-canvas-plugin-host")
+              ? selector
+              : `.narrative-canvas-plugin-host ${selector}`);
+          return `${boundary}\n${selectors.join(", ")} {`;
+        });
+
+        return css.replace(/__NARRATIVE_CANVAS_KEYFRAMES_(\d+)__/g, (_match, index) => keyframes[Number(index)] || "");
+      }
+
+      function makeCharacters(count) {
+        return Array.from({ length: count }, (_item, index) => ({
+          id: `c${index}`,
+          name: `Character ${index}`,
+          role: index % 2 ? "Supporting" : "POV",
+          voice: `Voice ${index}`,
+          notes: `Acceptance character ${index}.`
+        }));
+      }
+
+      function makeVariables(count) {
+        const variables = {};
+        for (let index = 0; index < count; index += 1) {
+          if (index % 4 === 0) variables[`flag_${index}`] = Boolean(index % 8);
+          else if (index % 4 === 1) variables[`score_${index}`] = index;
+          else if (index % 4 === 2) variables[`label_${index}`] = `value ${index}`;
+          else variables[`json_${index}`] = { index, tags: [`tag-${index % 10}`] };
+        }
+        return variables;
+      }
+
+      function generateProject(nodeCount) {
+        const columns = Math.max(1, Math.round(Math.sqrt(nodeCount)));
+        const characterCount = Math.min(240, Math.max(24, Math.floor(nodeCount / 400)));
+        const eventStride = Math.max(200, Math.floor(nodeCount / 400));
+        const characters = makeCharacters(characterCount);
+        const nodes = [];
+        const links = [];
+        const types = ["Content", "Dialog", "Choice", "Condition", "Set", "Jump", "Marker"];
+
+        for (let index = 0; index < nodeCount; index += 1) {
+          const col = index % columns;
+          const row = Math.floor(index / columns);
+          const isEvent = index > 0 && index % eventStride === 0;
+          const type = index === 0 ? "Entry" : (isEvent ? "Event" : types[index % types.length]);
+          const node = {
+            id: `n${index}`,
+            type,
+            title: isEvent ? `Acceptance Event ${index}` : `Acceptance Node ${index}`,
+            body: `Acceptance body ${index}. Query anchor qa-${index}. This is realistic narrative text for large-project testing.`,
+            x: 120 + col * 300,
+            y: 120 + row * 190,
+            cast: [{ characterId: `c${index % characterCount}`, role: index % 5 === 0 ? "POV" : "Present" }]
+          };
+          if (type === "Choice") node.choices = ["Continue", "Turn back", "Inspect"];
+          if (type === "Set") {
+            node.variable = `flag_${index % 200}`;
+            node.value = "true";
+          }
+          if (type === "Condition") node.condition = `score_${index % 200} >= 10`;
+          if (type === "Event") {
+            node.width = 760;
+            node.height = 360;
+            node.act = String(Math.floor(index / eventStride) + 1);
+            node.chapter = String((Math.floor(index / eventStride) % 12) + 1);
+            node.eventType = "Acceptance";
+            node.eventDescription = `Large event row ${index}.`;
+          }
+          nodes.push(node);
+        }
+
+        for (let index = 0; index < nodeCount - 1 && links.length < nodeCount; index += 1) {
+          const col = index % columns;
+          if (col < columns - 1) links.push({ id: `l${links.length}`, from: `n${index}`, to: `n${index + 1}` });
+        }
+        for (let index = 0; index + columns < nodeCount && links.length < nodeCount; index += columns) {
+          links.push({ id: `l${links.length}`, from: `n${index}`, to: `n${index + columns}` });
+        }
+        for (let index = 5; links.length < nodeCount && index < nodeCount; index += 7) {
+          links.push({ id: `l${links.length}`, from: `n${Math.max(0, index - 5)}`, to: `n${index}` });
+        }
+
+        return {
+          version: 1,
+          savedAt: new Date().toISOString(),
+          project: {
+            title: `Acceptance ${nodeCount}`,
+            notes: `Large project acceptance fixture with ${nodeCount} nodes and ${links.length} links.`,
+            variables: makeVariables(Math.min(500, Math.max(80, Math.floor(nodeCount / 200)))),
+            characters,
+            nodes,
+            links
+          },
+          ui: {
+            activeFileId: "adventure",
+            theme: "dark",
+            selectedNodeId: "n0",
+            panel: "node",
+            view: { x: 0, y: 0, scale: 0.5 },
+            search: "",
+            characterSearch: "",
+            eventSearch: ""
+          }
+        };
+      }
+
+      async function loadFrame(host, savedState) {
+        const [html, css, appJs] = await Promise.all([
+          fetch(assetUrl("index.html")).then((response) => response.text()),
+          fetch(assetUrl("canvas.css")).then((response) => response.text()),
+          fetch(assetUrl("app.js")).then((response) => response.text())
+        ]);
+        const frame = document.createElement("iframe");
+        frame.title = `${host} acceptance target`;
+        document.body.append(frame);
+        const doc = frame.contentDocument;
+        const win = frame.contentWindow;
+        doc.open();
+        doc.write("<!doctype html><html><head><meta charset=\"utf-8\"><title>Large Acceptance Target</title></head><body></body></html>");
+        doc.close();
+
+        const style = doc.createElement("style");
+        style.textContent = host === "plugin" ? scopeCanvasCss(css) : css;
+        doc.head.append(style);
+
+        const root = doc.createElement("div");
+        if (host === "plugin") root.className = "narrative-canvas-plugin-host";
+        root.innerHTML = extractBodyHtml(html);
+        doc.body.append(root);
+
+        installDownloadCapture(win);
+        let savedJson = JSON.stringify(savedState);
+        if (host === "plugin") {
+          win.NarrativeCanvasHost = {
+            root,
+            loadProject: async () => savedJson,
+            saveProject: async (nextSavedJson) => {
+              savedJson = nextSavedJson;
+              return "Acceptance.ncanvas";
+            },
+            getAutoSaveIntervalMs: () => 1000000,
+            ensureProjectFile: async () => "Acceptance.ncanvas",
+            createProjectFile: async () => "Acceptance.ncanvas",
+            previewNewProjectFile: async () => "Acceptance.ncanvas",
+            getProjectFile: () => "Acceptance.ncanvas"
+          };
+        } else {
+          win.NarrativeCanvasHost = {
+            loadState: async () => savedJson,
+            saveState: async (nextSavedState) => {
+              savedJson = JSON.stringify(nextSavedState);
+              return true;
+            },
+            stateFile: "Acceptance browser state"
+          };
+        }
+
+        const script = doc.createElement("script");
+        script.textContent = appJs;
+        doc.body.append(script);
+        return { frame, win, doc, getSavedJson: () => savedJson };
+      }
+
+      function installDownloadCapture(win) {
+        win.__downloads = [];
+        let lastDownload = null;
+        win.URL.createObjectURL = (blob) => {
+          lastDownload = { size: blob?.size || 0, type: blob?.type || "", filename: "" };
+          win.__downloads.push(lastDownload);
+          return `blob:narrative-canvas-acceptance-${win.__downloads.length}`;
+        };
+        win.URL.revokeObjectURL = () => {};
+        const originalClick = win.HTMLAnchorElement.prototype.click;
+        win.HTMLAnchorElement.prototype.click = function acceptanceClick() {
+          if (lastDownload) lastDownload.filename = this.download || "";
+          if (!String(this.href || "").startsWith("blob:narrative-canvas-acceptance-")) {
+            return originalClick.call(this);
+          }
+          return undefined;
+        };
+      }
+
+      function setControlValue(win, element, value) {
+        element.focus();
+        element.value = value;
+        element.dispatchEvent(new win.Event("input", { bubbles: true }));
+        element.dispatchEvent(new win.Event("change", { bubbles: true }));
+      }
+
+      function click(win, element) {
+        if (!element) throw new Error("Missing clickable element");
+        element.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true, view: win }));
+      }
+
+      async function measure(name, fn) {
+        phase(name);
+        const started = performance.now();
+        await fn();
+        await nextFrame();
+        return round(performance.now() - started);
+      }
+
+      function budgetsFor(nodeCount) {
+        const large = nodeCount >= 100000;
+        const base = large
+          ? { openMs: 45000, tabMs: 18000, searchMs: 18000, saveMs: 25000, exportJsonMs: 25000, visibleNodes: 260 }
+          : { openMs: 14000, tabMs: 8000, searchMs: 8000, saveMs: 10000, exportJsonMs: 12000, visibleNodes: 220 };
+        return Object.fromEntries(Object.entries(base).map(([key, value]) => [key, Math.round(value * budgetScale)]));
+      }
+
+      function assertBudget(run, key, value, budget) {
+        if (value <= budget) return;
+        report.failures.push({
+          host: run.host,
+          nodes: run.nodes,
+          metric: key,
+          value,
+          budget
+        });
+      }
+
+      async function switchFile(target, fileId) {
+        const { win, doc } = target;
+        const button = doc.querySelector(`[data-file-id="${fileId}"]`);
+        const ms = await measure(`${target.host}:${target.nodeCount}:${fileId}`, async () => {
+          click(win, button);
+          const ok = await waitFor(() => doc.querySelector(".app-shell")?.dataset.activeFile === fileId, 60000);
+          if (!ok) throw new Error(`${target.host} ${target.nodeCount}: ${fileId} did not activate`);
+        });
+        return ms;
+      }
+
+      async function runSearch(target, fileId, selector, value) {
+        const { win, doc } = target;
+        const input = doc.querySelector(selector);
+        if (!input) throw new Error(`${target.host} ${target.nodeCount}: missing search ${selector}`);
+        return measure(`${target.host}:${target.nodeCount}:${fileId}:search`, async () => {
+          setControlValue(win, input, value);
+          await wait(0);
+        });
+      }
+
+      async function runAcceptance(host, nodeCount, savedState) {
+        phase(`${host}:${nodeCount}:load`);
+        const target = await loadFrame(host, savedState);
+        target.host = host;
+        target.nodeCount = nodeCount;
+        const { win, doc, frame, getSavedJson } = target;
+        const budgets = budgetsFor(nodeCount);
+        const run = {
+          host,
+          nodes: nodeCount,
+          links: savedState.project.links.length,
+          budgets,
+          visibleNodes: 0,
+          openMs: 0,
+          tabs: {},
+          search: {},
+          saveMs: 0,
+          exportJsonMs: 0,
+          exportJsonBytes: 0,
+          savedBytes: 0
+        };
+
+        run.openMs = await measure(`${host}:${nodeCount}:open`, async () => {
+          await win.NarrativeCanvasApp.init();
+          const ok = await waitFor(() => Boolean(doc.querySelector(".node[data-node-id]")), 90000);
+          if (!ok) throw new Error(`${host} ${nodeCount}: canvas nodes did not render`);
+        });
+        run.visibleNodes = doc.querySelectorAll(".node[data-node-id]").length;
+        assertBudget(run, "openMs", run.openMs, budgets.openMs);
+        assertBudget(run, "visibleNodes", run.visibleNodes, budgets.visibleNodes);
+
+        run.tabs.charactersMs = await switchFile(target, "characters");
+        assertBudget(run, "charactersTabMs", run.tabs.charactersMs, budgets.tabMs);
+        run.search.charactersMs = await runSearch(target, "characters", "[data-character-search]", "Character 12");
+        assertBudget(run, "charactersSearchMs", run.search.charactersMs, budgets.searchMs);
+
+        run.tabs.eventsMs = await switchFile(target, "events");
+        assertBudget(run, "eventsTabMs", run.tabs.eventsMs, budgets.tabMs);
+        run.search.eventsMs = await runSearch(target, "events", "[data-event-search]", "Acceptance Event");
+        assertBudget(run, "eventsSearchMs", run.search.eventsMs, budgets.searchMs);
+
+        run.tabs.variablesMs = await switchFile(target, "variables");
+        assertBudget(run, "variablesTabMs", run.tabs.variablesMs, budgets.tabMs);
+
+        run.tabs.canvasReturnMs = await switchFile(target, "adventure");
+        assertBudget(run, "canvasReturnMs", run.tabs.canvasReturnMs, budgets.tabMs);
+
+        run.search.canvasMs = await runSearch(target, "adventure", "#queryInput", `qa-${Math.max(0, nodeCount - 10)}`);
+        assertBudget(run, "canvasSearchMs", run.search.canvasMs, budgets.searchMs);
+
+        run.saveMs = await measure(`${host}:${nodeCount}:save`, async () => {
+          await win.NarrativeCanvasApp.save({ silent: true });
+        });
+        run.savedBytes = getSavedJson().length;
+        assertBudget(run, "saveMs", run.saveMs, budgets.saveMs);
+
+        const beforeDownloads = win.__downloads.length;
+        run.exportJsonMs = await measure(`${host}:${nodeCount}:exportJson`, async () => {
+          click(win, doc.querySelector("[data-action='export-json']"));
+          const ok = await waitFor(() => win.__downloads.length > beforeDownloads, 60000);
+          if (!ok) throw new Error(`${host} ${nodeCount}: JSON export did not download`);
+        });
+        const download = win.__downloads[win.__downloads.length - 1] || {};
+        run.exportJsonBytes = download.size || 0;
+        assertBudget(run, "exportJsonMs", run.exportJsonMs, budgets.exportJsonMs);
+
+        frame.remove();
+        return run;
+      }
+
+      function sendBeacon() {
+        report.finishedAt = new Date().toISOString();
+        report.status = report.error || report.failures.length ? "fail" : "pass";
+        document.body.setAttribute("data-acceptance-status", report.status);
+        document.querySelector("#acceptance-report").textContent = JSON.stringify(report, null, 2);
+        if (!beaconPort) return;
+        try {
+          const image = new Image();
+          image.src = `http://127.0.0.1:${beaconPort}/done?data=${encodeURIComponent(JSON.stringify(report))}`;
+        } catch (_error) {}
+      }
+
+      async function run() {
+        try {
+          for (const nodeCount of sizes) {
+            const savedState = generateProject(nodeCount);
+            for (const host of hosts) {
+              const result = await runAcceptance(host, nodeCount, savedState);
+              report.runs.push(result);
+              document.querySelector("#acceptance-report").textContent = JSON.stringify(report, null, 2);
+            }
+            if (report.failures.length && !continueOnFailure) return;
+          }
+        } catch (error) {
+          report.error = error && error.stack ? error.stack : String(error);
+        } finally {
+          sendBeacon();
+        }
+      }
+
+      window.addEventListener("load", run, { once: true });
+    </script>
+  </body>
+</html>

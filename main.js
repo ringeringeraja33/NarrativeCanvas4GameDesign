@@ -8,9 +8,11 @@ const DEFAULT_PROJECT_EXTENSION = "ncanvas";
 const SAVED_STATE_VERSION = 1;
 const DEFAULT_FILENAME_TEMPLATE = "{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas";
 const DEFAULT_AUTO_SAVE_INTERVAL_SECONDS = 0;
+const DEFAULT_LANGUAGE_SETTING = "auto";
 const FALLBACK_AUTO_SAVE_INTERVAL_SECONDS = 2;
 const MIN_AUTO_SAVE_INTERVAL_SECONDS = 1;
 const MAX_AUTO_SAVE_INTERVAL_SECONDS = 3600;
+const LANGUAGE_SETTING_VALUES = new Set(["auto", "en", "zh"]);
 const FILENAME_TEMPLATE_TOKENS = [
   "{{project title}}",
   "{{YYYY-MM-DD}}",
@@ -23,8 +25,32 @@ const DEFAULT_SETTINGS = {
   saveFolder: "",
   filenameTemplate: DEFAULT_FILENAME_TEMPLATE,
   autoSaveIntervalSeconds: DEFAULT_AUTO_SAVE_INTERVAL_SECONDS,
+  language: DEFAULT_LANGUAGE_SETTING,
   currentProjectPath: "",
   lastProjectPath: ""
+};
+const PLUGIN_TEXT = {
+  zh: {
+    "Auto-save interval": "自动保存间隔",
+    "Choose the Narrative Canvas interface language. Auto follows Obsidian's interface language.": "选择 Narrative Canvas 界面语言。自动会跟随 Obsidian 界面语言。",
+    "Clear": "清除",
+    "Create and open a sample Narrative Canvas project.": "创建并打开一个 Narrative Canvas 示例项目。",
+    "Current project": "上次编辑的项目",
+    "Follow Obsidian": "跟随 Obsidian",
+    "Language": "语言",
+    "New project file name": "新项目文件名",
+    "No project file selected. The ribbon button will create a new project with the default name.": "尚未选择项目文件。点击 ribbon 按钮时会按默认名称新建项目。",
+    "Open sample": "打开示例",
+    "Open Narrative Canvas": "打开 Narrative Canvas",
+    "Open sample Narrative Canvas project": "打开 Narrative Canvas 示例项目",
+    "Project save folder": "项目保存文件夹",
+    "Reset": "重置",
+    "Sample project": "示例项目",
+    "Save project file to vault": "保存项目文件到库",
+    "Seconds between automatic Narrative Canvas saves. Leave empty to use the default interval ({value}).": "Narrative Canvas 自动保存的间隔秒数。留空则使用默认间隔（{value}）。",
+    "Vault-relative folder for Narrative Canvas project files. Leave empty to save in the vault root.": "Narrative Canvas 项目文件相对于库的保存文件夹。留空则保存到库根目录。",
+    "Available placeholders: ": "可用占位符："
+  }
 };
 const LEGACY_PROJECT_FILE = "NarrativeCanvas/project.json";
 const STATE_FILE = "data.json";
@@ -41,23 +67,23 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     }
     this.addSettingTab(new NarrativeCanvasSettingTab(this.app, this));
 
-    this.addRibbonIcon("git-branch", "Open Narrative Canvas", () => this.openCanvas().catch((error) => this.reportOpenError(error)));
+    this.addRibbonIcon("git-branch", pluginText(this, "Open Narrative Canvas"), () => this.openCanvas().catch((error) => this.reportOpenError(error)));
 
     this.addCommand({
       id: "open",
-      name: "Open Narrative Canvas",
+      name: pluginText(this, "Open Narrative Canvas"),
       callback: () => this.openCanvas().catch((error) => this.reportOpenError(error))
     });
 
     this.addCommand({
       id: "save-to-vault",
-      name: "Save project file to vault",
+      name: pluginText(this, "Save project file to vault"),
       callback: () => this.saveActiveCanvas().catch((error) => this.reportOpenError(error))
     });
 
     this.addCommand({
       id: "create-sample-project",
-      name: "Open sample Narrative Canvas project",
+      name: pluginText(this, "Open sample Narrative Canvas project"),
       callback: () => this.openSampleProject().catch((error) => this.reportOpenError(error))
     });
 
@@ -184,8 +210,13 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     return formatAutoSaveIntervalCompact(Math.round(getObsidianAutoSaveIntervalMs(this.app) / 1000));
   }
 
+  getEffectiveLanguage() {
+    return resolvePluginLanguage(this.settings?.language, this.app);
+  }
+
   notifyCanvasSettingsChanged() {
     window.NarrativeCanvasApp?.configureAutoSave?.();
+    window.NarrativeCanvasApp?.setLanguage?.(this.getEffectiveLanguage());
   }
 
   async clearCurrentProjectPath() {
@@ -571,6 +602,7 @@ class NarrativeCanvasView extends ItemView {
         loadProject: () => this.plugin.loadProjectFile(),
         saveProject: (savedStateJson) => this.plugin.saveProjectFile(savedStateJson),
         getAutoSaveIntervalMs: () => this.plugin.getAutoSaveIntervalMs(),
+        getLanguage: () => this.plugin.getEffectiveLanguage(),
         ensureProjectFile: (savedStateJson, options) => this.plugin.ensureProjectFile(savedStateJson, options),
         createProjectFile: (savedStateJson, options) => this.plugin.createProjectFile(savedStateJson, options),
         previewNewProjectFile: (savedStateJson, options) => this.plugin.previewNewProjectFile(savedStateJson, options),
@@ -655,14 +687,32 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
 
   display() {
     const { containerEl } = this;
+    const text = (key, replacements) => pluginText(this.plugin, key, replacements);
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName("Sample project")
-      .setDesc("Create and open a sample Narrative Canvas project.")
+      .setName(text("Language"))
+      .setDesc(text("Choose the Narrative Canvas interface language. Auto follows Obsidian's interface language."))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("auto", text("Follow Obsidian"))
+          .addOption("zh", "中文")
+          .addOption("en", "English")
+          .setValue(this.plugin.settings.language || DEFAULT_LANGUAGE_SETTING)
+          .onChange(async (value) => {
+            this.plugin.settings.language = normalizeLanguageSetting(value);
+            await this.plugin.savePluginData();
+            this.plugin.notifyCanvasSettingsChanged();
+            this.display();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName(text("Sample project"))
+      .setDesc(text("Create and open a sample Narrative Canvas project."))
       .addButton((button) => {
         button
-          .setButtonText("Open sample")
+          .setButtonText(text("Open sample"))
           .setCta()
           .onClick(() => {
             this.plugin.openSampleProject().catch((error) => this.plugin.reportOpenError(error));
@@ -670,8 +720,8 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Project save folder")
-      .setDesc("Vault-relative folder for Narrative Canvas project files. Leave empty to save in the vault root.")
+      .setName(text("Project save folder"))
+      .setDesc(text("Vault-relative folder for Narrative Canvas project files. Leave empty to save in the vault root."))
       .addText((text) => {
         text
           .setPlaceholder("/")
@@ -683,7 +733,7 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
       });
 
     const filenameDesc = document.createDocumentFragment();
-    filenameDesc.append("Available placeholders: ");
+    filenameDesc.append(text("Available placeholders: "));
     FILENAME_TEMPLATE_TOKENS.forEach((token, index) => {
       if (index) filenameDesc.append(", ");
       filenameDesc.createEl("code", { text: token });
@@ -691,7 +741,7 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
     const currentTemplate = this.plugin.settings.filenameTemplate || DEFAULT_FILENAME_TEMPLATE;
 
     new Setting(containerEl)
-      .setName("New project file name")
+      .setName(text("New project file name"))
       .setDesc(filenameDesc)
       .addText((text) => {
         text
@@ -704,7 +754,7 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
       })
       .addButton((button) => {
         button
-          .setButtonText("Reset")
+          .setButtonText(text("Reset"))
           .onClick(async () => {
             this.plugin.settings.filenameTemplate = DEFAULT_FILENAME_TEMPLATE;
             await this.plugin.savePluginData();
@@ -713,8 +763,8 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Auto-save interval")
-      .setDesc(`Seconds between automatic Narrative Canvas saves. Leave empty to use the default interval (${this.plugin.getAutoSaveDefaultLabel()}).`)
+      .setName(text("Auto-save interval"))
+      .setDesc(text("Seconds between automatic Narrative Canvas saves. Leave empty to use the default interval ({value}).", { value: this.plugin.getAutoSaveDefaultLabel() }))
       .addText((text) => {
         text.inputEl.type = "number";
         text.inputEl.min = String(MIN_AUTO_SAVE_INTERVAL_SECONDS);
@@ -731,11 +781,11 @@ class NarrativeCanvasSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Current project")
-      .setDesc(this.plugin.getCurrentProjectPath() || "No project file selected. The ribbon button will create a new project with the default name.")
+      .setName(text("Current project"))
+      .setDesc(this.plugin.getCurrentProjectPath() || text("No project file selected. The ribbon button will create a new project with the default name."))
       .addButton((button) => {
         button
-          .setButtonText("Clear")
+          .setButtonText(text("Clear"))
           .onClick(async () => {
             await this.plugin.clearCurrentProjectPath();
             this.display();
@@ -751,9 +801,59 @@ function normalizeSettings(rawSettings) {
     saveFolder: normalizeSaveFolder(source.saveFolder),
     filenameTemplate: normalizeFilenameTemplate(source.filenameTemplate),
     autoSaveIntervalSeconds: normalizeAutoSaveIntervalSeconds(source.autoSaveIntervalSeconds),
+    language: normalizeLanguageSetting(source.language),
     currentProjectPath: normalizeVaultPath(source.currentProjectPath),
     lastProjectPath: normalizeVaultPath(source.lastProjectPath)
   };
+}
+
+function normalizeLanguageSetting(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return LANGUAGE_SETTING_VALUES.has(normalized) ? normalized : DEFAULT_LANGUAGE_SETTING;
+}
+
+function resolvePluginLanguage(setting, app) {
+  const normalized = normalizeLanguageSetting(setting);
+  if (normalized !== "auto") return normalized;
+  return getObsidianInterfaceLanguage(app);
+}
+
+function getObsidianInterfaceLanguage(app) {
+  const candidates = [
+    getVaultConfig(app, "interfaceLanguage"),
+    getVaultConfig(app, "language"),
+    getVaultConfig(app, "locale"),
+    globalThis?.moment?.locale?.(),
+    globalThis?.document?.documentElement?.lang,
+    globalThis?.navigator?.language,
+    ...(Array.isArray(globalThis?.navigator?.languages) ? globalThis.navigator.languages : [])
+  ].filter(Boolean);
+  const locale = candidates.find((value) => String(value || "").trim());
+  return isChineseLocale(locale) ? "zh" : "en";
+}
+
+function getVaultConfig(app, key) {
+  try {
+    return app?.vault?.getConfig?.(key) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function isChineseLocale(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "zh" || normalized.startsWith("zh-") || normalized.includes("中文");
+}
+
+function pluginText(plugin, key, replacements = {}) {
+  const source = String(key || "");
+  const language = plugin?.getEffectiveLanguage?.() || "en";
+  const table = PLUGIN_TEXT[language] || null;
+  let value = table?.[source] || source;
+  Object.entries(replacements || {}).forEach(([name, replacement]) => {
+    value = value.replace(new RegExp(`\\{${name}\\}`, "g"), String(replacement));
+  });
+  return value;
 }
 
 function createBlankSavedState(title = "Untitled") {
@@ -1153,10 +1253,10 @@ const CANVAS_INDEX_HTML = [
   "              \u003clabel class=\"export-image-scale-label\" title=\"Image export resolution\"\u003e",
   "                \u003cspan class=\"visually-hidden\"\u003eImage resolution\u003c/span\u003e",
   "                \u003cselect id=\"exportImageScale\" class=\"toolbar-select\" title=\"Image resolution\"\u003e",
-  "                  \u003coption value=\"1\"\u003e1x PNG\u003c/option\u003e",
-  "                  \u003coption value=\"2\"\u003e2x PNG\u003c/option\u003e",
-  "                  \u003coption value=\"3\"\u003e3x PNG\u003c/option\u003e",
-  "                  \u003coption value=\"4\"\u003e4x PNG\u003c/option\u003e",
+  "                  \u003coption value=\"1\"\u003e4096 x 4096\u003c/option\u003e",
+  "                  \u003coption value=\"2\"\u003e6144 x 6144\u003c/option\u003e",
+  "                  \u003coption value=\"3\"\u003e8192 x 8192\u003c/option\u003e",
+  "                  \u003coption value=\"4\"\u003e12000 x 12000\u003c/option\u003e",
   "                \u003c/select\u003e",
   "              \u003c/label\u003e",
   "            \u003c/span\u003e",
@@ -1226,6 +1326,12 @@ const CANVAS_INDEX_HTML = [
   "        \u003csection id=\"nodePanel\" class=\"inspector-panel\"\u003e\u003c/section\u003e",
   "        \u003csection id=\"storyPanel\" class=\"inspector-panel\"\u003e\u003c/section\u003e",
   "      \u003c/aside\u003e",
+  "",
+  "      \u003cbutton id=\"languageToggle\" class=\"language-toggle-button\" data-web-only data-action=\"toggle-language\" type=\"button\" title=\"Switch language\" aria-label=\"Switch language\"\u003e",
+  "        \u003cspan class=\"language-toggle-option\" data-lang=\"en\"\u003eEN\u003c/span\u003e",
+  "        \u003cspan class=\"language-toggle-divider\" aria-hidden=\"true\"\u003e/\u003c/span\u003e",
+  "        \u003cspan class=\"language-toggle-option\" data-lang=\"zh\"\u003e中\u003c/span\u003e",
+  "      \u003c/button\u003e",
   "    \u003c/div\u003e",
   "",
   "    \u003cdiv id=\"mentionPopover\" class=\"mention-popover\" hidden role=\"listbox\" aria-label=\"Character mentions\"\u003e\u003c/div\u003e",
@@ -1342,11 +1448,12 @@ const CANVAS_INDEX_HTML = [
   "          \u003csection\u003e",
   "            \u003ch3\u003eCan do\u003c/h3\u003e",
   "            \u003cul\u003e",
-  "              \u003cli\u003eStore project variables for text like \u003ccode\u003e{traveler}\u003c/code\u003e.\u003c/li\u003e",
-  "              \u003cli\u003eTell Play which node field becomes title, body, or choice buttons.\u003c/li\u003e",
-  "              \u003cli\u003eWrite variables when a node is visited.\u003c/li\u003e",
-  "              \u003cli\u003eRead simple condition fields such as \u003ccode\u003eflag == true\u003c/code\u003e.\u003c/li\u003e",
-  "              \u003cli\u003eInsert starter rules with the toolbar, then edit the JSON directly.\u003c/li\u003e",
+  "                \u003cli\u003eStore project variables for text like \u003ccode\u003e{traveler}\u003c/code\u003e.\u003c/li\u003e",
+  "                \u003cli\u003eBuild category-based state lines such as \u003ccode\u003eSet Variable TalkWChief to True\u003c/code\u003e.\u003c/li\u003e",
+  "                \u003cli\u003eTell Play which node field becomes title, body, or choice buttons.\u003c/li\u003e",
+  "                \u003cli\u003eWrite variables when a node is visited.\u003c/li\u003e",
+  "                \u003cli\u003eRead simple condition fields such as \u003ccode\u003eflag == true\u003c/code\u003e.\u003c/li\u003e",
+  "                \u003cli\u003eUse the builder for common rules and Advanced JSON for exact edits.\u003c/li\u003e",
   "            \u003c/ul\u003e",
   "          \u003c/section\u003e",
   "          \u003csection\u003e",
@@ -1359,10 +1466,13 @@ const CANVAS_INDEX_HTML = [
   "            \u003c/ul\u003e",
   "          \u003c/section\u003e",
   "        \u003c/div\u003e",
-  "        \u003cpre class=\"playbook-example\"\u003e\u003ccode\u003e{",
-  "  \"variables\": { \"flag\": false },",
-  "  \"nodeTypes\": {",
-  "    \"Choice\": { \"body\": \"{body}\", \"choices\": \"choices\" },",
+  "  \u003cpre class=\"playbook-example\"\u003e\u003ccode\u003e{",
+  "    \"variables\": { \"flag\": false },",
+  "    \"actions\": [",
+  "      { \"trigger\": \"onVisit\", \"target\": \"Dialog\", \"op\": \"set\", \"category\": \"Variable\", \"key\": \"TalkWChief\", \"value\": \"True\" }",
+  "    ],",
+  "    \"nodeTypes\": {",
+  "      \"Choice\": { \"body\": \"{body}\", \"choices\": \"choices\" },",
   "    \"Set\": { \"set\": { \"key\": \"variable\", \"value\": \"value\" } },",
   "    \"Condition\": { \"condition\": \"condition\" }",
   "  }",
@@ -1503,7 +1613,43 @@ function installNarrativeCanvasApp() {
   const NODE_TYPE_ICON_MAX_UNITS = 3;
   const SAVED_STATE_VERSION = 1;
   const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
+  const WEB_LANGUAGE_STORAGE_KEY = "narrative-canvas-language-v1";
   const PLAYBOOK_FILE_NAME = "Playbook.json";
+  const PLAYBOOK_ACTION_OPERATIONS = [
+    { value: "set", label: "Set" },
+    { value: "add", label: "Add" },
+    { value: "subtract", label: "Subtract" },
+    { value: "append", label: "Append" },
+    { value: "remove", label: "Remove" },
+    { value: "toggle", label: "Toggle" },
+    { value: "clear", label: "Clear" },
+    { value: "if", label: "If" },
+    { value: "goTo", label: "Go to" },
+    { value: "show", label: "Show" },
+    { value: "hide", label: "Hide" },
+    { value: "lockChoice", label: "Lock choice" },
+    { value: "unlockChoice", label: "Unlock choice" }
+  ];
+  const PLAYBOOK_ACTION_TRIGGERS = [
+    { value: "onVisit", label: "On visit" },
+    { value: "onChoose", label: "On choose" },
+    { value: "gate", label: "Gate" },
+    { value: "manual", label: "Manual" }
+  ];
+  const PLAYBOOK_STATE_CATEGORIES = [
+    "Quest",
+    "Quest Entry",
+    "Variable",
+    "Actor",
+    "Item",
+    "Location",
+    "Sim Status",
+    "Alert",
+    "Misc",
+    "Custom",
+    "Manual Enter"
+  ];
+  const CONDITION_BRANCH_LABELS = Object.freeze(["true", "false"]);
   const SAMPLE_PROJECT_FILENAME = "Sample.ncanvas";
   const FALLBACK_AUTO_SAVE_INTERVAL_MS = 2000;
   const MIN_AUTO_SAVE_INTERVAL_MS = 1000;
@@ -1517,14 +1663,14 @@ function installNarrativeCanvasApp() {
   };
   const SIDEBAR_SIDES = new Set(Object.keys(SIDEBAR_CONFIG));
   const EXPORT_IMAGE_SCALES = [
-    { value: "1", scale: 1, label: "1x", suffix: "" },
-    { value: "2", scale: 2, label: "2x", suffix: "@2x" },
-    { value: "3", scale: 3, label: "3x", suffix: "@3x" },
-    { value: "4", scale: 4, label: "4x", suffix: "@4x" }
+    { value: "1", scale: 1, maxWidth: 4096, maxHeight: 4096, label: "4096 x 4096" },
+    { value: "2", scale: 2, maxWidth: 6144, maxHeight: 6144, label: "6144 x 6144" },
+    { value: "3", scale: 3, maxWidth: 8192, maxHeight: 8192, label: "8192 x 8192" },
+    { value: "4", scale: 4, maxWidth: 12000, maxHeight: 12000, label: "12000 x 12000" }
   ];
   const EXPORT_IMAGE_MAX_DIMENSION = 16000;
-  const EXPORT_IMAGE_MAX_PIXELS = 64000000;
-  const EXPORT_IMAGE_MIN_SCALE = 0.05;
+  const EXPORT_IMAGE_MAX_PIXELS = 150000000;
+  const EXPORT_IMAGE_MIN_SCALE = 0.0001;
   const EVENT_ELEMENTS_COLUMN_KEY = "eventElements";
   const STORY_ROW_GAP = 132;
   const STORY_FRAME_PADDING = 32;
@@ -1615,6 +1761,9 @@ function installNarrativeCanvasApp() {
         trust_level: 1,
         lantern_lit: false,
         has_ticket: true,
+        talked_to_conductor: false,
+        knows_old_reyes: true,
+        reyes_watch_offered: false,
         inventory: {
           watch: "Reyes pocketwatch",
           coins: 3,
@@ -1661,7 +1810,18 @@ function installNarrativeCanvasApp() {
             title: "Investigation - {title}",
             body: "{body}"
           }
-        }
+        },
+        actions: [
+          { id: "a0", trigger: "gate", target: "First-time briefing?", op: "if", category: "Variable", key: "talked_to_conductor", value: "== false" },
+          { id: "a1", trigger: "gate", target: "Reyes clue available?", op: "if", category: "Variable", key: "knows_old_reyes", value: "== true" },
+          { id: "a2", trigger: "onVisit", target: "Share Reyes warning", op: "add", category: "Variable", key: "trust_level", value: "1" },
+          { id: "a3", trigger: "onVisit", target: "Share Reyes warning", op: "set", category: "Variable", key: "knows_old_reyes", value: "false" },
+          { id: "a4", trigger: "onVisit", target: "Offer the watch", op: "set", category: "Variable", key: "reyes_watch_offered", value: "true" },
+          { id: "a5", trigger: "gate", target: "Enough trust and lantern?", op: "if", category: "Variable", key: "trust_level", value: ">= 2 && lantern_lit == true" },
+          { id: "a6", trigger: "onVisit", target: "Glass Key", op: "append", category: "Quest", key: "Main.clues", value: "{title}", append: true },
+          { id: "a7", trigger: "onChoose", target: "The Conductor", op: "add", category: "Actor", key: "Mara.trust", value: "1" },
+          { id: "a8", trigger: "manual", target: "", op: "toggle", category: "Sim Status", key: "lantern_lit", value: "" }
+        ]
       },
       eventSheet: {
         columns: [
@@ -1803,16 +1963,22 @@ function installNarrativeCanvasApp() {
         { id: "lf1", type: "LocationFrame", title: "Far Platform", body: "A visual frame for the station-side beats. This one is not an Events Sheet row.", x: 220, y: 220, width: 1040, height: 900, customFields: { region: "North terminal", mood: "Fog, brass, late departures" } },
         { id: "e1", type: "StorySequence", title: "Boarding the Line", body: "Custom Story Sequence frame. Event Frame is the behavior type; this is one concrete class built on it.", x: 270, y: 340, width: 920, height: 700, act: "I", chapter: "1", beatList: "Boarding / ticket check", eventType: "Opening Scene", eventDescription: "Mara boards the Midnight Line, meets the Conductor, and lights the lantern.", location: "Far Platform", timeWeather: "00:03 / fog", questEpisode: "Q01", customFields: { status: "Drafted" } },
         { id: "n1", type: "Content", title: "Platform 9, Midnight", body: "Fog swallows the rails. The watch once owned by @Old Reyes is heavier than it looks in {traveler}'s coat.", x: 320, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
-        { id: "n2", type: "Dialog", title: "The Conductor", body: "Tickets, please. {traveler}, is it? The Line has been waiting for that watch.", x: 740, y: 520, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
-        { id: "n3", type: "Set", title: "Light the lantern", body: "lantern_lit = true", variable: "lantern_lit", value: "true", x: 320, y: 785, cast: [{ characterId: "c0", role: "POV" }] },
-        { id: "n13", type: "Marker", title: "Designer note", body: "The variable table includes string, number, boolean, and json values. Open Playbook.json to inspect them.", x: 740, y: 785 },
-        { id: "e2", type: "StorySequence", title: "The Bargain", body: "Choice, Set, and branch outcome nodes inside the custom Story Sequence event-frame class.", x: 1240, y: 340, width: 1030, height: 760, act: "II", chapter: "2", beatList: "Watch bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara chooses whether to trust him.", location: "Car 3", timeWeather: "00:17 / rain on glass", questEpisode: "Q02", customFields: { status: "Branching" } },
-        { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you and the aisle.", choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"], x: 1290, y: 520, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+        { id: "n16", type: "Condition", title: "First-time briefing?", body: "talked_to_conductor == false", condition: "talked_to_conductor == false", x: 600, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
+        { id: "n2", type: "Dialog", title: "The Conductor", body: "Tickets, please. {traveler}, is it? The Line has been waiting for that watch.", x: 880, y: 500, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+        { id: "n18", type: "Dialog", title: "The Conductor", body: "You know the terms now: the watch, the key, or the cold compartment. Do not make the Line repeat itself.", x: 880, y: 760, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+        { id: "n3", type: "Set", title: "Light the lantern", body: "lantern_lit = true", variable: "lantern_lit", value: "true", x: 600, y: 785, cast: [{ characterId: "c0", role: "POV" }] },
+        { id: "n13", type: "Marker", title: "Designer note", body: "Playbook actions now mirror dialogue-graph rules: talked_to_conductor picks first briefing or repeat line, knows_old_reyes unlocks an extra branch, and trust_level plus lantern_lit gates the map door.", x: 950, y: 930 },
+        { id: "e2", type: "StorySequence", title: "The Bargain", body: "Choice, Set, and conditional branch outcome nodes inside the custom Story Sequence event-frame class.", x: 1240, y: 340, width: 1160, height: 860, act: "II", chapter: "2", beatList: "Watch bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara can spend prior knowledge to improve trust before the bargain resolves.", location: "Car 3", timeWeather: "00:17 / rain on glass", questEpisode: "Q02", customFields: { status: "Branching" } },
+        { id: "n17", type: "Condition", title: "Reyes clue available?", body: "knows_old_reyes == true", condition: "knows_old_reyes == true", x: 1290, y: 500, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
+        { id: "n19", type: "Dialog", title: "Mara", body: "I met Old Reyes before boarding. He said the watch only opens for someone willing to lose it.", x: 1580, y: 500, cast: [{ characterId: "c0", role: "Speaker" }, { characterId: "c2", role: "Mentioned" }, { characterId: "c1", role: "Present" }] },
+        { id: "n20", type: "Set", title: "Share Reyes warning", body: "knows_old_reyes = false; trust_level += 1", variable: "knows_old_reyes", value: "false", x: 1580, y: 735, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
+        { id: "n21", type: "Set", title: "Briefing complete", body: "talked_to_conductor = true", variable: "talked_to_conductor", value: "true", x: 1880, y: 735, cast: [{ characterId: "c1", role: "Speaker" }] },
+        { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you and the aisle. Prior knowledge, trust, and the lantern now decide which branch can survive the next gate.", choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"], x: 1900, y: 500, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
         { id: "n5", type: "Set", title: "Offer the watch", body: "trust_level = 2", variable: "trust_level", value: "2", x: 1290, y: 800, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c1", role: "Present" }] },
         { id: "n6", type: "Content", title: "Hide it from the Brakeman", body: "{traveler} slips the watch deeper into her coat. The Brakeman notices the movement.", x: 1570, y: 800, cast: [{ characterId: "c3", role: "Target" }, { characterId: "c0", role: "POV" }] },
         { id: "n14", type: "Dialog", title: "Vesper", body: "Radio check. If the lantern is lit, follow the blue carriage marks.", x: 1850, y: 520, cast: [{ characterId: "c4", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
         { id: "e3", type: "InvestigationEvent", title: "Glass Key Investigation", body: "Custom Event Frame. Its fields appear as extra Events Sheet columns for this group.", x: 2320, y: 340, width: 1060, height: 760, act: "II", chapter: "3", beatList: "Find the glass key", eventType: "Investigation", eventDescription: "Mara checks the luggage rack, identifies the key, and decides whether she has enough trust to use it.", location: "Luggage car", timeWeather: "00:31 / sparks outside", questEpisode: "Q03", customFields: { status: "Needs clue art", clueStatus: "Found", risk: "Medium", evidenceOwner: "Old Reyes" }, cast: [{ characterId: "c4", role: "Present" }] },
-        { id: "n7", type: "Condition", title: "Enough trust to unlock?", body: "trust_level >= 2 && lantern_lit == true", condition: "trust_level >= 2 && lantern_lit == true", x: 2370, y: 520, cast: [{ characterId: "c0", role: "POV" }] },
+        { id: "n7", type: "Condition", title: "Enough trust and lantern?", body: "trust_level >= 2 && lantern_lit == true", condition: "trust_level >= 2 && lantern_lit == true", x: 2370, y: 520, cast: [{ characterId: "c0", role: "POV" }] },
         { id: "n8", type: "Clue", title: "Glass Key", body: "A brittle key catches lantern light. It is stamped with Reyes's maker mark.", x: 2660, y: 520, customFields: { evidence: "Maker mark R-17", owner: "Old Reyes", outcome: "Unlocks the map door" }, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c4", role: "Present" }] },
         { id: "n9", type: "Content", title: "Map door opens", body: "The Conductor nods. A door unlocks that was never printed on the map.", x: 3000, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
         { id: "n10", type: "Content", title: "Cold compartment", body: "The Brakeman blocks the aisle. {traveler} has to bluff with a ticket and a dark lantern.", x: 2660, y: 795, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c3", role: "Target" }] },
@@ -1823,17 +1989,25 @@ function installNarrativeCanvasApp() {
       ],
       links: [
         { id: "l0", from: "n0", to: "n1" },
-        { id: "l1", from: "n1", to: "n2" },
-        { id: "l2", from: "n2", to: "n3" },
-        { id: "l3", from: "n3", to: "n4" },
+        { id: "l1", from: "n1", to: "n16" },
+        { id: "l2", from: "n16", to: "n2", label: "true", choiceIndex: 0 },
+        { id: "l3", from: "n16", to: "n18", label: "false", choiceIndex: 1 },
+        { id: "l16", from: "n2", to: "n3" },
+        { id: "l17", from: "n3", to: "n17" },
+        { id: "l18", from: "n17", to: "n19", label: "true", choiceIndex: 0 },
+        { id: "l19", from: "n17", to: "n21", label: "false", choiceIndex: 1 },
+        { id: "l20", from: "n19", to: "n20" },
+        { id: "l21", from: "n20", to: "n21" },
+        { id: "l22", from: "n21", to: "n4" },
+        { id: "l23", from: "n18", to: "n4" },
         { id: "l4", from: "n4", to: "n5", label: "Offer the watch", choiceIndex: 0 },
         { id: "l5", from: "n4", to: "n6", label: "Hide the watch", choiceIndex: 1 },
         { id: "l6", from: "n4", to: "n14", label: "Ask about Old Reyes", choiceIndex: 2 },
         { id: "l7", from: "n5", to: "n7" },
         { id: "l8", from: "n6", to: "n7" },
         { id: "l9", from: "n14", to: "n7" },
-        { id: "l10", from: "n7", to: "n8", label: "true" },
-        { id: "l11", from: "n7", to: "n10", label: "false" },
+        { id: "l10", from: "n7", to: "n8", label: "true", choiceIndex: 0 },
+        { id: "l11", from: "n7", to: "n10", label: "false", choiceIndex: 1 },
         { id: "l12", from: "n8", to: "n9" },
         { id: "l13", from: "n9", to: "n11" },
         { id: "l14", from: "n10", to: "n11" },
@@ -1849,6 +2023,287 @@ function installNarrativeCanvasApp() {
     variables: PLAYBOOK_FILE_NAME
   };
 
+  const uiTranslations = {
+    zh: {
+      "Add": "添加",
+      "Add character": "添加角色",
+      "Add event frame": "添加事件框",
+      "Add play rule": "添加播放规则",
+      "Add script line": "添加脚本行",
+      "Add variable": "添加变量",
+      "Advanced JSON": "高级 JSON",
+      "All": "全部",
+      "All characters visible": "显示全部角色",
+      "All event rows visible": "显示全部事件行",
+      "Action name": "动作名",
+      "Action": "动作",
+      "Actor": "角色",
+      "Alert": "提示",
+      "Any node": "任意节点",
+      "Append": "追加",
+      "Append instead of replacing": "追加而不是替换",
+      "Apply to": "应用到",
+      "Archived": "已归档",
+      "Auto references": "自动引用",
+      "auto": "自动",
+      "Body": "正文",
+      "Build state changes with Playbook categories.": "用 Playbook 分类构建状态变化。",
+      "Buttons": "按钮",
+      "Browser storage": "浏览器存储",
+      "Cancel": "取消",
+      "Category": "分类",
+      "Center": "居中",
+      "Center canvas": "画布居中",
+      "Characters": "角色",
+      "Characters Markdown exported.": "角色 Markdown 已导出。",
+      "Characters JSON exported.": "角色 JSON 已导出。",
+      "Characters.md opened.": "Characters.md 已打开。",
+      "Clear": "清除",
+      "Clear character focus": "清除角色聚焦",
+      "Clear character search": "清除角色搜索",
+      "Clear event search": "清除事件搜索",
+      "Clear storage": "清除存储",
+      "Confirm": "确认",
+      "Collapse": "折叠",
+      "Collapse left sidebar": "折叠左侧栏",
+      "Collapse right sidebar": "折叠右侧栏",
+      "Create": "创建",
+      "CSV": "CSV",
+      "Dark": "深色",
+      "Delete": "删除",
+      "Delete character": "删除角色",
+      "Delete node": "删除节点",
+      "Delete script line": "删除脚本行",
+      "Description": "描述",
+      "Destination label": "目标标签",
+      "Destination note": "目标备注",
+      "Condition": "条件",
+      "Content": "内容",
+      "Choices": "选项",
+      "Choice prompt": "选择提示",
+      "Choices, one per line": "选项，每行一个",
+      "Duplicate": "复制",
+      "Drag to reorder": "拖动排序",
+      "Drag to resize": "拖动调整大小",
+      "Edit": "编辑",
+      "Empty rule": "空规则",
+      "Event search cleared.": "事件搜索已清除。",
+      "Event Frame": "事件框",
+      "Event Sheet": "事件表",
+      "Event description": "事件描述",
+      "Event title": "事件标题",
+      "Events Sheet.csv opened.": "Events Sheet.csv 已打开。",
+      "Export all": "导出全部",
+      "Export canvas as PNG": "导出画布 PNG",
+      "Export CSV": "导出 CSV",
+      "Export full project JSON": "导出完整项目 JSON",
+      "Export JSON": "导出 JSON",
+      "Export MD": "导出 MD",
+      "Expand": "展开",
+      "Expand left sidebar": "展开左侧栏",
+      "Expand right sidebar": "展开右侧栏",
+      "File": "文件",
+      "Files": "文件",
+      "Find": "查找",
+      "Find character": "查找角色",
+      "Find event": "查找事件",
+      "Find nodes": "查找节点",
+      "Focus": "聚焦",
+      "Frame": "框",
+      "Gate": "关卡",
+      "Gate name": "条件名",
+      "Go to": "跳转到",
+      "Hide": "隐藏",
+      "Hidden": "隐藏",
+      "Hide JSON": "隐藏 JSON",
+      "HTML exported.": "HTML 已导出。",
+      "HTML": "HTML",
+      "Image": "图片",
+      "Image export": "图片导出",
+      "Image export maximum set to {value}.": "图片最大规格已设为 {value}。",
+      "Image export resolution": "图片导出规格",
+      "Image exported at {value}.": "图片已导出为 {value}。",
+      "Inspector": "检查器",
+      "If": "如果",
+      "Item": "物品",
+      "Key": "键",
+      "Light": "浅色",
+      "Line": "台词",
+      "Links": "连线",
+      "Location": "地点",
+      "Lock choice": "锁定选项",
+      "Markdown": "Markdown",
+      "manual": "手动",
+      "Manual": "手动",
+      "Manual Enter": "手动输入",
+      "Misc": "杂项",
+      "Name": "名称",
+      "Narration": "叙述",
+      "New": "新建",
+      "New project": "新建项目",
+      "No .ncanvas selected": "未选择 .ncanvas",
+      "No characters yet.": "还没有角色。",
+      "No characters yet": "还没有角色",
+      "No characters match {query}.": "没有匹配 {query} 的角色。",
+      "No linked scenes yet": "还没有关联场景",
+      "No manual cast links.": "还没有手动演员关联。",
+      "No event frame nodes yet.": "还没有事件框节点。",
+      "No hidden columns": "没有隐藏列",
+      "No matching event frames.": "没有匹配的事件框。",
+      "No play rules yet.": "还没有播放规则。",
+      "No script lines yet.": "还没有脚本行。",
+      "No script lines in this category yet.": "该分类下暂无脚本行。",
+      "No project file to reload.": "没有可重新加载的项目文件。",
+      "No variables yet.": "还没有变量。",
+      "Node": "节点",
+      "Node Library": "节点库",
+      "Nodes": "节点",
+      "Notes": "备注",
+      "Note": "备注",
+      "Opening text": "开场文本",
+      "On visit": "进入时",
+      "On choose": "选择时",
+      "Open": "打开",
+      "Owned nodes": "拥有的节点",
+      "Play": "播放",
+      "Play from entry": "从入口播放",
+      "Play rules": "播放规则",
+      "{pages} play pages, {frames} frames": "{pages} 个播放页，{frames} 个框",
+      "Playbook": "播放手册",
+      "Project": "项目",
+      "Project File": "项目文件",
+      "Project notes": "项目备注",
+      "Project title": "项目标题",
+      "Prompt text": "提示文本",
+      "Query": "查询",
+      "Quest": "任务",
+      "Quest Entry": "任务条目",
+      "Reload": "重新加载",
+      "Rename": "重命名",
+      "Remove": "移除",
+      "Remove cast link": "移除演员关联",
+      "Re-sort by graph": "按图排序",
+      "Reset": "重置",
+      "Resize": "调整大小",
+      "Restore default types": "恢复默认类型",
+      "Role": "定位",
+      "Rule": "规则",
+      "Run": "运行",
+      "Save": "保存",
+      "Save failed": "保存失败",
+      "Save project state": "保存项目状态",
+      "Save or create a project file in the vault.": "保存或在库中创建项目文件。",
+      "Saved": "已保存",
+      "Saved in this browser": "已保存到此浏览器",
+      "Saving": "保存中",
+      "Search": "搜索",
+      "Scene title": "场景标题",
+      "Select character...": "选择角色...",
+      "Speaker scenes": "发言场景",
+      "Show": "显示",
+      "Show fewer": "收起",
+      "Set": "设置",
+      "Present scenes": "出现场景",
+      "Script Builder": "脚本构建器",
+      "Script line added.": "脚本行已添加。",
+      "Script line deleted.": "脚本行已删除。",
+      "Sim Status": "模拟状态",
+      "Mentioned in": "被提及于",
+      "POV scenes": "POV 场景",
+      "Event frames": "事件框",
+      "State categories": "状态分类",
+      "State key": "状态键",
+      "Story": "故事",
+      "Start label": "起点标签",
+      "Subtract": "减去",
+      "Target scenes": "目标场景",
+      "Text": "文本",
+      "Title": "标题",
+      "Toggle": "切换",
+      "Switch to dark theme": "切换到深色模式",
+      "Switch to light theme": "切换到浅色模式",
+      "Switch language": "切换语言",
+      "Switch to Chinese": "切换到中文",
+      "Switch to English": "切换到英文",
+      "Type": "类型",
+      "Untitled Story": "未命名故事",
+      "Unnamed Character": "未命名角色",
+      "Variable": "变量",
+      "Unsaved": "未保存",
+      "Unlock choice": "解锁选项",
+      "Value": "值",
+      "Variables": "变量",
+      "When": "时机",
+      "True": "True",
+      "False": "False",
+      "Custom": "自定义",
+      "{variables} variables, {rules} Play rules": "{variables} 个变量，{rules} 条播放规则",
+      "{variables} variables, {rules} Play rules, {actions} script lines": "{variables} 个变量，{rules} 条播放规则，{actions} 行脚本",
+      "Voice": "语气",
+      "What can Playbook.json do?": "Playbook.json 能做什么？",
+      "Zoom": "缩放",
+      "Zoom in": "放大",
+      "Zoom out": "缩小",
+      "{characters} characters, {links} character links": "{characters} 个角色，{links} 条角色链接",
+      ", focusing {name}": "，正在聚焦 {name}",
+      "{count} event rows from canvas nodes": "{count} 行事件来自画布节点",
+      "{count} event rows": "{count} 行事件",
+      "{count} matches": "{count} 个匹配",
+      "{count} rows": "{count} 行",
+      "{count} variables": "{count} 个变量",
+      "{nodes} nodes, {links} links": "{nodes} 个节点，{links} 条连线",
+      "{shown} of {total} shown.": "已显示 {shown}/{total}。",
+      "{visible} of {total} event rows match {query}": "{visible}/{total} 行事件匹配 {query}",
+      "{visible} of {total} characters match {query}": "{visible}/{total} 个角色匹配 {query}",
+      "{visible} of {total} rows": "{visible}/{total} 行",
+      "{count} more not rendered yet.": "还有 {count} 个未渲染。",
+      "Show {count} more": "再显示 {count} 个"
+    }
+  };
+
+  function normalizeUiLanguage(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized.startsWith("zh") ? "zh" : "en";
+  }
+
+  function t(key, replacements = {}) {
+    const source = String(key || "");
+    const table = uiTranslations[state?.language]?.[source] ? uiTranslations[state.language] : null;
+    let value = table?.[source] || source;
+    Object.entries(replacements).forEach(([name, replacement]) => {
+      value = value.replace(new RegExp(`\\{${name}\\}`, "g"), String(replacement));
+    });
+    return value;
+  }
+
+  function getInitialLanguage() {
+    const hostLanguage = getHostLanguage();
+    if (hostLanguage) return hostLanguage;
+    try {
+      const stored = getWebProjectStorage()?.getItem(WEB_LANGUAGE_STORAGE_KEY);
+      if (stored) return normalizeUiLanguage(stored);
+    } catch (error) {
+      // Browser storage can be unavailable in restrictive embeds.
+    }
+    const candidates = [
+      document.documentElement?.lang,
+      navigator.language,
+      ...(Array.isArray(navigator.languages) ? navigator.languages : [])
+    ].filter(Boolean);
+    return normalizeUiLanguage(candidates[0] || "en");
+  }
+
+  function getHostLanguage() {
+    const host = window.NarrativeCanvasHost;
+    try {
+      const value = host?.getLanguage?.() || host?.language || "";
+      return value ? normalizeUiLanguage(value) : "";
+    } catch (error) {
+      console.error(error);
+      return "";
+    }
+  }
+
   const validPanels = new Set(["project", "node", "story"]);
 
   function createInitialRuntimeState() {
@@ -1859,6 +2314,7 @@ function installNarrativeCanvasApp() {
     selectedLinkId: null,
     panel: "project",
     activeFileId: "adventure",
+    language: "en",
     theme: "dark",
     exportImageScale: 1,
     view: { x: 0, y: 0, scale: DEFAULT_CANVAS_ZOOM },
@@ -1884,6 +2340,7 @@ function installNarrativeCanvasApp() {
     characterSearch: "",
     eventSearch: "",
     playbookJsonOpen: false,
+    playbookCategoryFilter: null,
     projectFilePath: "",
     hasUnsavedChanges: false,
     isSaving: false,
@@ -1945,6 +2402,8 @@ function installNarrativeCanvasApp() {
     save: saveCurrentState,
     getSavedState: buildSavedState,
     configureAutoSave,
+    setLanguage,
+    getLanguage: () => state.language,
     createSampleProjectFile,
     ensureVaultFile: ensureVaultProjectFile,
     loadVaultProject: loadCurrentVaultProject
@@ -1974,6 +2433,7 @@ function installNarrativeCanvasApp() {
         return false;
       }
       initialized = true;
+      state.language = getInitialLanguage();
       const restoredView = await loadSavedState(false);
       resetHistory();
       renderAll();
@@ -2016,6 +2476,7 @@ function installNarrativeCanvasApp() {
     dom.undoButton = dom.scope.querySelector("#undoButton");
     dom.redoButton = dom.scope.querySelector("#redoButton");
     dom.themeToggle = dom.scope.querySelector("#themeToggle");
+    dom.languageToggle = dom.scope.querySelector("#languageToggle");
     dom.exportImageScale = dom.scope.querySelector("#exportImageScale");
     dom.vaultProjectTitle = dom.scope.querySelector("#vaultProjectTitle");
     dom.projectFileName = dom.scope.querySelector("#projectFileName");
@@ -2258,6 +2719,21 @@ function installNarrativeCanvasApp() {
     }
   }
 
+  function setLanguage(language, options = {}) {
+    const nextLanguage = normalizeUiLanguage(language);
+    if (state.language === nextLanguage && !options.force) return true;
+    state.language = nextLanguage;
+    if (!window.NarrativeCanvasHost && options.persist !== false) {
+      try {
+        getWebProjectStorage()?.setItem(WEB_LANGUAGE_STORAGE_KEY, nextLanguage);
+      } catch (error) {
+        // Browser storage can be unavailable in restrictive embeds.
+      }
+    }
+    if (initialized) renderAll();
+    return true;
+  }
+
   function resetRuntimeState() {
     const nextState = createInitialRuntimeState();
     Object.keys(state).forEach((key) => delete state[key]);
@@ -2290,8 +2766,8 @@ function installNarrativeCanvasApp() {
       const side = getValidSidebarSide(button.dataset.sidebarToggle);
       if (!side) return;
       const collapsed = side === "left" ? normalized.leftCollapsed : normalized.rightCollapsed;
-      const action = collapsed ? "Expand" : "Collapse";
-      const label = `${action} ${side} sidebar`;
+      const labelKey = `${collapsed ? "Expand" : "Collapse"} ${side} sidebar`;
+      const label = t(labelKey);
       button.title = label;
       button.setAttribute("aria-label", label);
       button.setAttribute("aria-expanded", String(!collapsed));
@@ -2676,10 +3152,12 @@ function installNarrativeCanvasApp() {
       "add-node-cast",
       "delete-node-cast",
       "add-variable",
+      "add-playbook-action",
       "create-play-rule",
       "add-playbook-node-rule",
       "add-playbook-choice-rule",
       "add-playbook-state-rules",
+      "delete-playbook-action",
       "delete-variable",
       "auto-layout",
       "rename-event-column",
@@ -2764,19 +3242,28 @@ function installNarrativeCanvasApp() {
 
   function renderShellState() {
     dom.root?.setAttribute("data-theme", state.theme);
+    dom.root?.setAttribute("lang", state.language === "zh" ? "zh-CN" : "en");
     dom.themeHost?.setAttribute("data-theme", state.theme);
+    dom.themeHost?.setAttribute("lang", state.language === "zh" ? "zh-CN" : "en");
+    localizeStaticShell();
     renderSidebarState();
     if (dom.themeToggle) {
       const isDark = state.theme === "dark";
-      dom.themeToggle.textContent = isDark ? "Dark" : "Light";
+      dom.themeToggle.textContent = isDark ? t("Dark") : t("Light");
       dom.themeToggle.setAttribute("aria-pressed", String(isDark));
-      dom.themeToggle.title = `Switch to ${isDark ? "light" : "dark"} theme`;
+      dom.themeToggle.title = isDark ? t("Switch to light theme") : t("Switch to dark theme");
+    }
+    if (dom.languageToggle) {
+      const nextLanguageLabel = state.language === "zh" ? t("Switch to English") : t("Switch to Chinese");
+      dom.languageToggle.dataset.activeLang = state.language;
+      dom.languageToggle.title = nextLanguageLabel;
+      dom.languageToggle.setAttribute("aria-label", nextLanguageLabel);
     }
     if (dom.exportImageScale) {
       dom.exportImageScale.value = getExportImageScalePreset().value;
     }
     if (dom.vaultProjectTitle) {
-      dom.vaultProjectTitle.textContent = state.project.title || "Untitled Story";
+      dom.vaultProjectTitle.textContent = state.project.title || t("Untitled Story");
     }
     renderProjectFileStatus();
     dom.root?.setAttribute("data-active-file", state.activeFileId || "adventure");
@@ -2802,6 +3289,76 @@ function installNarrativeCanvasApp() {
       element.hidden = Boolean(window.NarrativeCanvasHost);
     });
     renderHistoryButtons();
+  }
+
+  function localizeStaticShell() {
+    if (!dom.scope) return;
+    const setText = (selector, key) => {
+      const element = dom.scope.querySelector(selector);
+      if (element) element.textContent = t(key);
+    };
+    const setAttr = (selector, attr, key) => {
+      const element = dom.scope.querySelector(selector);
+      if (element) element.setAttribute(attr, t(key));
+    };
+    const setLabelText = (selector, key) => {
+      const element = dom.scope.querySelector(selector);
+      if (!element) return;
+      const textNode = [...element.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.nodeValue.trim());
+      if (textNode) {
+        textNode.nodeValue = `${t(key)} `;
+      } else {
+        element.prepend(document.createTextNode(`${t(key)} `));
+      }
+    };
+
+    setText(".project-file-section h2", "Project File");
+    setText(".sidebar-left .nav-section:nth-of-type(2) h2", "Files");
+    setText(".palette h2", "Node Library");
+    setText(".workspace-file-label .pane-kicker", "File");
+    setText(".sidebar-right .pane-kicker", "Inspector");
+    setText("[data-panel='project']", "Project");
+    setText("[data-panel='node']", "Node");
+    setText("[data-panel='story']", "Story");
+
+    setText("[data-action='save-project']", "Save");
+    setText("[data-action='new-project']", "New");
+    setText("[data-action='open-project-file']", "Open");
+    setText("[data-action='reload-project-file']", "Reload");
+    setText("[data-action='clear-browser-storage']", "Clear storage");
+    setText("[data-action='add-custom-node-type']", "Add");
+    setText("[data-action='zoom-out']", "-");
+    setText("[data-action='zoom-in']", "+");
+    setText("[data-action='center-view']", "Center");
+    setText("[data-action='play']", "Play");
+    setText("[data-action='export-json']", "Export JSON");
+    setText("[data-action='export-image']", "Image");
+    setText("[data-action='export-html']", "HTML");
+
+    setAttr("[data-action='save-project']", "title", "Save project state");
+    setAttr("[data-action='new-project']", "title", "New project");
+    setAttr("[data-action='zoom-out']", "title", "Zoom out");
+    setAttr("[data-action='zoom-in']", "title", "Zoom in");
+    setAttr("[data-action='center-view']", "title", "Center canvas");
+    setAttr("[data-action='play']", "title", "Play from entry");
+    setAttr("[data-action='export-json']", "title", "Export full project JSON");
+    setAttr("[data-action='export-image']", "title", "Export canvas as PNG");
+    setAttr("#exportImageScale", "title", "Image export resolution");
+
+    setLabelText(".canvas-search-box", "Query");
+    setLabelText(".character-search-box", "Find");
+    setLabelText(".event-search-box", "Find");
+    setAttr("#queryInput", "placeholder", "Find nodes");
+    setAttr("#characterSearchInput", "placeholder", "Find character");
+    setAttr("#eventSearchInput", "placeholder", "Find event");
+
+    const customKind = dom.scope.querySelector("#customNodeKind");
+    if (customKind) {
+      const labels = { node: "Node", frame: "Frame", eventFrame: "Event Frame" };
+      [...customKind.options].forEach((option) => {
+        option.textContent = t(labels[option.value] || option.textContent);
+      });
+    }
   }
 
   function syncWorkspaceSearchControls() {
@@ -2832,11 +3389,11 @@ function installNarrativeCanvasApp() {
       dom.projectFileName.textContent = getProjectFileBasename(path);
       dom.projectFilePath.textContent = path;
     } else if (isVaultProject) {
-      dom.projectFileName.textContent = "No .ncanvas selected";
-      dom.projectFilePath.textContent = "Save or create a project file in the vault.";
+      dom.projectFileName.textContent = t("No .ncanvas selected");
+      dom.projectFilePath.textContent = t("Save or create a project file in the vault.");
     } else {
-      dom.projectFileName.textContent = "Browser storage";
-      dom.projectFilePath.textContent = "Saved in this browser";
+      dom.projectFileName.textContent = t("Browser storage");
+      dom.projectFilePath.textContent = t("Saved in this browser");
     }
 
     const saveState = getProjectSaveState();
@@ -2856,10 +3413,10 @@ function installNarrativeCanvasApp() {
   }
 
   function getProjectSaveLabel(saveState) {
-    if (saveState === "saving") return "Saving";
-    if (saveState === "unsaved") return "Unsaved";
-    if (saveState === "error") return "Save failed";
-    return "Saved";
+    if (saveState === "saving") return t("Saving");
+    if (saveState === "unsaved") return t("Unsaved");
+    if (saveState === "error") return t("Save failed");
+    return t("Saved");
   }
 
   function getCurrentProjectFilePath() {
@@ -3051,9 +3608,9 @@ function installNarrativeCanvasApp() {
     const remaining = total - shown;
     return `
       <div class="document-limit-notice" data-document-limit-notice>
-        <span>Showing ${shown} of ${total}. ${remaining} more not rendered yet.</span>
+        <span>${t("{shown} of {total} shown.", { shown, total })} ${t("{count} more not rendered yet.", { count: remaining })}</span>
         <button class="small-button" type="button" data-action="show-more-document" data-document-id="${escapeAttr(fileId)}">
-          Show ${Math.min(DOCUMENT_RENDER_INCREMENT, remaining)} more
+          ${t("Show {count} more", { count: Math.min(DOCUMENT_RENDER_INCREMENT, remaining) })}
         </button>
       </div>
     `;
@@ -3072,9 +3629,9 @@ function installNarrativeCanvasApp() {
             <div class="document-meta" data-character-search-meta>${escapeHtml(formatCharacterMeta(model))}</div>
           </div>
           <div class="document-actions">
-            <button class="small-button" data-action="add-character">Add character</button>
-            <button class="small-button" data-action="export-characters-md">Export MD</button>
-            <button class="small-button" data-action="export-characters-json">Export JSON</button>
+            <button class="small-button" data-action="add-character">${t("Add character")}</button>
+            <button class="small-button" data-action="export-characters-md">${t("Export MD")}</button>
+            <button class="small-button" data-action="export-characters-json">${t("Export JSON")}</button>
           </div>
         </header>
         <div class="document-filter-bar" data-character-filter-bar>
@@ -3110,9 +3667,9 @@ function installNarrativeCanvasApp() {
   }
 
   function formatCharacterMeta(model) {
-    const focusText = model.focusedCharacter ? `, focusing ${model.focusedCharacter.name}` : "";
-    if (model.query) return `${model.visibleCount} of ${model.totalCount} characters match "${model.queryRaw.trim()}"${focusText}`;
-    return `${model.totalCount} characters, ${model.linkCount} character links${focusText}`;
+    const focusText = model.focusedCharacter ? t(", focusing {name}", { name: model.focusedCharacter.name }) : "";
+    if (model.query) return `${t("{visible} of {total} characters match {query}", { visible: model.visibleCount, total: model.totalCount, query: `"${model.queryRaw.trim()}"` })}${focusText}`;
+    return `${t("{characters} characters, {links} character links", { characters: model.totalCount, links: model.linkCount })}${focusText}`;
   }
 
   function renderCharacterFilterBar(model) {
@@ -3120,27 +3677,27 @@ function installNarrativeCanvasApp() {
     if (model.query) {
       chips.push(`
         <span class="filter-chip">
-          Search: ${escapeHtml(model.queryRaw.trim())}
-          <button type="button" data-action="clear-character-search" aria-label="Clear character search">Clear</button>
+          ${t("Search")}: ${escapeHtml(model.queryRaw.trim())}
+          <button type="button" data-action="clear-character-search" aria-label="${escapeAttr(t("Clear character search"))}">${t("Clear")}</button>
         </span>
       `);
     }
     if (model.focusedCharacter) {
       chips.push(`
         <span class="filter-chip">
-          Focus: ${escapeHtml(model.focusedCharacter.name)}
-          <button type="button" data-action="clear-character-focus" aria-label="Clear character focus">Clear</button>
+          ${t("Focus")}: ${escapeHtml(model.focusedCharacter.name)}
+          <button type="button" data-action="clear-character-focus" aria-label="${escapeAttr(t("Clear character focus"))}">${t("Clear")}</button>
         </span>
       `);
     }
-    if (!chips.length) chips.push(`<span class="filter-chip quiet">All characters visible</span>`);
+    if (!chips.length) chips.push(`<span class="filter-chip quiet">${t("All characters visible")}</span>`);
     return chips.join("");
   }
 
   function renderCharacterCardsMarkup(model, limit = getDocumentRenderLimit("characters")) {
-    if (!model.characters.length) return `<div class="nc-empty-state">No characters yet.</div>`;
+    if (!model.characters.length) return `<div class="nc-empty-state">${t("No characters yet.")}</div>`;
     const visible = model.visible.slice(0, Math.max(0, limit));
-    if (!visible.length) return `<div class="nc-empty-state">No characters match "${escapeHtml(model.queryRaw.trim())}".</div>`;
+    if (!visible.length) return `<div class="nc-empty-state">${escapeHtml(t("No characters match {query}.", { query: `"${model.queryRaw.trim()}"` }))}</div>`;
     return renderCharacterMasonryColumns(visible, model.context);
   }
 
@@ -3233,26 +3790,26 @@ function installNarrativeCanvasApp() {
       <article class="character-card ${isFocused ? "focused" : ""}">
         <div class="character-card-header">
           <label class="field">
-            <span>Name</span>
+            <span>${t("Name")}</span>
             <input data-character-id="${escapeAttr(character.id)}" data-character-field="name" value="${escapeAttr(character.name)}">
           </label>
           <div class="character-card-actions">
-            <button class="small-button" data-action="${isFocused ? "clear-character-focus" : "focus-character"}" data-character-id="${escapeAttr(character.id)}">${isFocused ? "Clear" : "Focus"}</button>
-            <button class="icon-button danger-button" title="Delete character" data-action="delete-character" data-character-id="${escapeAttr(character.id)}">x</button>
+            <button class="small-button" data-action="${isFocused ? "clear-character-focus" : "focus-character"}" data-character-id="${escapeAttr(character.id)}">${isFocused ? t("Clear") : t("Focus")}</button>
+            <button class="icon-button danger-button" title="${escapeAttr(t("Delete character"))}" data-action="delete-character" data-character-id="${escapeAttr(character.id)}">x</button>
           </div>
         </div>
         <div class="field-row">
           <label class="field">
-            <span>Role</span>
+            <span>${t("Role")}</span>
             <input data-character-id="${escapeAttr(character.id)}" data-character-field="role" value="${escapeAttr(character.role || "")}">
           </label>
           <label class="field">
-            <span>Voice</span>
+            <span>${t("Voice")}</span>
             <input data-character-id="${escapeAttr(character.id)}" data-character-field="voice" value="${escapeAttr(character.voice || "")}">
           </label>
         </div>
         <label class="field">
-          <span>Notes</span>
+          <span>${t("Notes")}</span>
           <textarea data-character-id="${escapeAttr(character.id)}" data-character-field="notes">${escapeHtml(character.notes || "")}</textarea>
         </label>
         ${renderCharacterBacklinkSections(groups, character.id, isExpanded)}
@@ -3262,12 +3819,12 @@ function installNarrativeCanvasApp() {
 
   function renderCharacterBacklinkSections(groups, characterId, isExpanded = false) {
     const nonEmptyGroups = groups.filter((group) => group.items.length);
-    if (!nonEmptyGroups.length) return `<div class="linked-node empty">No linked scenes yet</div>`;
+    if (!nonEmptyGroups.length) return `<div class="linked-node empty">${t("No linked scenes yet")}</div>`;
     return `
       <div class="character-backlink-section">
         ${nonEmptyGroups.map((group) => `
           <section class="character-backlink-group">
-            <h3>${escapeHtml(group.label)}</h3>
+            <h3>${escapeHtml(t(group.label))}</h3>
             <div class="linked-node-list">
               ${renderCharacterBacklinkGroupItems(group, characterId, isExpanded)}
             </div>
@@ -3284,12 +3841,12 @@ function installNarrativeCanvasApp() {
       ${items.map((item) => renderCharacterBacklinkItem(item)).join("")}
       ${hiddenCount > 0 ? `
         <button class="linked-node linked-node-more" data-action="toggle-character-backlinks" data-character-id="${escapeAttr(characterId)}">
-          Show ${hiddenCount} more
+          ${t("Show {count} more", { count: hiddenCount })}
         </button>
       ` : ""}
       ${isExpanded && group.items.length > CHARACTER_BACKLINK_PREVIEW_LIMIT ? `
         <button class="linked-node linked-node-more" data-action="toggle-character-backlinks" data-character-id="${escapeAttr(characterId)}">
-          Show fewer
+          ${t("Show fewer")}
         </button>
       ` : ""}
     `;
@@ -3312,13 +3869,20 @@ function installNarrativeCanvasApp() {
     const variables = normalizeVariablesObject(state.project.variables);
     state.project.variables = variables;
     const entries = Object.entries(variables);
+    const actions = getPlaybookActions();
     const ruleCards = getPlaybookRuleCards();
+    const actionCount = actions.length;
     const ruleCount = ruleCards.length;
     const limit = getDocumentRenderLimit("variables");
     const visibleEntries = entries.slice(0, limit);
+    const activeCategoryFilter = state.playbookCategoryFilter;
+    const filteredActions = activeCategoryFilter
+      ? actions.filter((action) => action.category === activeCategoryFilter)
+      : actions;
+    const visibleActions = filteredActions.slice(0, limit);
     const visibleRuleCards = ruleCards.slice(0, limit);
-    const shownCount = Math.max(visibleEntries.length, visibleRuleCards.length);
-    const totalCount = Math.max(entries.length, ruleCount);
+    const shownCount = Math.max(visibleEntries.length, visibleActions.length, visibleRuleCards.length);
+    const totalCount = Math.max(entries.length, actionCount, ruleCount);
     const playbookJson = buildVariablesJson();
     dom.variablesPanel.innerHTML = `
       <div class="document-shell">
@@ -3326,44 +3890,69 @@ function installNarrativeCanvasApp() {
           <div>
             <span class="pane-kicker">Playbook</span>
             <h2>${PLAYBOOK_FILE_NAME}</h2>
-            <div class="document-meta">${entries.length} variables, ${ruleCount} Play rules</div>
+            <div class="document-meta">${t("{variables} variables, {rules} Play rules, {actions} script lines", { variables: entries.length, rules: ruleCount, actions: actionCount })}</div>
           </div>
           <div class="document-actions">
-            <button class="help-button" type="button" data-action="show-playbook-help" aria-label="What can Playbook.json do?">?</button>
-            <button class="small-button" type="button" data-action="add-variable">Add variable</button>
-            <button class="small-button" type="button" data-action="add-play-rule">Add play rule</button>
-            <button class="small-button" type="button" data-action="toggle-playbook-json">${state.playbookJsonOpen ? "Hide JSON" : "Advanced JSON"}</button>
-            <button class="small-button" type="button" data-action="export-variables-json">Export JSON</button>
+            <button class="help-button" type="button" data-action="show-playbook-help" aria-label="${escapeAttr(t("What can Playbook.json do?"))}">?</button>
+            <button class="small-button" type="button" data-action="add-playbook-action">${t("Add script line")}</button>
+            <button class="small-button" type="button" data-action="add-variable">${t("Add variable")}</button>
+            <button class="small-button" type="button" data-action="add-play-rule">${t("Add play rule")}</button>
+            <button class="small-button" type="button" data-action="toggle-playbook-json">${state.playbookJsonOpen ? t("Hide JSON") : t("Advanced JSON")}</button>
+            <button class="small-button" type="button" data-action="export-variables-json">${t("Export JSON")}</button>
           </div>
         </header>
-        <section class="playbook-section">
+        ${renderPlaybookValueDatalists()}
+        <section class="playbook-section playbook-builder-section">
           <header class="playbook-section-header">
-            <h3>Variables</h3>
-            <span>${entries.length}</span>
+            <div>
+              <h3>${t("Script Builder")}</h3>
+              <p>${t("Build state changes with Playbook categories.")}</p>
+            </div>
+            <span>${actionCount}</span>
           </header>
-          <div class="variable-table">
-            <div class="variable-row variable-heading">
-              <span>Key</span>
-              <span>Type</span>
-              <span>Value</span>
+          ${renderPlaybookCategoryStrip(actions)}
+          <div class="playbook-action-table">
+            <div class="playbook-action-row playbook-action-heading">
+              <span>${t("When")}</span>
+              <span>${t("Apply to")}</span>
+              <span>${t("Action")}</span>
+              <span>${t("Category")}</span>
+              <span>${t("State key")}</span>
+              <span>${t("Value")}</span>
+              <span>${t("Append")}</span>
               <span></span>
             </div>
-            ${visibleEntries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="nc-empty-state">No variables yet.</div>`}
+            ${visibleActions.map(renderPlaybookActionRow).join("") || `<div class="nc-empty-state">${activeCategoryFilter ? t("No script lines in this category yet.") : t("No script lines yet.")}</div>`}
           </div>
         </section>
         <section class="playbook-section">
           <header class="playbook-section-header">
-            <h3>Play rules</h3>
+            <h3>${t("Variables")}</h3>
+            <span>${entries.length}</span>
+          </header>
+          <div class="variable-table">
+            <div class="variable-row variable-heading">
+              <span>${t("Key")}</span>
+              <span>${t("Type")}</span>
+              <span>${t("Value")}</span>
+              <span></span>
+            </div>
+            ${visibleEntries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="nc-empty-state">${t("No variables yet.")}</div>`}
+          </div>
+        </section>
+        <section class="playbook-section">
+          <header class="playbook-section-header">
+            <h3>${t("Play rules")}</h3>
             <span>${ruleCount}</span>
           </header>
           <div class="playbook-rule-grid">
-            ${visibleRuleCards.length ? visibleRuleCards.map(renderPlaybookRuleCard).join("") : `<div class="nc-empty-state">No play rules yet.</div>`}
+            ${visibleRuleCards.length ? visibleRuleCards.map(renderPlaybookRuleCard).join("") : `<div class="nc-empty-state">${t("No play rules yet.")}</div>`}
           </div>
         </section>
         ${renderDocumentLimitNotice("variables", shownCount, totalCount)}
         ${state.playbookJsonOpen ? `
           <label class="field json-field">
-            <span>Advanced JSON</span>
+            <span>${t("Advanced JSON")}</span>
             <textarea data-project-field="variables" data-playbook-json-version="${state.dirtyVersion}" rows="${getPlaybookJsonRows(playbookJson)}" spellcheck="false">${escapeHtml(playbookJson)}</textarea>
           </label>
         ` : ""}
@@ -3375,12 +3964,100 @@ function installNarrativeCanvasApp() {
     });
   }
 
+  function renderPlaybookValueDatalists() {
+    const stateKeys = getPlaybookStateKeySuggestions();
+    const targets = getPlaybookTargetSuggestions();
+    const values = ["True", "False", "0", "1", "{title}", "{body}", "{value}", "{traveler}", "{route}"];
+    return `
+      <datalist id="playbookStateKeyOptions">
+        ${stateKeys.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("")}
+      </datalist>
+      <datalist id="playbookTargetOptions">
+        ${targets.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("")}
+      </datalist>
+      <datalist id="playbookValueOptions">
+        ${values.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("")}
+      </datalist>
+    `;
+  }
+
+  function renderPlaybookCategoryStrip(actions) {
+    const counts = new Map(PLAYBOOK_STATE_CATEGORIES.map((category) => [category, 0]));
+    actions.forEach((action) => counts.set(action.category, (counts.get(action.category) || 0) + 1));
+    const activeFilter = state.playbookCategoryFilter;
+    return `
+      <div class="playbook-category-strip" role="group" aria-label="${escapeAttr(t("State categories"))}">
+        <button type="button" class="playbook-category-chip${!activeFilter ? " is-active" : ""}" data-action="filter-playbook-category" data-playbook-category="" aria-pressed="${!activeFilter}">
+          <span>${t("All")}</span>
+          <strong>${actions.length}</strong>
+        </button>
+        ${PLAYBOOK_STATE_CATEGORIES.map((category) => `
+          <button type="button" class="playbook-category-chip${activeFilter === category ? " is-active" : ""}" data-action="filter-playbook-category" data-playbook-category="${escapeAttr(category)}" aria-pressed="${activeFilter === category}">
+            <span>${escapeHtml(t(category))}</span>
+            <strong>${counts.get(category) || 0}</strong>
+          </button>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderPlaybookActionRow(action) {
+    return `
+      <div class="playbook-action-row">
+        <select data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="trigger">
+          ${renderPlaybookOptionList(PLAYBOOK_ACTION_TRIGGERS, action.trigger)}
+        </select>
+        <input data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="target" list="playbookTargetOptions" value="${escapeAttr(action.target)}" placeholder="${escapeAttr(t("Any node"))}" spellcheck="false">
+        <select data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="op">
+          ${renderPlaybookOptionList(PLAYBOOK_ACTION_OPERATIONS, action.op)}
+        </select>
+        <select data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="category">
+          ${PLAYBOOK_STATE_CATEGORIES.map((category) => `<option value="${escapeAttr(category)}" ${category === action.category ? "selected" : ""}>${escapeHtml(t(category))}</option>`).join("")}
+        </select>
+        <input data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="key" list="playbookStateKeyOptions" value="${escapeAttr(action.key)}" placeholder="${escapeAttr(t("State key"))}" spellcheck="false">
+        <input data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="value" list="playbookValueOptions" value="${escapeAttr(action.value)}" placeholder="${escapeAttr(t("True"))}" spellcheck="false">
+        <label class="playbook-append-toggle" title="${escapeAttr(t("Append instead of replacing"))}">
+          <input type="checkbox" data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="append" ${action.append ? "checked" : ""}>
+          <span>${t("Append")}</span>
+        </label>
+        <button class="icon-button danger-button" type="button" title="${escapeAttr(t("Delete script line"))}" data-action="delete-playbook-action" data-playbook-action-id="${escapeAttr(action.id)}">x</button>
+      </div>
+    `;
+  }
+
+  function renderPlaybookOptionList(options, selectedValue) {
+    return options.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === selectedValue ? "selected" : ""}>${escapeHtml(t(option.label))}</option>`).join("");
+  }
+
+  function getPlaybookStateKeySuggestions() {
+    const keys = new Set(Object.keys(normalizeVariablesObject(state.project.variables)));
+    getCharacters().forEach((character) => {
+      if (character.name) keys.add(character.name);
+    });
+    state.project.nodes.forEach((node) => {
+      if (node.title) keys.add(node.title);
+      if (node.variable) keys.add(node.variable);
+      if (node.type === "Set" && node.value) keys.add(String(node.value));
+    });
+    return [...keys].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  }
+
+  function getPlaybookTargetSuggestions() {
+    const targets = new Set();
+    getProjectNodeTypes().forEach((typeDef) => targets.add(typeDef.type));
+    state.project.nodes.forEach((node) => {
+      if (node.id) targets.add(node.id);
+      if (node.title) targets.add(node.title);
+    });
+    return [...targets].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  }
+
   function renderPlaybookRuleCard(card) {
     return `
       <article class="playbook-rule-card">
         <header>
           <div>
-            <span class="playbook-rule-kind">${escapeHtml(card.kind)}</span>
+            <span class="playbook-rule-kind">${escapeHtml(formatPlaybookRuleKindLabel(card.kind))}</span>
             <h4>${escapeHtml(card.target)}</h4>
           </div>
           <button class="small-button" type="button" data-action="focus-playbook-json" data-playbook-token="${escapeAttr(JSON.stringify(card.target))}">JSON</button>
@@ -3388,13 +4065,20 @@ function installNarrativeCanvasApp() {
         <dl>
           ${card.rows.map((row) => `
             <div>
-              <dt>${escapeHtml(row.label)}</dt>
+              <dt>${escapeHtml(t(row.label))}</dt>
               <dd>${escapeHtml(row.value)}</dd>
             </div>
           `).join("")}
         </dl>
       </article>
     `;
+  }
+
+  function formatPlaybookRuleKindLabel(kind) {
+    return String(kind || "")
+      .split(" + ")
+      .map((part) => t(part))
+      .join(" + ");
   }
 
   function getPlaybookRuleCards() {
@@ -3505,10 +4189,10 @@ function installNarrativeCanvasApp() {
             <div class="document-meta" data-event-search-meta>${escapeHtml(formatEventSheetMeta(model))}</div>
           </div>
           <div class="document-actions">
-            <button class="small-button" type="button" data-action="add-node" data-type="Event">Add event frame</button>
-            <button class="small-button" type="button" data-action="reset-event-row-order" title="Clear manual drag order and re-sort rows by the canvas flow">Re-sort by graph</button>
-            <button class="small-button" type="button" data-action="export-event-sheet">Export CSV</button>
-            <button class="small-button" type="button" data-action="export-event-sheet-json">Export JSON</button>
+            <button class="small-button" type="button" data-action="add-node" data-type="Event">${t("Add event frame")}</button>
+            <button class="small-button" type="button" data-action="reset-event-row-order" title="${escapeAttr(t("Clear manual drag order and re-sort rows by the canvas flow"))}">${t("Re-sort by graph")}</button>
+            <button class="small-button" type="button" data-action="export-event-sheet">${t("Export CSV")}</button>
+            <button class="small-button" type="button" data-action="export-event-sheet-json">${t("Export JSON")}</button>
           </div>
         </header>
         <div class="document-filter-bar" data-event-filter-bar>
@@ -3568,21 +4252,21 @@ function installNarrativeCanvasApp() {
 
   function renderEventSheetGroupsMarkup(model, groups = model.groups) {
     if (groups.length) return groups.map(renderEventSheetGroup).join("");
-    if (model.allGroups.length) return `<div class="nc-empty-state">No matching event frames.</div>`;
-    return `<div class="nc-empty-state">No event frame nodes yet.</div>`;
+    if (model.allGroups.length) return `<div class="nc-empty-state">${t("No matching event frames.")}</div>`;
+    return `<div class="nc-empty-state">${t("No event frame nodes yet.")}</div>`;
   }
 
   function formatEventSheetMeta(model) {
-    if (!model.query) return `${model.totalRows} event rows from canvas nodes`;
-    return `${model.visibleRows} of ${model.totalRows} event rows match "${model.query}"`;
+    if (!model.query) return t("{count} event rows from canvas nodes", { count: model.totalRows });
+    return t("{visible} of {total} event rows match {query}", { visible: model.visibleRows, total: model.totalRows, query: `"${model.query}"` });
   }
 
   function renderEventFilterBar(model) {
-    if (!model.query) return `<span class="filter-chip quiet">All event rows visible</span>`;
+    if (!model.query) return `<span class="filter-chip quiet">${t("All event rows visible")}</span>`;
     return `
       <span class="filter-chip">
-        Search: ${escapeHtml(model.query)}
-        <button type="button" data-action="clear-event-search" aria-label="Clear event search">Clear</button>
+        ${t("Search")}: ${escapeHtml(model.query)}
+        <button type="button" data-action="clear-event-search" aria-label="${escapeAttr(t("Clear event search"))}">${t("Clear")}</button>
       </span>
     `;
   }
@@ -3630,7 +4314,7 @@ function installNarrativeCanvasApp() {
       <section class="event-sheet-group" data-event-group-type="${escapeAttr(group.type)}">
         <header class="event-sheet-group-header">
           <h3>${escapeHtml(group.label)}</h3>
-          <span>${group.rows.length}${group.totalRows && group.totalRows !== group.rows.length ? ` of ${group.totalRows}` : ""} rows</span>
+          <span>${group.totalRows && group.totalRows !== group.rows.length ? t("{visible} of {total} rows", { visible: group.rows.length, total: group.totalRows }) : t("{count} rows", { count: group.rows.length })}</span>
         </header>
         <div class="event-sheet-scroll">
           <table class="event-sheet-table">
@@ -3643,9 +4327,9 @@ function installNarrativeCanvasApp() {
             <thead>
               <tr>
                 <th aria-hidden="true"></th>
-                <th class="event-node-heading">Node</th>
+                <th class="event-node-heading">${t("Node")}</th>
                 ${columns.map((column) => renderEventColumnHeader(column)).join("")}
-                <th>Hidden</th>
+                <th>${t("Hidden")}</th>
               </tr>
             </thead>
             <tbody data-event-group-type="${escapeAttr(group.type)}">
@@ -3664,12 +4348,12 @@ function installNarrativeCanvasApp() {
         <div class="event-column-header">
           <span class="event-column-name">${escapeHtml(column.label)}</span>
           <span class="event-column-actions" aria-label="${escapeAttr(column.label)} column actions">
-            <button class="event-column-button" type="button" aria-label="${escapeAttr(`Rename ${columnName}`)}" data-action="rename-event-column" data-event-column-key="${escapeAttr(column.key)}">Rename</button>
-            <button class="event-column-button" type="button" aria-label="${escapeAttr(`Hide ${columnName}`)}" data-action="hide-event-column" data-event-column-key="${escapeAttr(column.key)}">Hide</button>
-            <button class="event-column-button danger" type="button" aria-label="${escapeAttr(`Delete ${columnName}`)}" data-action="delete-event-column" data-event-column-key="${escapeAttr(column.key)}">Delete</button>
+            <button class="event-column-button" type="button" aria-label="${escapeAttr(`${t("Rename")} ${columnName}`)}" data-action="rename-event-column" data-event-column-key="${escapeAttr(column.key)}">${t("Rename")}</button>
+            <button class="event-column-button" type="button" aria-label="${escapeAttr(`${t("Hide")} ${columnName}`)}" data-action="hide-event-column" data-event-column-key="${escapeAttr(column.key)}">${t("Hide")}</button>
+            <button class="event-column-button danger" type="button" aria-label="${escapeAttr(`${t("Delete")} ${columnName}`)}" data-action="delete-event-column" data-event-column-key="${escapeAttr(column.key)}">${t("Delete")}</button>
           </span>
         </div>
-        <span class="event-column-resize-handle" data-event-column-resize="${escapeAttr(column.key)}" role="separator" aria-label="${escapeAttr(`Resize ${columnName}`)}" title="Drag to resize"></span>
+        <span class="event-column-resize-handle" data-event-column-resize="${escapeAttr(column.key)}" role="separator" aria-label="${escapeAttr(`${t("Resize")} ${columnName}`)}" title="${escapeAttr(t("Drag to resize"))}"></span>
       </th>
     `;
   }
@@ -3678,7 +4362,7 @@ function installNarrativeCanvasApp() {
     return `
       <tr data-event-row-id="${escapeAttr(node.id)}">
         <td class="event-row-handle-cell">
-          <span class="event-row-drag-handle" data-event-row-drag="${escapeAttr(node.id)}" title="Drag to reorder" aria-label="Drag to reorder">::</span>
+          <span class="event-row-drag-handle" data-event-row-drag="${escapeAttr(node.id)}" title="${escapeAttr(t("Drag to reorder"))}" aria-label="${escapeAttr(t("Drag to reorder"))}">::</span>
         </td>
         <th data-action="focus-story-node" data-node-id="${escapeAttr(node.id)}">
           <div class="event-node-link">
@@ -3693,7 +4377,7 @@ function installNarrativeCanvasApp() {
   }
 
   function renderHiddenEventColumnRestoreControls(hiddenColumns) {
-    if (!hiddenColumns.length) return `<span class="event-hidden-empty">No hidden columns</span>`;
+    if (!hiddenColumns.length) return `<span class="event-hidden-empty">${t("No hidden columns")}</span>`;
     return `
       <div class="event-hidden-controls">
         ${hiddenColumns.map((column) => `
@@ -4302,7 +4986,7 @@ function installNarrativeCanvasApp() {
       })
       .join("");
 
-    dom.matchCount.textContent = `${renderContext.matchCount} matches`;
+    dom.matchCount.textContent = t("{count} matches", { count: renderContext.matchCount });
   }
 
   function renderNodeTitle(node, inlineEditField) {
@@ -4631,7 +5315,7 @@ function installNarrativeCanvasApp() {
 
   function renderInspector() {
     const activeNode = getNode(state.selectedNodeId);
-    dom.inspectorTitle.textContent = state.panel === "node" && activeNode ? activeNode.title : titleCase(state.panel);
+    dom.inspectorTitle.textContent = state.panel === "node" && activeNode ? activeNode.title : t(titleCase(state.panel));
     renderInspectorTabs();
     renderProjectPanel();
     renderNodePanel(activeNode);
@@ -4656,21 +5340,21 @@ function installNarrativeCanvasApp() {
     dom.projectPanel.innerHTML = `
       <div class="form-stack">
         <label class="field">
-          <span>Project title</span>
+          <span>${t("Project title")}</span>
           <input data-project-field="title" value="${escapeAttr(state.project.title)}">
         </label>
         <label class="field">
-          <span>Project notes</span>
-          <textarea data-project-field="notes" spellcheck="false" placeholder="Project notes">${escapeHtml(state.project.notes || "")}</textarea>
+          <span>${t("Project notes")}</span>
+          <textarea data-project-field="notes" spellcheck="false" placeholder="${escapeAttr(t("Project notes"))}">${escapeHtml(state.project.notes || "")}</textarea>
         </label>
         <div class="stat-grid">
-          <div class="stat-card"><div class="stat-label">Nodes</div><div class="stat-value">${nodeCount}</div></div>
-          <div class="stat-card"><div class="stat-label">Links</div><div class="stat-value">${links}</div></div>
-          <div class="stat-card"><div class="stat-label">Variables</div><div class="stat-value">${variableCount}</div></div>
-          <div class="stat-card"><div class="stat-label">Zoom</div><div class="stat-value">${Math.round(state.view.scale * 100)}%</div></div>
+          <div class="stat-card"><div class="stat-label">${t("Nodes")}</div><div class="stat-value">${nodeCount}</div></div>
+          <div class="stat-card"><div class="stat-label">${t("Links")}</div><div class="stat-value">${links}</div></div>
+          <div class="stat-card"><div class="stat-label">${t("Variables")}</div><div class="stat-value">${variableCount}</div></div>
+          <div class="stat-card"><div class="stat-label">${t("Zoom")}</div><div class="stat-value">${Math.round(state.view.scale * 100)}%</div></div>
         </div>
         <div class="button-row">
-          <button class="small-button" data-action="export-all">Export all</button>
+          <button class="small-button" data-action="export-all">${t("Export all")}</button>
         </div>
       </div>
     `;
@@ -4685,7 +5369,7 @@ function installNarrativeCanvasApp() {
     dom.nodePanel.innerHTML = `
       <div class="form-stack">
         <label class="field">
-          <span>Type</span>
+          <span>${t("Type")}</span>
           <select data-node-field="type">
             ${getNodeTypeEntries(node.type).map(([type, meta]) => `<option value="${escapeAttr(type)}" ${node.type === type ? "selected" : ""}>${escapeHtml(getNodeTypeLabel(type))}${meta.hidden ? " (hidden)" : ""}${meta.removed ? " (removed)" : ""}</option>`).join("")}
           </select>
@@ -4700,9 +5384,9 @@ function installNarrativeCanvasApp() {
         ${renderCustomFields(node)}
         ${isEventSheetNode(node) ? renderEventFields(node) : ""}
         <div class="button-row">
-          <button class="small-button" data-action="duplicate-node">Duplicate</button>
-          <button class="small-button danger-button" data-action="delete-node">Delete node</button>
-          <button class="small-button" data-action="focus-node">Focus</button>
+          <button class="small-button" data-action="duplicate-node">${t("Duplicate")}</button>
+          <button class="small-button danger-button" data-action="delete-node">${t("Delete node")}</button>
+          <button class="small-button" data-action="focus-node">${t("Focus")}</button>
         </div>
       </div>
     `;
@@ -4720,7 +5404,7 @@ function installNarrativeCanvasApp() {
       Marker: "Marker label",
       Event: "Event title"
     };
-    return labels[node.type] || "Title";
+    return t(labels[node.type] || "Title");
   }
 
   function getNodeBodyLabel(node) {
@@ -4733,7 +5417,7 @@ function installNarrativeCanvasApp() {
       Marker: "Note",
       Event: "Event description"
     };
-    return labels[node.type] || "Content";
+    return t(labels[node.type] || "Content");
   }
 
   function renderNodeBodyField(node) {
@@ -4755,33 +5439,33 @@ function installNarrativeCanvasApp() {
         <section class="cast-editor">
           <div class="cast-editor-header">
             <h3>Cast</h3>
-            <span>No characters yet</span>
+            <span>${t("No characters yet")}</span>
           </div>
-          <button class="small-button" data-action="add-character">Add character</button>
+          <button class="small-button" data-action="add-character">${t("Add character")}</button>
         </section>
       `;
     }
     return `
       <section class="cast-editor">
         <div class="cast-editor-header">
-          <h3>Cast</h3>
-          <span>${cast.length} manual, ${autoLinks.length} auto</span>
+            <h3>Cast</h3>
+          <span>${cast.length} ${t("manual")}, ${autoLinks.length} ${t("auto")}</span>
         </div>
         <div class="cast-row-list">
-          ${cast.map((entry, index) => renderNodeCastRow(entry, index)).join("") || `<div class="cast-empty">No manual cast links.</div>`}
+          ${cast.map((entry, index) => renderNodeCastRow(entry, index)).join("") || `<div class="cast-empty">${t("No manual cast links.")}</div>`}
         </div>
         <div class="cast-add-row">
           <select data-new-cast-character>
-            ${renderCastCharacterOptions("", { placeholder: "Select character…" })}
+            ${renderCastCharacterOptions("", { placeholder: t("Select character...") })}
           </select>
           <select data-new-cast-role>
             ${renderCastRelationOptions("Present")}
           </select>
-          <button class="small-button" data-action="add-node-cast">Add</button>
+          <button class="small-button" data-action="add-node-cast">${t("Add")}</button>
         </div>
         ${autoLinks.length ? `
           <div class="cast-auto-row">
-            <span>Auto references</span>
+            <span>${t("Auto references")}</span>
             <div class="cast-auto-chips">
               ${autoLinks.map((link) => renderCastChip(link)).join("")}
             </div>
@@ -4800,7 +5484,7 @@ function installNarrativeCanvasApp() {
         <select data-node-cast-index="${index}" data-node-cast-field="role">
           ${renderCastRelationOptions(entry.role)}
         </select>
-        <button class="icon-button danger-button" title="Remove cast link" data-action="delete-node-cast" data-node-cast-index="${index}">x</button>
+        <button class="icon-button danger-button" title="${escapeAttr(t("Remove cast link"))}" data-action="delete-node-cast" data-node-cast-index="${index}">x</button>
       </div>
     `;
   }
@@ -4810,7 +5494,7 @@ function installNarrativeCanvasApp() {
       ? `<option value="" ${selectedId ? "" : "selected"}>${escapeHtml(options.placeholder)}</option>`
       : "";
     return placeholder + getCharacters().map((character) => `
-      <option value="${escapeAttr(character.id)}" ${character.id === selectedId ? "selected" : ""}>${escapeHtml(character.name || "Unnamed Character")}</option>
+      <option value="${escapeAttr(character.id)}" ${character.id === selectedId ? "selected" : ""}>${escapeHtml(character.name || t("Unnamed Character"))}</option>
     `).join("");
   }
 
@@ -4847,7 +5531,7 @@ function installNarrativeCanvasApp() {
     if (!columns.length) return "";
     return `
       <section class="event-fields">
-        <h3>Event Sheet</h3>
+        <h3>${t("Event Sheet")}</h3>
         ${columns.map((column) => renderEventInspectorField(node, column)).join("")}
       </section>
     `;
@@ -4870,7 +5554,7 @@ function installNarrativeCanvasApp() {
     if (node.type === "Choice") {
       return `
         <label class="field">
-          <span>Choices, one per line</span>
+          <span>${t("Choices, one per line")}</span>
           <textarea data-node-field="choices">${escapeHtml((node.choices || []).join("\n"))}</textarea>
         </label>
       `;
@@ -4878,15 +5562,15 @@ function installNarrativeCanvasApp() {
     if (node.type === "Set") {
       return `
         <div class="field-row">
-          <label class="field"><span>Variable</span><input data-node-field="variable" value="${escapeAttr(node.variable || "")}"></label>
-          <label class="field"><span>Value</span><input data-node-field="value" value="${escapeAttr(node.value || "")}"></label>
+          <label class="field"><span>${t("Variable")}</span><input data-node-field="variable" value="${escapeAttr(node.variable || "")}"></label>
+          <label class="field"><span>${t("Value")}</span><input data-node-field="value" value="${escapeAttr(node.value || "")}"></label>
         </div>
       `;
     }
     if (node.type === "Condition") {
       return `
         <label class="field">
-          <span>Condition</span>
+          <span>${t("Condition")}</span>
           <input data-node-field="condition" value="${escapeAttr(node.condition || "")}" placeholder="trust == high">
         </label>
       `;
@@ -4922,10 +5606,10 @@ function installNarrativeCanvasApp() {
     const frameCount = countStoryFrames(structure);
     dom.storyPanel.innerHTML = `
       <div class="story-panel-header">
-        <div class="document-meta">${playPages} play pages, ${frameCount} frames</div>
+        <div class="document-meta">${t("{pages} play pages, {frames} frames", { pages: playPages, frames: frameCount })}</div>
         <div class="story-panel-actions">
-          <button class="small-button" data-action="reset-story-order" title="Clear manual drag order and re-sort by the canvas flow">Re-sort by graph</button>
-          <button class="small-button" data-action="play">Run</button>
+          <button class="small-button" data-action="reset-story-order" title="${escapeAttr(t("Clear manual drag order and re-sort by the canvas flow"))}">${t("Re-sort by graph")}</button>
+          <button class="small-button" data-action="play">${t("Run")}</button>
         </div>
       </div>
       ${renderStoryList(structure, "", 0, sequenceMap)}
@@ -5499,19 +6183,23 @@ function installNarrativeCanvasApp() {
     if (action === "add-node-cast") addNodeCast();
     if (action === "delete-node-cast") deleteNodeCast(Number(target.dataset.nodeCastIndex));
     if (action === "add-variable") addVariable();
+    if (action === "add-playbook-action") addPlaybookAction();
     if (action === "add-play-rule") showPlayRuleDialog();
     if (action === "create-play-rule") addPlaybookRule(target.dataset.playbookRuleKind);
     if (action === "toggle-playbook-json") togglePlaybookJson();
+    if (action === "filter-playbook-category") filterPlaybookCategory(target.dataset.playbookCategory);
     if (action === "focus-playbook-json") showPlaybookJsonAtToken(target.dataset.playbookToken);
     if (action === "add-playbook-node-rule") addPlaybookNodeRule();
     if (action === "add-playbook-choice-rule") addPlaybookChoiceRule();
     if (action === "add-playbook-state-rules") addPlaybookStateRules();
+    if (action === "delete-playbook-action") deletePlaybookAction(target.dataset.playbookActionId);
     if (action === "delete-variable") deleteVariable(target.dataset.variableKey);
     if (action === "show-playbook-help") showPlaybookHelp();
     if (action === "auto-layout") autoLayoutCanvas(target.dataset.layoutOrientation);
     if (action === "zoom-in") setZoom(state.view.scale + 0.1);
     if (action === "zoom-out") setZoom(state.view.scale - 0.1);
     if (action === "toggle-theme") toggleTheme();
+    if (action === "toggle-language") toggleLanguage();
     if (action === "center-view") centerView();
     if (action === "export-all") exportAll();
     if (action === "export-json") exportJson();
@@ -5642,7 +6330,7 @@ function installNarrativeCanvasApp() {
       if (!dom.playbookHelpDialog.open) dom.playbookHelpDialog.showModal();
       return;
     }
-    window.alert?.(`${PLAYBOOK_FILE_NAME} stores variables and declarative Play rules. It can format Play text, make choice buttons from fields, write variables, and read simple conditions. The toolbar can insert starter rules. It does not run JavaScript or change the canvas schema.`);
+    window.alert?.(`${PLAYBOOK_FILE_NAME} stores variables, category-based script lines, and declarative Play rules. It can format Play text, make choice buttons from fields, write state on visit or choice, and read simple conditions. It does not run JavaScript or change the canvas schema.`);
   }
 
   function showPlayRuleDialog() {
@@ -5711,14 +6399,15 @@ function installNarrativeCanvasApp() {
 
   function renderChoiceLinkMenu(link) {
     const source = link ? getNode(link.from) : null;
-    const choices = getChoiceBranchLabels(source);
-    if (!link || !choices.length) return "";
+    const branchLabels = getBranchLabels(source);
+    if (!link || !branchLabels.length) return "";
     const currentIndex = normalizeChoiceIndex(link.choiceIndex);
+    const branchKind = getBranchKind(source);
     return `
-      <div class="context-menu-label">Choice branch</div>
-      ${choices.map((choice, index) => `
+      <div class="context-menu-label">${branchKind === "condition" ? "Condition branch" : "Choice branch"}</div>
+      ${branchLabels.map((choice, index) => `
         <button data-action="assign-choice-link" data-link-id="${escapeAttr(link.id)}" data-choice-index="${index}" aria-current="${currentIndex === index ? "true" : "false"}">
-          <span class="context-menu-check">${currentIndex === index ? "✓" : ""}</span>
+          <span class="context-menu-check">${currentIndex === index ? "*" : ""}</span>
           <span>${escapeHtml(choice)}</span>
         </button>
       `).join("")}
@@ -5931,10 +6620,10 @@ function installNarrativeCanvasApp() {
     if (!target?.dataset) return "";
     if (target === dom.queryInput || target.hasAttribute?.("data-character-search") || target.hasAttribute?.("data-event-search")) return "";
     const parts = [];
-    ["projectField", "nodeField", "inlineNodeField", "nodeCustomField", "characterField", "variableField", "eventField", "nodeCastField"].forEach((name) => {
+    ["projectField", "nodeField", "inlineNodeField", "nodeCustomField", "characterField", "variableField", "eventField", "nodeCastField", "playbookActionField"].forEach((name) => {
       if (target.dataset[name]) parts.push(`${name}:${target.dataset[name]}`);
     });
-    ["nodeId", "characterId", "variableKey", "eventNodeId", "nodeCastIndex"].forEach((name) => {
+    ["nodeId", "characterId", "variableKey", "eventNodeId", "nodeCastIndex", "playbookActionId"].forEach((name) => {
       if (target.dataset[name]) parts.push(`${name}:${target.dataset[name]}`);
     });
     return parts.join("|");
@@ -6019,6 +6708,11 @@ function installNarrativeCanvasApp() {
       return;
     }
 
+    if (target.dataset.playbookActionField) {
+      setPlaybookActionField(target.dataset.playbookActionId, target.dataset.playbookActionField, getPlaybookActionInputValue(target), false);
+      return;
+    }
+
     if (target.dataset.eventField) {
       setEventField(target.dataset.eventNodeId, target.dataset.eventField, target.value, false);
       return;
@@ -6069,6 +6763,11 @@ function installNarrativeCanvasApp() {
     }
     if (target.dataset.variableField) {
       setVariableField(target.dataset.variableKey, target.dataset.variableField, target.value, true);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.playbookActionField) {
+      setPlaybookActionField(target.dataset.playbookActionId, target.dataset.playbookActionField, getPlaybookActionInputValue(target), true);
       commitFocusedEdit(target);
       return;
     }
@@ -6710,6 +7409,7 @@ function installNarrativeCanvasApp() {
     if (!additive) {
       clearNodeSelection();
       state.selectedLinkId = null;
+      state.characterFocusId = null;
     }
     state.marquee = {
       startClientX: event.clientX,
@@ -7039,10 +7739,23 @@ function installNarrativeCanvasApp() {
     if (type === "Condition") node.condition = "flag == true";
     applyNodeTypeDefaults(node);
     node.x = Math.round(center.x - nodeLayoutSize(node).width / 2);
+    assignDefaultLayerOrderForNewNode(node);
     state.project.nodes.push(normalizeNode(node));
     markProjectStructureChanged();
     selectNode(node.id);
     setStatus(`${getNodeTypeLabel(type)} added.`);
+  }
+
+  function assignDefaultLayerOrderForNewNode(node) {
+    if (!isFrameNode(node)) return;
+    const existingDefaultFrameOrders = state.project.nodes
+      .map((existingNode, index) => ({ node: existingNode, order: getNodeLayerOrder(existingNode, index) }))
+      .filter((item) => isFrameNode(item.node) && item.order < REGULAR_LAYER_BASE)
+      .map((item) => item.order);
+    const topDefaultFrameOrder = existingDefaultFrameOrders.length
+      ? Math.max(...existingDefaultFrameOrders)
+      : EVENT_LAYER_BASE - 1;
+    node.layerOrder = Math.min(REGULAR_LAYER_BASE - 1, topDefaultFrameOrder + 1);
   }
 
   function addCustomNodeType() {
@@ -7368,8 +8081,29 @@ function installNarrativeCanvasApp() {
     state.project.variables = variables;
     state.activeFileId = "variables";
     setProjectDirty(true);
-    renderPlaybookSurfaces({ focusJsonToken: JSON.stringify(key) });
+    renderPlaybookSurfaces();
     setStatus("Variable added.");
+  }
+
+  function addPlaybookAction() {
+    const actions = getPlaybookActions();
+    const id = uniquePlaybookActionId(actions);
+    actions.push({
+      id,
+      trigger: "onVisit",
+      target: "",
+      op: "set",
+      category: "Variable",
+      key: uniqueVariableKey("new_state"),
+      value: "True",
+      append: false
+    });
+    state.project.script = normalizeScriptConfig({ ...state.project.script, actions });
+    state.activeFileId = "variables";
+    setProjectDirty(true);
+    renderPlaybookSurfaces();
+    updateStatus();
+    setStatus("Script line added.");
   }
 
   function togglePlaybookJson() {
@@ -7377,6 +8111,13 @@ function installNarrativeCanvasApp() {
     state.activeFileId = "variables";
     renderPlaybookSurfaces();
     setStatus(state.playbookJsonOpen ? "Advanced JSON shown." : "Advanced JSON hidden.");
+  }
+
+  function filterPlaybookCategory(category) {
+    const next = category && PLAYBOOK_STATE_CATEGORIES.includes(category) ? category : null;
+    state.playbookCategoryFilter = next && state.playbookCategoryFilter === next ? null : next;
+    state.activeFileId = "variables";
+    renderPlaybookSurfaces();
   }
 
   function showPlaybookJsonAtToken(token) {
@@ -7426,7 +8167,7 @@ function installNarrativeCanvasApp() {
     scripts[target] = applyPlaybookRulePreset(ruleKind, scripts[target]);
     state.project.script = normalizeScriptConfig({ nodeTypes: scripts });
     state.activeFileId = "variables";
-    renderPlaybookSurfaces({ focusJsonToken: JSON.stringify(target) });
+    renderPlaybookSurfaces();
     updateStatus();
     setStatus(`${target} ${getPlaybookRuleKindLabel(ruleKind)} added.`);
   }
@@ -7445,7 +8186,7 @@ function installNarrativeCanvasApp() {
     };
     state.project.script = normalizeScriptConfig({ nodeTypes: scripts });
     state.activeFileId = "variables";
-    renderPlaybookSurfaces({ focusJsonToken: JSON.stringify("Set") });
+    renderPlaybookSurfaces();
     updateStatus();
     setStatus("Set and Condition Play rules added.");
   }
@@ -7462,7 +8203,7 @@ function installNarrativeCanvasApp() {
     scripts[target] = applyPlaybookRulePreset(ruleKind, scripts[target]);
     state.project.script = normalizeScriptConfig({ nodeTypes: scripts });
     state.activeFileId = "variables";
-    renderPlaybookSurfaces({ focusJsonToken: JSON.stringify(target) });
+    renderPlaybookSurfaces();
     updateStatus();
     setStatus(`${target} rule added from selected node.`);
   }
@@ -7535,6 +8276,45 @@ function installNarrativeCanvasApp() {
     setStatus(`${key} deleted.`);
   }
 
+  function deletePlaybookAction(id) {
+    const actions = getPlaybookActions();
+    const nextActions = actions.filter((action) => action.id !== id);
+    if (nextActions.length === actions.length) return;
+    state.project.script = normalizeScriptConfig({ ...state.project.script, actions: nextActions });
+    state.activeFileId = "variables";
+    setProjectDirty(true);
+    renderPlaybookSurfaces();
+    updateStatus();
+    setStatus("Script line deleted.");
+  }
+
+  function setPlaybookActionField(id, field, value, rerender) {
+    const actions = getPlaybookActions();
+    const action = actions.find((item) => item.id === id);
+    if (!action) return;
+    if (field === "append") action.append = Boolean(value);
+    else if (field === "trigger") action.trigger = normalizePlaybookActionTrigger(value);
+    else if (field === "op") action.op = normalizePlaybookActionOperation(value);
+    else if (field === "category") action.category = normalizePlaybookActionCategory(value);
+    else if (["target", "key", "value"].includes(field)) action[field] = normalizeOptionalString(value);
+    state.project.script = normalizeScriptConfig({ ...state.project.script, actions });
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender) renderPlaybookSurfaces();
+  }
+
+  function getPlaybookActionInputValue(target) {
+    if (target?.type === "checkbox") return Boolean(target.checked);
+    return target?.value ?? "";
+  }
+
+  function uniquePlaybookActionId(actions) {
+    const used = new Set(actions.map((action) => action.id));
+    let index = actions.length;
+    while (used.has(`a${index}`)) index += 1;
+    return `a${index}`;
+  }
+
   function setVariableField(key, field, value, rerender) {
     const variables = normalizeVariablesObject(state.project.variables);
     state.project.variables = variables;
@@ -7599,6 +8379,7 @@ function installNarrativeCanvasApp() {
     state.selectedNodeId = id;
     state.selectedNodeIds = [];
     state.selectedLinkId = null;
+    state.characterFocusId = null;
     state.panel = "node";
     renderAll();
     requestAnimationFrame(() => {
@@ -7876,7 +8657,7 @@ function installNarrativeCanvasApp() {
       node[field] = value;
     }
     if (field === "type") markProjectStructureChanged({ nodeTypes: true });
-    const choiceLinksChanged = field === "choices" || field === "type"
+    const choiceLinksChanged = field === "choices" || field === "condition" || field === "type"
       ? syncChoiceBranchLinksForNode(node.id, { markDirty: false })
       : false;
     setProjectDirty(true);
@@ -7911,7 +8692,7 @@ function installNarrativeCanvasApp() {
       if (!node.customFields || typeof node.customFields !== "object" || Array.isArray(node.customFields)) node.customFields = {};
       node.customFields[key] = value;
     }
-    const choiceLinksChanged = key === "choices"
+    const choiceLinksChanged = key === "choices" || key === "condition"
       ? syncChoiceBranchLinksForNode(node.id, { markDirty: false })
       : false;
     setProjectDirty(true);
@@ -7939,7 +8720,7 @@ function installNarrativeCanvasApp() {
       node[field] = value;
     }
     if (field === "eventDescription" && !node.body) node.body = value;
-    if (field === "choices") syncChoiceBranchLinksForNode(node.id, { markDirty: false });
+    if (field === "choices" || field === "condition") syncChoiceBranchLinksForNode(node.id, { markDirty: false });
     setProjectDirty(true);
     renderNodes();
     if (isCanvasFileActive()) {
@@ -8017,13 +8798,13 @@ function installNarrativeCanvasApp() {
     const link = getLink(linkId || state.contextLinkId || state.selectedLinkId);
     const source = link ? getNode(link.from) : null;
     const choiceIndex = normalizeChoiceIndex(choiceIndexValue);
-    const choices = getChoiceBranchLabels(source);
-    if (!link || choiceIndex == null || !choices[choiceIndex]) {
-      setStatus("Could not assign choice branch.");
+    const branchLabels = getBranchLabels(source);
+    if (!link || choiceIndex == null || !branchLabels[choiceIndex]) {
+      setStatus("Could not assign branch.");
       return;
     }
     link.choiceIndex = choiceIndex;
-    link.label = choices[choiceIndex];
+    link.label = branchLabels[choiceIndex];
     syncChoiceBranchLinksForNode(link.from, { markDirty: false, preferredLinkId: link.id });
     state.selectedLinkId = link.id;
     clearNodeSelection();
@@ -8032,7 +8813,7 @@ function installNarrativeCanvasApp() {
     hideNodeContextMenu();
     renderAll();
     setProjectDirty(true);
-    setStatus(`Choice branch set: ${choices[choiceIndex]}.`);
+    setStatus(`Branch set: ${branchLabels[choiceIndex]}.`);
   }
 
   function startLinkReconnect(end) {
@@ -8361,6 +9142,10 @@ function installNarrativeCanvasApp() {
     updateGridPosition();
   }
 
+  function toggleLanguage() {
+    setLanguage(state.language === "zh" ? "en" : "zh");
+  }
+
   function normalizeExportImageScale(value) {
     const numeric = Number(value);
     const preset = EXPORT_IMAGE_SCALES.find((item) => item.scale === numeric || item.value === String(value));
@@ -8375,7 +9160,7 @@ function installNarrativeCanvasApp() {
     const preset = getExportImageScalePreset(value);
     state.exportImageScale = preset.scale;
     renderShellState();
-    setStatus(`Image export resolution set to ${preset.label}.`);
+    setStatus(`Image export maximum set to ${preset.label}.`);
   }
 
   function updateGridPosition() {
@@ -8896,12 +9681,12 @@ function installNarrativeCanvasApp() {
     const slug = slugify(state.project.title || "narrative-canvas");
     try {
       const svg = buildExportSvg();
-      const rasterPlan = getExportRasterPlan(svg, preset.scale);
+      const rasterPlan = getExportRasterPlan(svg, preset);
       const blob = await svgToPngBlob(svg, rasterPlan.scale);
-      downloadBlob(blob, `${slug}${getExportImageSuffix(preset, rasterPlan)}.png`);
+      downloadBlob(blob, `${slug}${getExportImageSuffix(rasterPlan)}.png`);
       setStatus(rasterPlan.limited
-        ? `Image exported at ${formatExportScaleLabel(rasterPlan.scale)} to fit browser PNG limits.`
-        : `Image exported at ${preset.label}.`);
+        ? `Image exported at ${formatExportPixelSize(rasterPlan)} to fit browser PNG limits.`
+        : `Image exported at ${formatExportPixelSize(rasterPlan)}.`);
     } catch (error) {
       console.error(error);
       downloadBlob(new Blob([buildExportSvg()], { type: "image/svg+xml" }), `${slug}.svg`);
@@ -8928,8 +9713,8 @@ function installNarrativeCanvasApp() {
       const svg = buildExportSvg();
       const imagePreset = getExportImageScalePreset();
       try {
-        const rasterPlan = getExportRasterPlan(svg, imagePreset.scale);
-        files.push({ name: `${slug}${getExportImageSuffix(imagePreset, rasterPlan)}.png`, blob: await svgToPngBlob(svg, rasterPlan.scale) });
+        const rasterPlan = getExportRasterPlan(svg, imagePreset);
+        files.push({ name: `${slug}${getExportImageSuffix(rasterPlan)}.png`, blob: await svgToPngBlob(svg, rasterPlan.scale) });
       } catch (error) {
         console.error(error);
         files.push({ name: `${slug}.svg`, blob: new Blob([svg], { type: "image/svg+xml" }) });
@@ -8999,7 +9784,8 @@ function installNarrativeCanvasApp() {
     state.project.variables = normalizeVariablesObject(state.project.variables);
     return {
       variables: state.project.variables,
-      nodeTypes: getScriptNodeTypes()
+      nodeTypes: getScriptNodeTypes(),
+      actions: getPlaybookActions()
     };
   }
 
@@ -9026,7 +9812,8 @@ function installNarrativeCanvasApp() {
       && typeof value === "object"
       && !Array.isArray(value)
       && (Object.prototype.hasOwnProperty.call(value, "variables")
-        || Object.prototype.hasOwnProperty.call(value, "nodeTypes"));
+        || Object.prototype.hasOwnProperty.call(value, "nodeTypes")
+        || Object.prototype.hasOwnProperty.call(value, "actions"));
   }
 
   function normalizeVariablesObject(value) {
@@ -9036,7 +9823,8 @@ function installNarrativeCanvasApp() {
   function normalizeScriptConfig(value) {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
     return {
-      nodeTypes: normalizeNodeTypeScripts(source.nodeTypes)
+      nodeTypes: normalizeNodeTypeScripts(source.nodeTypes),
+      actions: normalizePlaybookActions(source.actions)
     };
   }
 
@@ -9073,10 +9861,59 @@ function installNarrativeCanvasApp() {
     };
   }
 
+  function normalizePlaybookActions(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((action, index) => normalizePlaybookAction(action, index))
+      .filter(Boolean);
+  }
+
+  function normalizePlaybookAction(action, index = 0) {
+    if (!action || typeof action !== "object" || Array.isArray(action)) return null;
+    const normalized = {
+      id: normalizePlaybookActionId(action.id, index),
+      trigger: normalizePlaybookActionTrigger(action.trigger || action.when),
+      target: normalizeOptionalString(action.target || action.nodeType || action.node || action.scope).trim(),
+      op: normalizePlaybookActionOperation(action.op || action.action || action.type),
+      category: normalizePlaybookActionCategory(action.category || action.scopeType),
+      key: normalizeOptionalString(action.key || action.variable || action.name).trim(),
+      value: normalizeOptionalString(action.value),
+      append: Boolean(action.append)
+    };
+    if (!normalized.key && normalized.op !== "clear") normalized.key = "state_key";
+    return normalized;
+  }
+
+  function normalizePlaybookActionId(value, index = 0) {
+    const id = normalizeOptionalString(value).trim();
+    return id || `a${index}`;
+  }
+
+  function normalizePlaybookActionTrigger(value) {
+    const trigger = normalizeOptionalString(value).trim();
+    return PLAYBOOK_ACTION_TRIGGERS.some((option) => option.value === trigger) ? trigger : "onVisit";
+  }
+
+  function normalizePlaybookActionOperation(value) {
+    const operation = normalizeOptionalString(value).trim();
+    return PLAYBOOK_ACTION_OPERATIONS.some((option) => option.value === operation) ? operation : "set";
+  }
+
+  function normalizePlaybookActionCategory(value) {
+    const category = normalizeOptionalString(value).trim();
+    return PLAYBOOK_STATE_CATEGORIES.includes(category) ? category : "Variable";
+  }
+
   function getScriptNodeTypes() {
     if (!state.project.script) state.project.script = normalizeScriptConfig(null);
     state.project.script = normalizeScriptConfig(state.project.script);
     return state.project.script.nodeTypes;
+  }
+
+  function getPlaybookActions() {
+    if (!state.project.script) state.project.script = normalizeScriptConfig(null);
+    state.project.script = normalizeScriptConfig(state.project.script);
+    return state.project.script.actions;
   }
 
   function buildEventSheetCsv() {
@@ -9645,6 +10482,8 @@ function installNarrativeCanvasApp() {
   function advancePreview(nodeId) {
     const currentIndex = state.playPath.indexOf(state.playNodeId);
     const targetIndex = state.playPath.indexOf(nodeId);
+    const currentNode = getNode(state.playNodeId);
+    if (currentNode) applyPlaybookActionsForNode(currentNode, "onChoose");
     if (currentIndex >= 0) {
       if (targetIndex !== currentIndex + 1) {
         state.playPath = state.playPath.slice(0, currentIndex + 1);
@@ -9675,13 +10514,15 @@ function installNarrativeCanvasApp() {
     if (assignment.key) {
       state.project.variables[assignment.key] = coerceValue(assignment.value);
     }
+    applyPlaybookActionsForNode(node, "onVisit");
 
     const outgoing = getOutgoing(node.id);
     let nextLinks = outgoing;
     const conditionSource = getRuntimeConditionSource(node, runtimeScript);
     if (conditionSource) {
       const result = evaluateCondition(conditionSource);
-      nextLinks = result ? outgoing.slice(0, 1) : outgoing.slice(1, 2);
+      const conditionLinks = getChoiceOrderedLinks(outgoing);
+      nextLinks = result ? conditionLinks.slice(0, 1) : conditionLinks.slice(1, 2);
     }
 
     if (!state.playPath.includes(node.id)) state.playPath.push(node.id);
@@ -9753,7 +10594,8 @@ function installNarrativeCanvasApp() {
       const conditionSource = getRuntimeConditionSource(node, runtimeScript);
       if (conditionSource) {
         const result = evaluateCondition(conditionSource);
-        nextLinks = result ? outgoing.slice(0, 1) : outgoing.slice(1, 2);
+        const conditionLinks = getChoiceOrderedLinks(outgoing);
+        nextLinks = result ? conditionLinks.slice(0, 1) : conditionLinks.slice(1, 2);
       }
       nextId = nextLinks[0]?.to || "";
     }
@@ -9806,6 +10648,8 @@ function installNarrativeCanvasApp() {
   }
 
   function getRuntimeConditionSource(node, script) {
+    const gateAction = getPlaybookGateAction(node);
+    if (gateAction) return `${getPlaybookActionStateKey(gateAction)} ${renderRuntimeTemplate(gateAction.value, node, gateAction.value)}`.trim();
     if (script?.condition) {
       const fieldValue = getNodeFieldValue(node, script.condition);
       return fieldValue !== "" ? fieldValue : script.condition;
@@ -9834,6 +10678,108 @@ function installNarrativeCanvasApp() {
       if (nodeValue !== "") return nodeValue;
       return state.project.variables?.[key] ?? match;
     });
+  }
+
+  function getPlaybookGateAction(node) {
+    return getMatchingPlaybookActions(node, "gate").find((action) => action.op === "if" && action.key && action.value);
+  }
+
+  function applyPlaybookActionsForNode(node, trigger) {
+    getMatchingPlaybookActions(node, trigger).forEach((action) => applyPlaybookAction(action, node));
+  }
+
+  function getMatchingPlaybookActions(node, trigger) {
+    return getPlaybookActions().filter((action) => action.trigger === trigger && matchesPlaybookActionTarget(action, node));
+  }
+
+  function matchesPlaybookActionTarget(action, node) {
+    const target = String(action?.target || "").trim();
+    if (!target) return true;
+    if (!node) return false;
+    const candidates = new Set([
+      node.id,
+      node.type,
+      getNodeTypeLabel(node.type),
+      node.title
+    ].map((value) => String(value || "").trim()).filter(Boolean));
+    return candidates.has(target);
+  }
+
+  function applyPlaybookAction(action, node) {
+    const key = getPlaybookActionStateKey(action);
+    if (!key) return false;
+    const variables = normalizeVariablesObject(state.project.variables);
+    state.project.variables = variables;
+    const value = coerceValue(renderRuntimeTemplate(action.value, node, action.value));
+    const existing = variables[key];
+    if (action.op === "set" && action.append) {
+      appendPlaybookStateValue(variables, key, value);
+      return true;
+    }
+    if (action.op === "set") {
+      variables[key] = value;
+      return true;
+    }
+    if (action.op === "add" || action.op === "subtract") {
+      const currentNumber = Number(existing ?? 0);
+      const delta = Number(value || 0);
+      variables[key] = (Number.isFinite(currentNumber) ? currentNumber : 0) + (action.op === "subtract" ? -delta : delta);
+      return true;
+    }
+    if (action.op === "append") {
+      appendPlaybookStateValue(variables, key, value);
+      return true;
+    }
+    if (action.op === "remove") {
+      removePlaybookStateValue(variables, key, value);
+      return true;
+    }
+    if (action.op === "toggle") {
+      variables[key] = !coerceBoolean(existing);
+      return true;
+    }
+    if (action.op === "clear") {
+      delete variables[key];
+      return true;
+    }
+    return false;
+  }
+
+  function appendPlaybookStateValue(variables, key, value) {
+    const current = variables[key];
+    if (Array.isArray(current)) {
+      current.push(value);
+      return;
+    }
+    if (current == null || current === "") {
+      variables[key] = [value];
+      return;
+    }
+    variables[key] = [current, value];
+  }
+
+  function removePlaybookStateValue(variables, key, value) {
+    const current = variables[key];
+    if (Array.isArray(current)) {
+      variables[key] = current.filter((item) => String(item) !== String(value));
+      return;
+    }
+    if (String(current) === String(value) || value === "") delete variables[key];
+  }
+
+  function getPlaybookActionStateKey(action) {
+    const key = String(action?.key || "").trim();
+    if (!key) return "";
+    if (action.category === "Variable" || action.category === "Manual Enter") return key;
+    return `${slugPlaybookCategory(action.category)}.${key}`;
+  }
+
+  function slugPlaybookCategory(value) {
+    return String(value || "custom")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "custom";
   }
 
   function resolveScriptReference(node, reference) {
@@ -9873,6 +10819,20 @@ function installNarrativeCanvasApp() {
     return parseChoiceLines(node?.choices);
   }
 
+  function getConditionBranchLabels(node) {
+    return hasNodeCondition(node) ? CONDITION_BRANCH_LABELS : [];
+  }
+
+  function getBranchLabels(node) {
+    const choices = getChoiceBranchLabels(node);
+    return choices.length ? choices : getConditionBranchLabels(node);
+  }
+
+  function getBranchKind(node) {
+    if (getChoiceBranchLabels(node).length) return "choice";
+    return getConditionBranchLabels(node).length ? "condition" : "";
+  }
+
   function normalizeChoiceIndex(value) {
     if (value == null || value === "") return null;
     const index = Number(value);
@@ -9886,7 +10846,7 @@ function installNarrativeCanvasApp() {
     let changed = false;
     project.links.forEach((link) => {
       const source = nodeMap.get(link.from);
-      if (!source || !getChoiceBranchLabels(source).length) {
+      if (!source || !getBranchLabels(source).length) {
         if (link.choiceIndex != null) {
           delete link.choiceIndex;
           changed = true;
@@ -9915,9 +10875,9 @@ function installNarrativeCanvasApp() {
 
   function syncChoiceOutgoingLinks(node, outgoing, nodeMap = null, preferredLinkId = "") {
     if (!Array.isArray(outgoing) || !outgoing.length) return false;
-    const choices = getChoiceBranchLabels(node);
+    const branchLabels = getBranchLabels(node);
     let changed = false;
-    if (!choices.length) {
+    if (!branchLabels.length) {
       outgoing.forEach((link) => {
         if (link.choiceIndex != null) {
           delete link.choiceIndex;
@@ -9927,13 +10887,11 @@ function installNarrativeCanvasApp() {
       return changed;
     }
 
-    const ordered = preferredLinkId
-      ? outgoing.slice().sort((a, b) => (a.id === preferredLinkId ? -1 : b.id === preferredLinkId ? 1 : 0))
-      : outgoing;
+    const ordered = getBranchSyncOrder(node, outgoing, preferredLinkId);
     const used = new Set();
     ordered.forEach((link) => {
       const index = normalizeChoiceIndex(link.choiceIndex);
-      if (index != null && index < choices.length && !used.has(index)) {
+      if (index != null && index < branchLabels.length && !used.has(index)) {
         if (link.choiceIndex !== index) {
           link.choiceIndex = index;
           changed = true;
@@ -9949,7 +10907,7 @@ function installNarrativeCanvasApp() {
 
     ordered.forEach((link) => {
       if (normalizeChoiceIndex(link.choiceIndex) != null) return;
-      const index = findUnusedChoiceIndexForLink(link, choices, used, nodeMap);
+      const index = findUnusedChoiceIndexForLink(link, branchLabels, used, nodeMap);
       if (index == null) return;
       link.choiceIndex = index;
       used.add(index);
@@ -9958,13 +10916,20 @@ function installNarrativeCanvasApp() {
 
     outgoing.forEach((link) => {
       const index = normalizeChoiceIndex(link.choiceIndex);
-      const label = index == null ? "" : choices[index];
+      const label = index == null ? "" : branchLabels[index];
       if (label && link.label !== label) {
         link.label = label;
         changed = true;
       }
     });
     return changed;
+  }
+
+  function getBranchSyncOrder(node, outgoing, preferredLinkId = "") {
+    if (getBranchKind(node) === "condition") return outgoing;
+    return preferredLinkId
+      ? outgoing.slice().sort((a, b) => (a.id === preferredLinkId ? -1 : b.id === preferredLinkId ? 1 : 0))
+      : outgoing;
   }
 
   function findUnusedChoiceIndexForLink(link, choices, used, nodeMap = null) {
@@ -10025,11 +10990,32 @@ function installNarrativeCanvasApp() {
   }
 
   function evaluateCondition(source) {
-    const match = String(source || "").match(/^\s*([a-zA-Z_][\w-]*)\s*(==|!=)\s*(.+?)\s*$/);
+    const text = String(source || "").trim();
+    if (!text) return false;
+    const orParts = splitConditionExpression(text, "||");
+    if (orParts.length > 1) return orParts.some((part) => evaluateCondition(part));
+    const andParts = splitConditionExpression(text, "&&");
+    if (andParts.length > 1) return andParts.every((part) => evaluateCondition(part));
+    const match = text.match(/^\s*([a-zA-Z_][\w.-]*)\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*$/);
     if (!match) return false;
-    const actual = String(state.project.variables?.[match[1]] ?? "");
-    const expected = String(match[3]).replace(/^["']|["']$/g, "");
-    return match[2] === "==" ? actual === expected : actual !== expected;
+    const actualRaw = state.project.variables?.[match[1]];
+    const expectedRaw = String(match[3]).replace(/^["']|["']$/g, "");
+    const actualNumber = Number(actualRaw);
+    const expectedNumber = Number(expectedRaw);
+    const canCompareNumbers = Number.isFinite(actualNumber) && Number.isFinite(expectedNumber);
+    if (match[2] === ">=") return canCompareNumbers && actualNumber >= expectedNumber;
+    if (match[2] === "<=") return canCompareNumbers && actualNumber <= expectedNumber;
+    if (match[2] === ">") return canCompareNumbers && actualNumber > expectedNumber;
+    if (match[2] === "<") return canCompareNumbers && actualNumber < expectedNumber;
+    const actual = String(actualRaw ?? "");
+    return match[2] === "==" ? actual === expectedRaw : actual !== expectedRaw;
+  }
+
+  function splitConditionExpression(source, operator) {
+    return String(source || "")
+      .split(operator)
+      .map((part) => part.trim())
+      .filter(Boolean);
   }
 
   function interpolate(text) {
@@ -10037,10 +11023,17 @@ function installNarrativeCanvasApp() {
   }
 
   function coerceValue(value) {
-    if (value === "true") return true;
-    if (value === "false") return false;
+    if (String(value).toLowerCase() === "true") return true;
+    if (String(value).toLowerCase() === "false") return false;
     if (value !== "" && !Number.isNaN(Number(value))) return Number(value);
     return value;
+  }
+
+  function coerceBoolean(value) {
+    if (typeof value === "boolean") return value;
+    if (String(value).toLowerCase() === "true") return true;
+    if (String(value).toLowerCase() === "false") return false;
+    return Boolean(value);
   }
 
   function getCharacters() {
@@ -11152,9 +12145,10 @@ function installNarrativeCanvasApp() {
     return [...lines.slice(0, maxLines - 1), `${lines[maxLines - 1].slice(0, Math.max(0, maxChars - 1))}...`];
   }
 
-  function getExportRasterPlan(svg, requestedScale = 1) {
+  function getExportRasterPlan(svg, presetOrScale = 1) {
     const size = getSvgDimensions(svg);
-    const requested = normalizeExportImageScale(requestedScale);
+    const preset = typeof presetOrScale === "object" ? presetOrScale : getExportImageScalePreset(presetOrScale);
+    const requested = getExportTargetScale(size.width, size.height, preset);
     const scale = getSafeExportRasterScale(size.width, size.height, requested);
     return {
       ...size,
@@ -11175,8 +12169,16 @@ function installNarrativeCanvasApp() {
     };
   }
 
+  function getExportTargetScale(width, height, preset) {
+    const safeWidth = Math.max(1, Number(width) || 1);
+    const safeHeight = Math.max(1, Number(height) || 1);
+    const maxWidth = Math.max(1, Number(preset?.maxWidth) || 2048);
+    const maxHeight = Math.max(1, Number(preset?.maxHeight) || maxWidth);
+    return Math.max(EXPORT_IMAGE_MIN_SCALE, Math.min(maxWidth / safeWidth, maxHeight / safeHeight));
+  }
+
   function getSafeExportRasterScale(width, height, requestedScale = 1) {
-    const requested = Math.max(EXPORT_IMAGE_MIN_SCALE, normalizeExportImageScale(requestedScale));
+    const requested = Math.max(EXPORT_IMAGE_MIN_SCALE, Number(requestedScale) || 1);
     const safeWidth = Math.max(1, Number(width) || 1);
     const safeHeight = Math.max(1, Number(height) || 1);
     const dimensionLimit = Math.min(EXPORT_IMAGE_MAX_DIMENSION / safeWidth, EXPORT_IMAGE_MAX_DIMENSION / safeHeight);
@@ -11184,16 +12186,12 @@ function installNarrativeCanvasApp() {
     return Math.max(EXPORT_IMAGE_MIN_SCALE, Math.min(requested, dimensionLimit, areaLimit));
   }
 
-  function getExportImageSuffix(preset, rasterPlan) {
-    return rasterPlan.limited ? `@${formatExportScaleValue(rasterPlan.scale)}x` : preset.suffix;
+  function getExportImageSuffix(rasterPlan) {
+    return `-${rasterPlan.outputWidth}x${rasterPlan.outputHeight}`;
   }
 
-  function formatExportScaleLabel(scale) {
-    return `${formatExportScaleValue(scale)}x`;
-  }
-
-  function formatExportScaleValue(scale) {
-    return String(Math.round(scale * 100) / 100).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+  function formatExportPixelSize(rasterPlan) {
+    return `${rasterPlan.outputWidth} x ${rasterPlan.outputHeight}`;
   }
 
   function svgToPngBlob(svg, scale = 1) {
@@ -11757,33 +12755,44 @@ function installNarrativeCanvasApp() {
     if (!dom.statusText) return;
     if (!state.statusOverride) {
       if (state.activeFileId === "characters") {
-        dom.statusText.textContent = `${fileViews.characters} - ${getCharacters().length} characters, ${getTotalCharacterLinkCount()} character links`;
+        dom.statusText.textContent = `${fileViews.characters} - ${t("{characters} characters, {links} character links", { characters: getCharacters().length, links: getTotalCharacterLinkCount() })}`;
         return;
       }
       if (state.activeFileId === "variables") {
-        dom.statusText.textContent = `${fileViews.variables} - ${Object.keys(state.project.variables || {}).length} variables`;
+        dom.statusText.textContent = `${fileViews.variables} - ${t("{count} variables", { count: Object.keys(state.project.variables || {}).length })}`;
         return;
       }
       if (state.activeFileId === "events") {
-        dom.statusText.textContent = `${fileViews.events} - ${getEventRows().length} event rows`;
+        dom.statusText.textContent = `${fileViews.events} - ${t("{count} event rows", { count: getEventRows().length })}`;
         return;
       }
       const nodeCount = state.project.nodes.length;
       const linkCount = state.project.links.length;
-      dom.statusText.textContent = `${state.project.title} - ${nodeCount} nodes, ${linkCount} links`;
+      dom.statusText.textContent = `${state.project.title} - ${t("{nodes} nodes, {links} links", { nodes: nodeCount, links: linkCount })}`;
     }
   }
 
   function setStatus(message) {
     if (!dom.statusText) return;
     state.statusOverride = true;
-    dom.statusText.textContent = message;
+    dom.statusText.textContent = translateStatusMessage(message);
     clearStatusTimer(false);
     state.statusTimer = window.setTimeout(() => {
       state.statusOverride = false;
       state.statusTimer = null;
       updateStatus();
     }, 1800);
+  }
+
+  function translateStatusMessage(message) {
+    const text = String(message || "");
+    const exact = t(text);
+    if (exact !== text) return exact;
+    const imageMatch = text.match(/^Image export maximum set to (.+)\.$/);
+    if (imageMatch) return t("Image export maximum set to {value}.", { value: imageMatch[1] });
+    const exportedImageMatch = text.match(/^Image exported at (.+)\.$/);
+    if (exportedImageMatch) return t("Image exported at {value}.", { value: exportedImageMatch[1] });
+    return text;
   }
 
   function titleCase(value) {

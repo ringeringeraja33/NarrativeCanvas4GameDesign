@@ -1091,11 +1091,12 @@ button {
 
 .export-image-controls .toolbar-select {
   appearance: none;
-  min-width: 72px;
+  min-width: 126px;
   padding: 0 12px;
   border-left: 1px solid var(--background-modifier-border);
   text-align: center;
   text-align-last: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .toolbar-select {
@@ -2536,9 +2537,111 @@ select:focus {
   font-weight: 700;
 }
 
+.playbook-section-header p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .playbook-section-header span {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.playbook-builder-section {
+  min-width: 0;
+}
+
+.playbook-category-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.playbook-category-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.playbook-category-chip:hover {
+  border-color: var(--background-modifier-border-hover);
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.playbook-category-chip.is-active {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 18%, var(--background-secondary));
+  color: var(--text-normal);
+}
+
+.playbook-category-chip strong {
+  color: var(--text-normal);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.playbook-action-table {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.playbook-action-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.8fr) minmax(120px, 1fr) minmax(104px, 0.9fr) minmax(116px, 1fr) minmax(140px, 1.1fr) minmax(120px, 1fr) minmax(94px, auto) minmax(32px, auto);
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.playbook-action-row > input,
+.playbook-action-row > select {
+  width: 100%;
+  min-width: 0;
+}
+
+.playbook-action-heading {
+  min-height: 32px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.playbook-append-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.playbook-append-toggle input {
+  margin: 0;
 }
 
 .variable-row {
@@ -3537,7 +3640,8 @@ select:focus {
   }
 
   .document-header,
-  .variable-row {
+  .variable-row,
+  .playbook-action-row {
     grid-template-columns: 1fr;
   }
 
@@ -3567,5 +3671,62 @@ select:focus {
 }
 
 [hidden] {
+  display: none;
+}
+
+.language-toggle-button {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-control);
+  color: var(--text-muted);
+  font-family: var(--font-interface);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  opacity: 0.82;
+  box-shadow: var(--shadow-soft);
+  transition: opacity 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.language-toggle-button:hover {
+  opacity: 1;
+  border-color: var(--background-modifier-border-hover);
+  background: var(--background-modifier-hover);
+}
+
+.language-toggle-button:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+.language-toggle-option {
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: var(--text-faint);
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.language-toggle-divider {
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+
+.language-toggle-button[data-active-lang="en"] .language-toggle-option[data-lang="en"],
+.language-toggle-button[data-active-lang="zh"] .language-toggle-option[data-lang="zh"] {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.language-toggle-button[hidden] {
   display: none;
 }

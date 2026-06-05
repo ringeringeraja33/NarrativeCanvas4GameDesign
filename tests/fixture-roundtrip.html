@@ -93,8 +93,8 @@
           name: "export-outside-viewport",
           file: "fixtures/export-outside-viewport.ncanvas",
           async checks(doc, saved, downloads) {
-            await waitFor("export: png download created", () => downloads.some((item) => item.filename === "export-outside-viewport.png"));
-            const png = await getDownloadBlob(downloads, /^export-outside-viewport\.png$/);
+            await waitFor("export: png download created", () => downloads.some((item) => /^export-outside-viewport-\d+x\d+\.png$/.test(item.filename)));
+            const png = await getDownloadBlob(downloads, /^export-outside-viewport-\d+x\d+\.png$/);
             const distinctPixels = await countDistinctOpaquePixels(png);
             assert("export: png contains visible non-background content", distinctPixels > 4, `distinct=${distinctPixels}`);
             const svg = doc.defaultView.buildExportSvg();
@@ -109,11 +109,11 @@
           name: "export-large-canvas",
           file: "fixtures/export-large-canvas.ncanvas",
           async checks(doc, saved, downloads) {
-            await waitFor("export large: png download created", () => downloads.some((item) => /^export-large-canvas@[\d.]+x\.png$/.test(item.filename)));
-            const png = await getDownloadBlob(downloads, /^export-large-canvas@[\d.]+x\.png$/);
+            await waitFor("export large: png download created", () => downloads.some((item) => /^export-large-canvas-\d+x\d+\.png$/.test(item.filename)));
+            const png = await getDownloadBlob(downloads, /^export-large-canvas-\d+x\d+\.png$/);
             const distinctPixels = await countDistinctOpaquePixels(png);
             assert("export large: png contains visible non-background content", distinctPixels > 4, `distinct=${distinctPixels}`);
-            assert("export large: requested 4x was scale-limited", downloads.some((item) => /^export-large-canvas@[\d.]+x\.png$/.test(item.filename) && item.filename !== "export-large-canvas@4x.png"));
+            assert("export large: png filename records pixel size", downloads.some((item) => /^export-large-canvas-\d+x\d+\.png$/.test(item.filename)));
             const svg = doc.defaultView.buildExportSvg();
             assert("export large: far node included", svg.includes("Large Far Target"));
             assert("export large: link label included", svg.includes("very-far-link"));

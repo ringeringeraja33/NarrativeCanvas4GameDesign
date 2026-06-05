@@ -240,7 +240,14 @@
           click(deleteButton);
           await wait(80);
         }
-        await waitFor(`${label}: variable can be deleted again after re-adding`, () => !doc.querySelector("#variablesPanel [data-action='delete-variable']") && doc.querySelector("#variablesPanel")?.textContent.includes("No variables yet."));
+        await win.NarrativeCanvasApp.save({ silent: true });
+        const savedAfterSecondDelete = readSavedProject(win);
+        assert(
+          `${label}: variable can be deleted again after re-adding`,
+          savedAfterSecondDelete?.project?.variables
+            && !Array.isArray(savedAfterSecondDelete.project.variables)
+            && Object.keys(savedAfterSecondDelete.project.variables).length === 0
+        );
       }
 
       function extractBodyHtml(html) {
@@ -300,7 +307,7 @@
         return { frame, win, doc };
       }
 
-      async function loadPluginFrame() {
+      async function loadPluginFrame(options = {}) {
         const [html, css, appJs] = await Promise.all([
           fetch(assetUrl("index.html")).then((response) => response.text()),
           fetch(assetUrl("canvas.css")).then((response) => response.text()),
@@ -339,6 +346,7 @@
             ensuredProjectPath = "Smoke.ncanvas";
             return ensuredProjectPath;
           },
+          getLanguage: () => options.language || "en",
           getAutoSaveIntervalMs: () => 1000,
           ensureProjectFile: async (_savedStateJson, options) => {
             win.__sampleEnsureOptions = options || null;
@@ -423,6 +431,12 @@
         assertReadableLightThemeToggle(label, win, themeButton, "toggled");
 
         const scale = doc.querySelector("#exportImageScale");
+        const scaleOptions = [...scale.options].map((option) => option.textContent.trim());
+        assert(
+          `${label}: export size options use pixel dimensions`,
+          scaleOptions.join("|") === "4096 x 4096|6144 x 6144|8192 x 8192|12000 x 12000",
+          scaleOptions.join("|")
+        );
         setControlValue(win, scale, "2");
         assert(`${label}: export scale can change`, scale.value === "2");
         click(doc.querySelector("[data-action='add-node'][data-type='Marker']"));
@@ -531,6 +545,27 @@
         );
         click(doc.querySelector("[data-action='add-node'][data-type='Event']"));
         await waitFor(`${label}: add event frame returns to canvas`, () => root.getAttribute("data-active-file") === "adventure" && doc.querySelector(".node.selected"));
+        const addedFrameId = doc.querySelector(".node.selected")?.dataset.nodeId || "";
+        const projectAfterFrameAdd = win.NarrativeCanvasApp.getSavedState()?.project || {};
+        const frameTypes = new Set((projectAfterFrameAdd.nodeTypes || [])
+          .filter((typeDef) => typeDef.kind === "frame" || typeDef.kind === "eventFrame")
+          .map((typeDef) => typeDef.type));
+        const effectiveLayerOrder = (node, index) => Number.isFinite(node.layerOrder)
+          ? node.layerOrder
+          : (frameTypes.has(node.type) ? 0 : 1000000) + index;
+        const addedFrameNode = (projectAfterFrameAdd.nodes || []).find((node) => node.id === addedFrameId);
+        const addedFrameIndex = (projectAfterFrameAdd.nodes || []).findIndex((node) => node.id === addedFrameId);
+        const addedFrameOrder = addedFrameNode ? effectiveLayerOrder(addedFrameNode, addedFrameIndex) : Number.NaN;
+        const regularNodeOrders = (projectAfterFrameAdd.nodes || [])
+          .map((node, index) => ({ node, order: effectiveLayerOrder(node, index) }))
+          .filter((item) => !frameTypes.has(item.node.type))
+          .map((item) => item.order);
+        const olderDefaultFrameOrders = (projectAfterFrameAdd.nodes || [])
+          .map((node, index) => ({ node, order: effectiveLayerOrder(node, index) }))
+          .filter((item) => item.node.id !== addedFrameId && frameTypes.has(item.node.type) && item.order < 1000000)
+          .map((item) => item.order);
+        assert(`${label}: new event frame defaults below regular nodes`, addedFrameOrder < Math.min(...regularNodeOrders));
+        assert(`${label}: new event frame defaults above older default frames`, olderDefaultFrameOrders.every((order) => addedFrameOrder > order));
         click(doc.querySelector("[data-file-id='events']"));
         await waitFor(`${label}: added event frame appears in event sheet`, () => Boolean(doc.querySelector("[data-event-group-type='Event'] .event-node-link")));
         const addedEventGroup = doc.querySelector("[data-event-group-type='Event']");
@@ -554,6 +589,20 @@
         await waitFor(`${label}: playbook opens`, () => Boolean(doc.querySelector("[data-variable-field='type']")));
         assert(`${label}: canvas toolbar hides on playbook`, isElementHidden(win, toolbar));
         assert(`${label}: history controls stay visible on playbook`, !isElementHidden(win, undoButton) && !isElementHidden(win, redoButton));
+        assert(`${label}: playbook script builder renders`, Boolean(doc.querySelector(".playbook-action-table")));
+        const categoryOptions = [...doc.querySelector("[data-playbook-action-field='category']")?.options || []].map((option) => option.value);
+        ["Quest", "Quest Entry", "Variable", "Actor", "Item", "Location", "Sim Status", "Alert", "Misc", "Custom", "Manual Enter"].forEach((category) => {
+          assert(`${label}: playbook category ${category} is available`, categoryOptions.includes(category));
+        });
+        const actionRowsBefore = doc.querySelectorAll(".playbook-action-row:not(.playbook-action-heading)").length;
+        click(doc.querySelector("[data-action='add-playbook-action']"));
+        await waitFor(`${label}: add script line works`, () => doc.querySelectorAll(".playbook-action-row:not(.playbook-action-heading)").length === actionRowsBefore + 1);
+        const newActionRow = [...doc.querySelectorAll(".playbook-action-row:not(.playbook-action-heading)")].at(-1);
+        setControlValue(win, newActionRow.querySelector("[data-playbook-action-field='key']"), "TalkWChief");
+        setControlValue(win, newActionRow.querySelector("[data-playbook-action-field='value']"), "True");
+        await win.NarrativeCanvasApp.save({ silent: true });
+        const savedActions = readSavedProject(win)?.project?.script?.actions || [];
+        assert(`${label}: saved playbook script line keeps edited state`, savedActions.some((action) => action.key === "TalkWChief" && action.value === "True"));
         const variableRowsBeforeUndo = doc.querySelectorAll(".variable-row:not(.variable-heading)").length;
         const hostCaptureBlocker = (event) => {
           if (event.target.closest("[data-action='add-variable']")) event.stopPropagation();
@@ -562,6 +611,8 @@
         click(doc.querySelector("[data-action='add-variable']"));
         await waitFor(`${label}: add variable is undoable from playbook despite host capture`, () => doc.querySelectorAll(".variable-row:not(.variable-heading)").length === variableRowsBeforeUndo + 1);
         assert(`${label}: undo button enables after playbook edit`, !undoButton.disabled);
+        click(doc.querySelector("[data-action='toggle-playbook-json']"));
+        await waitFor(`${label}: playbook Advanced JSON opens`, () => Boolean(doc.querySelector("textarea[data-project-field='variables']")));
         const playbookJsonEditor = doc.querySelector("textarea[data-project-field='variables']");
         assert(`${label}: playbook JSON editor is available after adding variable`, Boolean(playbookJsonEditor));
         (playbookJsonEditor || doc.activeElement || doc.body).dispatchEvent(new win.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
@@ -586,6 +637,18 @@
           .sort((a, b) => a.choiceIndex - b.choiceIndex);
         assert(`${label}: sample choice branches keep explicit labels`, savedChoiceBranches.map((link) => link.label).join("|") === "Offer the watch|Hide the watch|Ask about Old Reyes");
         assert(`${label}: sample choice branches keep explicit indexes`, savedChoiceBranches.map((link) => link.choiceIndex).join("|") === "0|1|2");
+        ["n16", "n17", "n7"].forEach((nodeId) => {
+          const savedConditionBranches = (readSavedProject(win)?.project?.links || [])
+            .filter((link) => link.from === nodeId)
+            .sort((a, b) => a.choiceIndex - b.choiceIndex);
+          assert(`${label}: sample condition ${nodeId} branches keep true/false labels`, savedConditionBranches.map((link) => link.label).join("|") === "true|false");
+          assert(`${label}: sample condition ${nodeId} branches keep true/false indexes`, savedConditionBranches.map((link) => link.choiceIndex).join("|") === "0|1");
+        });
+        const sampleStateWithPlaybook = win.NarrativeCanvasApp.getSavedState()?.project || {};
+        const sampleNodeTitles = new Set((sampleStateWithPlaybook.nodes || []).map((node) => node.title));
+        const sampleActions = sampleStateWithPlaybook.script?.actions || [];
+        assert(`${label}: sample includes first/repeat briefing condition`, sampleNodeTitles.has("First-time briefing?") && sampleActions.some((action) => action.target === "First-time briefing?" && action.key === "talked_to_conductor"));
+        assert(`${label}: sample includes compound trust and lantern gate`, sampleNodeTitles.has("Enough trust and lantern?") && sampleActions.some((action) => action.target === "Enough trust and lantern?" && String(action.value).includes("&&")));
         const canvasNodeAfterFileSwitch = doc.querySelector(".node[data-node-id]");
         const canvasNodeCountAfterFileSwitch = doc.querySelectorAll(".node[data-node-id]").length;
         assert(
@@ -843,8 +906,10 @@
 
           click(doc.querySelector("[data-file-id='variables']"));
           await waitFor(`${label}: playbook page opens after empty project`, () => doc.querySelector("#variablesPanel")?.textContent.includes("No play rules yet."));
-          doc.querySelector("#variablesPanel [data-action='add-variable']")?.click();
-          await waitFor(`${label}: Add variable works from playbook`, () => doc.querySelector("#variablesPanel")?.textContent.includes("new_variable"));
+          await waitFor(`${label}: Add variable button is ready after empty project`, () => Boolean(doc.querySelector("#variablesPanel [data-action='add-variable']")));
+          const emptyProjectVariableRowsBeforeAdd = doc.querySelectorAll("#variablesPanel .variable-row:not(.variable-heading)").length;
+          click(doc.querySelector("#variablesPanel [data-action='add-variable']"));
+          await waitFor(`${label}: Add variable works from playbook`, () => doc.querySelectorAll("#variablesPanel .variable-row:not(.variable-heading)").length === emptyProjectVariableRowsBeforeAdd + 1);
           doc.querySelector("#variablesPanel [data-action='add-play-rule']")?.click();
           await waitFor(`${label}: Add play rule dialog opens`, () => doc.querySelector("#playRuleDialog")?.open);
           doc.querySelector("#playRuleDialog [data-action='create-play-rule'][data-playbook-rule-kind='text']")?.click();
@@ -869,6 +934,20 @@
         }
       }
 
+      async function runLanguageChecks() {
+        const target = await loadPluginFrame({ language: "zh" });
+        const { win, doc, frame } = target;
+        assert("plugin zh: root language set", doc.querySelector(".app-shell")?.getAttribute("lang") === "zh-CN");
+        assert("plugin zh: save button translated", doc.querySelector("[data-action='save-project']")?.textContent.trim() === "保存");
+        assert("plugin zh: project file heading translated", doc.querySelector(".project-file-section h2")?.textContent.trim() === "项目文件");
+        assert("plugin zh: node search placeholder translated", doc.querySelector("#queryInput")?.getAttribute("placeholder") === "查找节点");
+        win.NarrativeCanvasApp.setLanguage("en");
+        await wait(80);
+        assert("plugin language: can switch back to English", doc.querySelector("[data-action='save-project']")?.textContent.trim() === "Save");
+        win.NarrativeCanvasApp.destroy?.();
+        frame.remove();
+      }
+
       async function run() {
         try {
           const web = await loadWebFrame();
@@ -876,6 +955,7 @@
 
           const plugin = await loadPluginFrame();
           await runCoreChecks("plugin", plugin);
+          await runLanguageChecks();
         } catch (error) {
           fail("smoke runner crashed", error && error.stack ? error.stack : String(error));
         } finally {
