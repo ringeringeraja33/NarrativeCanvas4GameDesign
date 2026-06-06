@@ -4,6 +4,8 @@ English version: [README.md](README.md)
 
 Changelog and release notes: [GitHub Releases](https://github.com/ringeringeraja33/NarrativeCanvas/releases)
 
+<video src="https://github.com/ringeringeraja33/NarrativeCanvas/raw/main/assets/videos/runtime.mov" controls width="800" muted></video>
+
 ## 简介
 
 Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区。它可以把剧情段落、角色对白、选择分支、条件判断、变量变化、路由、角色和笔记整理成可连接、可预览的互动流程。它适用于游戏、互动小说、分支剧本、任务链和其他非线性叙事结构。

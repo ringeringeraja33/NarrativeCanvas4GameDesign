@@ -4,7 +4,8 @@ Changelog and release notes: [GitHub Releases](https://github.com/ringeringeraja
 
 中文版：[README-zh.md](README-zh.md)
 
-![Narrative Canvas main canvas](assets/videos/runtime.mov)
+<video src="https://github.com/ringeringeraja33/NarrativeCanvas/raw/main/assets/videos/runtime.mov" controls width="800" muted></video>
+
 ## English
 
 Narrative Canvas is a node-based workspace for writing and designing complex stories. It can organize story beats, character dialog, choice branches, conditions, variables, routing, characters, and notes into a connected, previewable interactive flow. It is suitable for games, interactive fiction, branching scripts, questlines, and other nonlinear narrative structures.
