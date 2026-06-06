@@ -2,7 +2,7 @@
 
 Changelog and release notes: [GitHub Releases](https://github.com/ringeringeraja33/NarrativeCanvas/releases)
 
-中文版：[README-zh.md](README-zh.md)
+中文版：[README-zh.md](https://github.com/ringeringeraja33/NarrativeCanvas/blob/main/README-zh.md)
 
 <video src="https://github.com/ringeringeraja33/NarrativeCanvas/raw/main/assets/videos/runtime.mov" controls width="800" muted></video>
 
