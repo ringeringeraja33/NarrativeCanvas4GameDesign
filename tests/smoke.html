@@ -32,6 +32,7 @@
         tests: [],
         failures: []
       };
+      const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
 
       function record(name, status, detail = "") {
         report.tests.push({ name, status, detail });
@@ -106,6 +107,7 @@
           .find((info) => info
             && info.inViewport
             && info.isHitTarget
+            && !doc.querySelector(`.node.frame[data-node-id='${info.port.dataset.nodeId}']`)
             && (!excludeNodeId || info.port.dataset.nodeId !== excludeNodeId));
       }
 
@@ -187,7 +189,7 @@
 
       function readSavedProject(win) {
         const latestPluginSave = win.__saveProjectCalls?.[win.__saveProjectCalls.length - 1] || "";
-        const raw = latestPluginSave || win.localStorage?.getItem("narrative-canvas-state-v1") || "";
+        const raw = latestPluginSave || win.localStorage?.getItem(WEB_STORAGE_KEY) || "";
         return raw ? JSON.parse(raw) : null;
       }
 
@@ -293,6 +295,7 @@
       }
 
       async function loadWebFrame() {
+        window.localStorage?.removeItem(WEB_STORAGE_KEY);
         const frame = document.createElement("iframe");
         frame.title = "web smoke target";
         frame.src = `${assetUrl("index.html")}?smoke=${Date.now()}`;
@@ -543,12 +546,23 @@
           eventScrollLeftBeforeResize > 0 && eventScrollAfterResize?.scrollLeft >= eventScrollLeftBeforeResize - 2,
           `before=${eventScrollLeftBeforeResize} after=${eventScrollAfterResize?.scrollLeft}`
         );
+        const eventShell = doc.querySelector(".event-sheet-shell");
+        const eventShellRect = eventShell?.getBoundingClientRect();
+        eventShell?.dispatchEvent(new win.MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          view: win,
+          clientX: eventShellRect ? eventShellRect.left + 40 : 0,
+          clientY: eventShellRect ? eventShellRect.top + 120 : 0
+        }));
+        await wait(60);
+        assert(`${label}: events sheet right-click does not open canvas context menu`, doc.querySelector("#nodeContextMenu")?.hidden !== false);
         click(doc.querySelector("[data-action='add-node'][data-type='Event']"));
-        await waitFor(`${label}: add event frame returns to canvas`, () => root.getAttribute("data-active-file") === "adventure" && doc.querySelector(".node.selected"));
+        await waitFor(`${label}: add frame returns to canvas`, () => root.getAttribute("data-active-file") === "adventure" && doc.querySelector(".node.selected"));
         const addedFrameId = doc.querySelector(".node.selected")?.dataset.nodeId || "";
         const projectAfterFrameAdd = win.NarrativeCanvasApp.getSavedState()?.project || {};
         const frameTypes = new Set((projectAfterFrameAdd.nodeTypes || [])
-          .filter((typeDef) => typeDef.kind === "frame" || typeDef.kind === "eventFrame")
+          .filter((typeDef) => typeDef.kind === "frame")
           .map((typeDef) => typeDef.type));
         const effectiveLayerOrder = (node, index) => Number.isFinite(node.layerOrder)
           ? node.layerOrder
@@ -564,23 +578,144 @@
           .map((node, index) => ({ node, order: effectiveLayerOrder(node, index) }))
           .filter((item) => item.node.id !== addedFrameId && frameTypes.has(item.node.type) && item.order < 1000000)
           .map((item) => item.order);
-        assert(`${label}: new event frame defaults below regular nodes`, addedFrameOrder < Math.min(...regularNodeOrders));
-        assert(`${label}: new event frame defaults above older default frames`, olderDefaultFrameOrders.every((order) => addedFrameOrder > order));
+        assert(`${label}: new frame defaults below regular nodes`, addedFrameOrder < Math.min(...regularNodeOrders));
+        assert(`${label}: new frame defaults above older default frames`, olderDefaultFrameOrders.every((order) => addedFrameOrder > order));
+        if (label === "web") {
+          const addedFrameCard = doc.querySelector(`.node.frame[data-node-id='${addedFrameId}']`);
+          const addedFrameCollapseButton = addedFrameCard?.querySelector("[data-action='toggle-frame-collapse']");
+          const addedFrameCollapseRect = addedFrameCollapseButton?.getBoundingClientRect();
+          const linkLayer = doc.querySelector("#linkLayer");
+          linkLayer?.dispatchEvent(new win.MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            view: win,
+            clientX: addedFrameCollapseRect ? addedFrameCollapseRect.left + addedFrameCollapseRect.width / 2 : 0,
+            clientY: addedFrameCollapseRect ? addedFrameCollapseRect.top + addedFrameCollapseRect.height / 2 : 0
+          }));
+          await waitFor(`${label}: frame collapse button works when covered by link layer`, () => doc.querySelector(`.node.frame.collapsed[data-node-id='${addedFrameId}']`));
+          const collapsedFrameCard = doc.querySelector(`.node.frame[data-node-id='${addedFrameId}']`);
+          const collapsedFrameRectBeforeDrag = collapsedFrameCard?.getBoundingClientRect();
+          const collapsedFrameHeader = collapsedFrameCard?.querySelector(".node-header");
+          const collapsedFrameHeaderRect = collapsedFrameHeader?.getBoundingClientRect();
+          linkLayer?.dispatchEvent(new win.PointerEvent("pointerdown", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 86,
+            button: 0,
+            buttons: 1,
+            clientX: collapsedFrameHeaderRect ? collapsedFrameHeaderRect.left + Math.min(90, collapsedFrameHeaderRect.width / 2) : 0,
+            clientY: collapsedFrameHeaderRect ? collapsedFrameHeaderRect.top + collapsedFrameHeaderRect.height / 2 : 0
+          }));
+          doc.querySelector("#canvasViewport")?.dispatchEvent(new win.PointerEvent("pointermove", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 86,
+            button: 0,
+            buttons: 1,
+            clientX: collapsedFrameHeaderRect ? collapsedFrameHeaderRect.left + Math.min(90, collapsedFrameHeaderRect.width / 2) + 60 : 0,
+            clientY: collapsedFrameHeaderRect ? collapsedFrameHeaderRect.top + collapsedFrameHeaderRect.height / 2 + 24 : 0
+          }));
+          doc.querySelector("#canvasViewport")?.dispatchEvent(new win.PointerEvent("pointerup", {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 86,
+            button: 0,
+            clientX: collapsedFrameHeaderRect ? collapsedFrameHeaderRect.left + Math.min(90, collapsedFrameHeaderRect.width / 2) + 60 : 0,
+            clientY: collapsedFrameHeaderRect ? collapsedFrameHeaderRect.top + collapsedFrameHeaderRect.height / 2 + 24 : 0
+          }));
+          await wait(80);
+          const draggedFrameCard = doc.querySelector(`.node.frame[data-node-id='${addedFrameId}']`);
+          const collapsedFrameRectAfterDrag = draggedFrameCard?.getBoundingClientRect();
+          assert(
+            `${label}: frame header drag works when covered by link layer`,
+            collapsedFrameRectBeforeDrag && collapsedFrameRectAfterDrag
+              && collapsedFrameRectAfterDrag.left > collapsedFrameRectBeforeDrag.left + 20
+              && collapsedFrameRectAfterDrag.top > collapsedFrameRectBeforeDrag.top + 10,
+            `before=${collapsedFrameRectBeforeDrag?.left.toFixed(1)},${collapsedFrameRectBeforeDrag?.top.toFixed(1)} after=${collapsedFrameRectAfterDrag?.left.toFixed(1)},${collapsedFrameRectAfterDrag?.top.toFixed(1)}`
+          );
+          const expandedFrameButton = draggedFrameCard?.querySelector("[data-action='toggle-frame-collapse']");
+          const expandedFrameButtonRect = expandedFrameButton?.getBoundingClientRect();
+          linkLayer?.dispatchEvent(new win.MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            view: win,
+            clientX: expandedFrameButtonRect ? expandedFrameButtonRect.left + expandedFrameButtonRect.width / 2 : 0,
+            clientY: expandedFrameButtonRect ? expandedFrameButtonRect.top + expandedFrameButtonRect.height / 2 : 0
+          }));
+          await waitFor(`${label}: frame expands again when covered by link layer`, () => !doc.querySelector(`.node.frame.collapsed[data-node-id='${addedFrameId}']`));
+          const captureStateBefore = win.NarrativeCanvasApp.getSavedState()?.project || {};
+          const captureTargetNode = (captureStateBefore.nodes || []).find((node) => node.id !== addedFrameId && node.type !== "Event" && !node.frameId);
+          const captureTargetCard = captureTargetNode ? doc.querySelector(`.node[data-node-id='${captureTargetNode.id}']`) : null;
+          const captureFrameCard = doc.querySelector(`.node.frame[data-node-id='${addedFrameId}']`);
+          const captureFrameHeader = captureFrameCard?.querySelector(".node-header");
+          const captureFrameRect = captureFrameCard?.getBoundingClientRect();
+          const captureHeaderRect = captureFrameHeader?.getBoundingClientRect();
+          const captureTargetRect = captureTargetCard?.getBoundingClientRect();
+          if (captureTargetRect && captureFrameRect && captureHeaderRect) {
+            const startX = captureHeaderRect.left + Math.min(90, captureHeaderRect.width / 2);
+            const startY = captureHeaderRect.top + captureHeaderRect.height / 2;
+            const deltaX = (captureTargetRect.left + captureTargetRect.width / 2) - (captureFrameRect.left + captureFrameRect.width / 2);
+            const deltaY = (captureTargetRect.top + captureTargetRect.height / 2) - (captureFrameRect.top + captureFrameRect.height / 2);
+            captureFrameHeader.dispatchEvent(new win.PointerEvent("pointerdown", {
+              bubbles: true,
+              cancelable: true,
+              pointerId: 87,
+              button: 0,
+              buttons: 1,
+              clientX: startX,
+              clientY: startY
+            }));
+            doc.querySelector("#canvasViewport")?.dispatchEvent(new win.PointerEvent("pointermove", {
+              bubbles: true,
+              cancelable: true,
+              pointerId: 87,
+              button: 0,
+              buttons: 1,
+              clientX: startX + deltaX,
+              clientY: startY + deltaY
+            }));
+            doc.querySelector("#canvasViewport")?.dispatchEvent(new win.PointerEvent("pointerup", {
+              bubbles: true,
+              cancelable: true,
+              pointerId: 87,
+              button: 0,
+              clientX: startX + deltaX,
+              clientY: startY + deltaY
+            }));
+            await waitFor(`${label}: frame overlap prompts explicit capture`, () => doc.querySelector("#genericConfirmDialog")?.open);
+            click(doc.querySelector("#genericConfirmDialog .confirm-cancel"));
+            await wait(80);
+            const captureStateAfterCancel = win.NarrativeCanvasApp.getSavedState()?.project || {};
+            const captureTargetAfterCancel = (captureStateAfterCancel.nodes || []).find((node) => node.id === captureTargetNode.id);
+            assert(`${label}: canceling capture leaves frame membership unchanged`, !captureTargetAfterCancel?.frameId);
+          } else {
+            assert(`${label}: frame overlap capture test has a target`, false, `target=${captureTargetNode?.id || ""}`);
+          }
+        }
         click(doc.querySelector("[data-file-id='events']"));
-        await waitFor(`${label}: added event frame appears in event sheet`, () => Boolean(doc.querySelector("[data-event-group-type='Event'] .event-node-link")));
+        await waitFor(`${label}: added frame appears in events sheet`, () => Boolean(doc.querySelector("[data-event-group-type='Event'] .event-node-link")));
         const addedEventGroup = doc.querySelector("[data-event-group-type='Event']");
-        const addedEventScroll = addedEventGroup?.querySelector(".event-sheet-scroll");
+        const hideEventFrameTypeButton = addedEventGroup?.querySelector("[data-action='hide-event-frame-type'][data-event-frame-type='Event']");
+        assert(`${label}: events sheet can hide a whole frame type`, Boolean(hideEventFrameTypeButton));
+        click(hideEventFrameTypeButton);
+        await waitFor(`${label}: hidden frame type group disappears`, () => !doc.querySelector("[data-event-group-type='Event']"));
+        const showEventFrameTypeButton = doc.querySelector("[data-action='show-event-frame-type'][data-event-frame-type='Event']");
+        assert(`${label}: hidden frame type can be restored from events sheet`, Boolean(showEventFrameTypeButton));
+        click(showEventFrameTypeButton);
+        await waitFor(`${label}: restored frame type group returns`, () => Boolean(doc.querySelector("[data-event-group-type='Event'] .event-node-link")));
+        const restoredAddedEventGroup = doc.querySelector("[data-event-group-type='Event']");
+        const addedEventScroll = restoredAddedEventGroup?.querySelector(".event-sheet-scroll");
         assert(
-          `${label}: added event frame table keeps horizontal scroll`,
+          `${label}: added frame table keeps horizontal scroll`,
           addedEventScroll && addedEventScroll.scrollWidth > addedEventScroll.clientWidth + 1,
           `scroll=${addedEventScroll?.scrollWidth} client=${addedEventScroll?.clientWidth}`
         );
-        const addedEventNodeCard = addedEventGroup?.querySelector(".event-node-link");
-        const addedEventHiddenCell = addedEventGroup?.querySelector(".event-hidden-cell");
+        const addedEventNodeCard = restoredAddedEventGroup?.querySelector(".event-node-link");
+        const addedEventHiddenCell = restoredAddedEventGroup?.querySelector(".event-hidden-cell");
         const addedEventNodeRect = addedEventNodeCard?.getBoundingClientRect();
         const addedEventHiddenRect = addedEventHiddenCell?.getBoundingClientRect();
-        assert(`${label}: added event frame node cell keeps readable width`, addedEventNodeRect && addedEventNodeRect.width >= 240, `width=${addedEventNodeRect?.width.toFixed(1)}`);
-        assert(`${label}: added event frame hidden column keeps readable width`, addedEventHiddenRect && addedEventHiddenRect.width >= 200, `width=${addedEventHiddenRect?.width.toFixed(1)}`);
+        assert(`${label}: added frame node cell keeps readable width`, addedEventNodeRect && addedEventNodeRect.width >= 240, `width=${addedEventNodeRect?.width.toFixed(1)}`);
+        assert(`${label}: added frame hidden column keeps readable width`, addedEventHiddenRect && addedEventHiddenRect.width >= 200, `width=${addedEventHiddenRect?.width.toFixed(1)}`);
         setControlValue(win, eventSearch, "boarding");
         assert(`${label}: events search accepts input`, eventSearch.value === "boarding");
         assert(`${label}: event filter bar updates`, doc.querySelector("[data-event-filter-bar]")?.textContent.toLowerCase().includes("boarding"));
@@ -589,20 +724,22 @@
         await waitFor(`${label}: playbook opens`, () => Boolean(doc.querySelector("[data-variable-field='type']")));
         assert(`${label}: canvas toolbar hides on playbook`, isElementHidden(win, toolbar));
         assert(`${label}: history controls stay visible on playbook`, !isElementHidden(win, undoButton) && !isElementHidden(win, redoButton));
-        assert(`${label}: playbook script builder renders`, Boolean(doc.querySelector(".playbook-action-table")));
-        const categoryOptions = [...doc.querySelector("[data-playbook-action-field='category']")?.options || []].map((option) => option.value);
-        ["Quest", "Quest Entry", "Variable", "Actor", "Item", "Location", "Sim Status", "Alert", "Misc", "Custom", "Manual Enter"].forEach((category) => {
-          assert(`${label}: playbook category ${category} is available`, categoryOptions.includes(category));
-        });
-        const actionRowsBefore = doc.querySelectorAll(".playbook-action-row:not(.playbook-action-heading)").length;
-        click(doc.querySelector("[data-action='add-playbook-action']"));
-        await waitFor(`${label}: add script line works`, () => doc.querySelectorAll(".playbook-action-row:not(.playbook-action-heading)").length === actionRowsBefore + 1);
-        const newActionRow = [...doc.querySelectorAll(".playbook-action-row:not(.playbook-action-heading)")].at(-1);
-        setControlValue(win, newActionRow.querySelector("[data-playbook-action-field='key']"), "TalkWChief");
-        setControlValue(win, newActionRow.querySelector("[data-playbook-action-field='value']"), "True");
+        click(doc.querySelector("[data-action='select-playbook-tab'][data-playbook-tab='script']"));
+        await waitFor(`${label}: playbook script tab opens`, () => Boolean(doc.querySelector(".script-node-table")));
+        assert(`${label}: playbook script builder renders node logic rows`, Boolean(doc.querySelector(".script-node-row:not(.script-node-heading)")));
+        const firstScriptRow = [...doc.querySelectorAll(".script-node-row:not(.script-node-heading)")]
+          .find((row) => !["n11", "n12"].includes(row.dataset.scriptNodeId))
+          || doc.querySelector(".script-node-row:not(.script-node-heading)");
+        const firstScriptNodeId = firstScriptRow?.dataset.scriptNodeId;
+        setControlValue(win, firstScriptRow?.querySelector("[data-script-node-field='requirements']"), "has_ticket == true");
+        setControlValue(win, firstScriptRow?.querySelector("[data-script-node-field='effects']"), "set TalkWChief = True");
+        setControlValue(win, firstScriptRow?.querySelector("[data-script-node-field='routingMode']"), "continue");
         await win.NarrativeCanvasApp.save({ silent: true });
-        const savedActions = readSavedProject(win)?.project?.script?.actions || [];
-        assert(`${label}: saved playbook script line keeps edited state`, savedActions.some((action) => action.key === "TalkWChief" && action.value === "True"));
+        const savedScriptNode = (readSavedProject(win)?.project?.nodes || []).find((node) => node.id === firstScriptNodeId);
+        assert(`${label}: saved script builder writes node requirements`, savedScriptNode?.stateLogic?.requirements === "has_ticket == true");
+        assert(`${label}: saved script builder writes node effects`, savedScriptNode?.stateLogic?.effects?.some((effect) => effect.key === "TalkWChief" && effect.value === "True"));
+        click(doc.querySelector("[data-action='select-playbook-tab'][data-playbook-tab='variables']"));
+        await waitFor(`${label}: playbook variables tab opens`, () => Boolean(doc.querySelector(".variable-table")));
         const variableRowsBeforeUndo = doc.querySelectorAll(".variable-row:not(.variable-heading)").length;
         const hostCaptureBlocker = (event) => {
           if (event.target.closest("[data-action='add-variable']")) event.stopPropagation();
@@ -649,6 +786,22 @@
         const sampleActions = sampleStateWithPlaybook.script?.actions || [];
         assert(`${label}: sample includes first/repeat briefing condition`, sampleNodeTitles.has("First-time briefing?") && sampleActions.some((action) => action.target === "First-time briefing?" && action.key === "talked_to_conductor"));
         assert(`${label}: sample includes compound trust and lantern gate`, sampleNodeTitles.has("Enough trust and lantern?") && sampleActions.some((action) => action.target === "Enough trust and lantern?" && String(action.value).includes("&&")));
+        const sampleThreeWayDialog = (sampleStateWithPlaybook.nodes || []).find((node) => node.id === "n19");
+        assert(`${label}: sample includes explicit three-speaker dialog turns`, sampleThreeWayDialog?.turns?.length === 3 && new Set(sampleThreeWayDialog.turns.map((turn) => turn.speaker)).size === 3);
+        const sampleChoice = (sampleStateWithPlaybook.nodes || []).find((node) => node.id === "n4");
+        assert(`${label}: sample choice uses stable option ids`, sampleChoice?.choiceOptions?.map((option) => option.id).join("|") === "opt_offer_watch|opt_hide_watch|opt_ask_reyes");
+        assert(`${label}: sample choice options carry requirements and effects`, sampleChoice?.choiceOptions?.some((option) => option.requires && option.effects?.length));
+        assert(`${label}: sample frames persist explicit membership`, (sampleStateWithPlaybook.nodes || []).some((node) => node.frameId === "cf1"));
+        const epilogueCardForRename = doc.querySelector(".node[data-node-id='n12']");
+        click(epilogueCardForRename);
+        await waitFor(`${label}: epilogue node opens inspector for reference rename`, () => doc.querySelector("[data-node-field='title']")?.value === "Epilogue");
+        setControlValue(win, doc.querySelector("[data-node-field='title']"), "Epilogue Updated");
+        await waitFor(`${label}: title rename prompts reference update`, () => doc.querySelector("#genericConfirmDialog")?.open);
+        click(doc.querySelector("#genericConfirmButton"));
+        await wait(100);
+        const renamedReferenceState = win.NarrativeCanvasApp.getSavedState()?.project || {};
+        const mergeNodeAfterRename = (renamedReferenceState.nodes || []).find((node) => node.id === "n11");
+        assert(`${label}: title rename updates routing reference after confirm`, mergeNodeAfterRename?.routing?.target === "Epilogue Updated");
         const canvasNodeAfterFileSwitch = doc.querySelector(".node[data-node-id]");
         const canvasNodeCountAfterFileSwitch = doc.querySelectorAll(".node[data-node-id]").length;
         assert(
@@ -673,7 +826,8 @@
         const savedLinkCountBeforePortCreate = readSavedProject(win)?.project?.links?.length || 0;
         const outputPort = doc.querySelector(".port.output[data-node-id='n13']") || doc.querySelector(".port.output[data-node-id]");
         const inputPort = [...doc.querySelectorAll(".port.input[data-node-id]")]
-          .find((port) => port.dataset.nodeId !== outputPort?.dataset.nodeId);
+          .find((port) => port.dataset.nodeId !== outputPort?.dataset.nodeId
+            && !doc.querySelector(`.node.frame[data-node-id='${port.dataset.nodeId}']`));
         const outputPortRect = outputPort?.getBoundingClientRect();
         const outputNodeRect = doc.querySelector(`.node[data-node-id='${outputPort?.dataset.nodeId || ""}']`)?.getBoundingClientRect();
         const inputPortRect = inputPort?.getBoundingClientRect();
@@ -682,17 +836,17 @@
           `${label}: node output port sits on the node edge`,
           outputPortRect && outputNodeRect
             && outputPortRect.width > 0
-            && outputPortRect.left <= outputNodeRect.right + 1
-            && outputPortRect.right >= outputNodeRect.right - 1,
-          `port=${outputPortRect?.left.toFixed(1)}..${outputPortRect?.right.toFixed(1)} node=${outputNodeRect?.left.toFixed(1)}..${outputNodeRect?.right.toFixed(1)}`
+            && outputPortRect.top <= outputNodeRect.bottom + 1
+            && outputPortRect.bottom >= outputNodeRect.bottom - 1,
+          `port=${outputPortRect?.top.toFixed(1)}..${outputPortRect?.bottom.toFixed(1)} node=${outputNodeRect?.top.toFixed(1)}..${outputNodeRect?.bottom.toFixed(1)}`
         );
         assert(
           `${label}: node input port sits on the node edge`,
           inputPortRect && inputNodeRect
             && inputPortRect.width > 0
-            && inputPortRect.left <= inputNodeRect.left + 1
-            && inputPortRect.right >= inputNodeRect.left - 1,
-          `port=${inputPortRect?.left.toFixed(1)}..${inputPortRect?.right.toFixed(1)} node=${inputNodeRect?.left.toFixed(1)}..${inputNodeRect?.right.toFixed(1)}`
+            && inputPortRect.top <= inputNodeRect.top + 1
+            && inputPortRect.bottom >= inputNodeRect.top - 1,
+          `port=${inputPortRect?.top.toFixed(1)}..${inputPortRect?.bottom.toFixed(1)} node=${inputNodeRect?.top.toFixed(1)}..${inputNodeRect?.bottom.toFixed(1)}`
         );
         const clickableOutputInfo = findClickablePort(doc, "output");
         const clickableInputInfo = findClickablePort(doc, "input", clickableOutputInfo?.port?.dataset.nodeId || "");
@@ -759,9 +913,9 @@
         assert(
           `${label}: output port follows resized node edge`,
           resizedOutputPortRect && resizedNodeRectAfter
-            && resizedOutputPortRect.left <= resizedNodeRectAfter.right + 1
-            && resizedOutputPortRect.right >= resizedNodeRectAfter.right - 1,
-          `port=${resizedOutputPortRect?.left.toFixed(1)}..${resizedOutputPortRect?.right.toFixed(1)} node=${resizedNodeRectAfter?.left.toFixed(1)}..${resizedNodeRectAfter?.right.toFixed(1)}`
+            && resizedOutputPortRect.top <= resizedNodeRectAfter.bottom + 1
+            && resizedOutputPortRect.bottom >= resizedNodeRectAfter.bottom - 1,
+          `port=${resizedOutputPortRect?.top.toFixed(1)}..${resizedOutputPortRect?.bottom.toFixed(1)} node=${resizedNodeRectAfter?.top.toFixed(1)}..${resizedNodeRectAfter?.bottom.toFixed(1)}`
         );
         for (let index = 0; index < 12; index += 1) {
           click(doc.querySelector("[data-action='zoom-out']"));
@@ -900,20 +1054,22 @@
           await verifyCanDeleteAllCharactersAndVariables(label, win, doc);
 
           click(doc.querySelector("[data-file-id='events']"));
-          await waitFor(`${label}: empty events page opens`, () => doc.querySelector("#eventsPanel")?.textContent.includes("No event frame nodes yet."));
+          await waitFor(`${label}: empty events page opens`, () => doc.querySelector("#eventsPanel")?.textContent.includes("No visible frame nodes yet."));
           doc.querySelector("#eventsPanel [data-action='add-node'][data-type='Event']")?.click();
-          await waitFor(`${label}: Add event frame works from empty events page`, () => doc.querySelector(".app-shell")?.getAttribute("data-active-file") === "adventure" && doc.body.textContent.includes("Event Frame"));
+          await waitFor(`${label}: Add frame works from empty events page`, () => doc.querySelector(".app-shell")?.getAttribute("data-active-file") === "adventure" && doc.body.textContent.includes("Frame"));
 
           click(doc.querySelector("[data-file-id='variables']"));
-          await waitFor(`${label}: playbook page opens after empty project`, () => doc.querySelector("#variablesPanel")?.textContent.includes("No play rules yet."));
+          await waitFor(`${label}: playbook page opens after empty project`, () => Boolean(doc.querySelector("#variablesPanel [data-action='select-playbook-tab'][data-playbook-tab='rules']")));
           await waitFor(`${label}: Add variable button is ready after empty project`, () => Boolean(doc.querySelector("#variablesPanel [data-action='add-variable']")));
           const emptyProjectVariableRowsBeforeAdd = doc.querySelectorAll("#variablesPanel .variable-row:not(.variable-heading)").length;
           click(doc.querySelector("#variablesPanel [data-action='add-variable']"));
           await waitFor(`${label}: Add variable works from playbook`, () => doc.querySelectorAll("#variablesPanel .variable-row:not(.variable-heading)").length === emptyProjectVariableRowsBeforeAdd + 1);
+          click(doc.querySelector("#variablesPanel [data-action='select-playbook-tab'][data-playbook-tab='rules']"));
+        await waitFor(`${label}: play rules tab opens after empty project`, () => doc.querySelector("#variablesPanel")?.textContent.includes("Start Node"));
           doc.querySelector("#variablesPanel [data-action='add-play-rule']")?.click();
           await waitFor(`${label}: Add play rule dialog opens`, () => doc.querySelector("#playRuleDialog")?.open);
-          doc.querySelector("#playRuleDialog [data-action='create-play-rule'][data-playbook-rule-kind='text']")?.click();
-          await waitFor(`${label}: Add play rule creates rule`, () => doc.querySelector("#variablesPanel")?.textContent.includes("1 Play rules") && !doc.querySelector("#variablesPanel")?.textContent.includes("No play rules yet."));
+          doc.querySelector("#playRuleDialog [data-action='create-play-rule'][data-playbook-rule-kind='debugMode']")?.click();
+          await waitFor(`${label}: Add play rule creates rule`, () => doc.querySelector("#variablesPanel")?.textContent.includes("Debug Mode"));
         } else if (clearStorageButton) {
           const previousConfirm = win.confirm;
           win.confirm = () => true;

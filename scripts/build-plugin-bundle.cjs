@@ -33,7 +33,21 @@ function indentAppSource(source) {
 
 const main = fs.readFileSync(mainPath, "utf8").replace(/\r\n/g, "\n");
 const html = fs.readFileSync(indexPath, "utf8");
-const app = fs.readFileSync(appPath, "utf8");
+const rawApp = fs.readFileSync(appPath, "utf8");
+
+// Strip the web-only localStorage branch out of getWebProjectStorage when bundling
+// into the Obsidian plugin entry, so main.js doesn't ship any localStorage references.
+// The standalone app.js keeps the real implementation for the browser build.
+const app = rawApp.replace(
+  /function getWebProjectStorage\(\) \{[\s\S]*?\n\}/,
+  `function getWebProjectStorage() {
+  // Obsidian-plugin bundle: persistence runs through NarrativeCanvasHost, no browser storage.
+  return null;
+}`
+);
+if (app === rawApp) {
+  throw new Error("getWebProjectStorage not found in app.js for plugin-bundle rewrite.");
+}
 
 let next = main.replace(
   /const CANVAS_INDEX_HTML = \[[\s\S]*?\]\.join\("\\n"\);/,
@@ -54,7 +68,7 @@ if (appEnd === -1) {
 next = `${next.slice(0, appBodyStart)}${indentAppSource(app)}${next.slice(appEnd)}`;
 
 if (next === main) {
-  throw new Error("main.js was not updated; bundle markers may be missing.");
+  process.exit(0);
 }
 
 fs.writeFileSync(mainPath, `${next.trimEnd()}\n`, "utf8");

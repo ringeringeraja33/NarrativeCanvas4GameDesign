@@ -1,0 +1,821 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Narrative Canvas GUI Regression</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #101114;
+        color: #eeeeee;
+        font-family: system-ui, sans-serif;
+      }
+
+      iframe {
+        display: block;
+        margin: 12px 0 24px;
+        border: 1px solid #555;
+        background: #1b1b1f;
+      }
+
+      #gui-report {
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body data-gui-status="running">
+    <h1>Narrative Canvas GUI Regression</h1>
+    <pre id="gui-report">running</pre>
+    <script>
+      const report = {
+        startedAt: new Date().toISOString(),
+        tests: [],
+        failures: []
+      };
+
+      const DESKTOP_VIEWPORT = { width: 1180, height: 760 };
+      const COMPACT_VIEWPORT = { width: 520, height: 760 };
+      const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
+
+      function record(name, status, detail = "") {
+        report.tests.push({ name, status, detail });
+      }
+
+      function pass(name, detail = "") {
+        record(name, "pass", detail);
+      }
+
+      function fail(name, detail = "") {
+        record(name, "fail", detail);
+        report.failures.push({ name, detail });
+      }
+
+      function assert(name, condition, detail = "") {
+        if (condition) pass(name, detail);
+        else fail(name, detail);
+      }
+
+      function updateReport(final = false) {
+        report.status = report.failures.length ? "fail" : (final ? "pass" : "running");
+        if (final) report.finishedAt = new Date().toISOString();
+        document.body.setAttribute("data-gui-status", report.status);
+        document.querySelector("#gui-report").textContent = JSON.stringify(report, null, 2);
+      }
+
+      function wait(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function waitFor(name, predicate, timeout = 5000) {
+        const started = performance.now();
+        while (performance.now() - started < timeout) {
+          if (predicate()) {
+            pass(name);
+            return true;
+          }
+          await wait(50);
+        }
+        fail(name, "Timed out");
+        return false;
+      }
+
+      function click(element) {
+        if (!element) return;
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: element.ownerDocument.defaultView }));
+      }
+
+      function setControlValue(win, element, value) {
+        if (!element) return;
+        element.focus();
+        element.value = value;
+        element.dispatchEvent(new win.Event("input", { bubbles: true }));
+        element.dispatchEvent(new win.Event("change", { bubbles: true }));
+      }
+
+      function isElementHidden(win, element) {
+        if (!element) return true;
+        if (element.closest("[hidden]")) return true;
+        let current = element;
+        while (current && current.nodeType === 1) {
+          const style = win.getComputedStyle(current);
+          if (current.hidden || style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return true;
+          current = current.parentElement;
+        }
+        return false;
+      }
+
+      function getOwnerDocument(root) {
+        return root?.ownerDocument || root;
+      }
+
+      function visibleElements(root, selector) {
+        const doc = getOwnerDocument(root);
+        const win = doc.defaultView;
+        return [...root.querySelectorAll(selector)].filter((element) => {
+          if (isElementHidden(win, element)) return false;
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      }
+
+      function rectDetail(rect) {
+        return `${rect.left.toFixed(1)},${rect.top.toFixed(1)} ${rect.width.toFixed(1)}x${rect.height.toFixed(1)}`;
+      }
+
+      function rectsOverlap(a, b, tolerance = 1) {
+        return a.left < b.right - tolerance
+          && a.right > b.left + tolerance
+          && a.top < b.bottom - tolerance
+          && a.bottom > b.top + tolerance;
+      }
+
+      function isPointInsideRect(x, y, rect) {
+        return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      }
+
+      function isElementCenterInViewport(doc, element) {
+        const rect = element.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        return x >= 0 && x <= doc.defaultView.innerWidth && y >= 0 && y <= doc.defaultView.innerHeight;
+      }
+
+      function describeElement(element) {
+        if (!element) return "none";
+        const text = element.textContent?.trim().replace(/\s+/g, " ").slice(0, 40)
+          || element.getAttribute("aria-label")
+          || element.getAttribute("data-action")
+          || element.getAttribute("data-file-id")
+          || element.getAttribute("data-port")
+          || "";
+        return `${element.tagName}.${element.className || ""}${element.id ? `#${element.id}` : ""} ${text}`.trim();
+      }
+
+      function isAllowedCanvasOverlayCoverage(doc, element) {
+        if (!element.closest("#canvasViewport")) return false;
+        const rect = element.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const minimapRect = doc.querySelector("#minimap")?.getBoundingClientRect();
+        return Boolean(minimapRect && isPointInsideRect(x, y, minimapRect));
+      }
+
+      function isElementCenterInsideClippingAncestors(doc, element, scope) {
+        const rect = element.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const scopeRect = scope?.getBoundingClientRect?.();
+        if (scopeRect && !isPointInsideRect(x, y, scopeRect)) return false;
+        let ancestor = element.parentElement;
+        while (ancestor && ancestor !== doc.body && ancestor !== doc.documentElement) {
+          const style = doc.defaultView.getComputedStyle(ancestor);
+          const clips = /(auto|scroll|hidden|clip)/.test(`${style.overflow} ${style.overflowX} ${style.overflowY}`);
+          if (clips) {
+            const ancestorRect = ancestor.getBoundingClientRect();
+            if (!isPointInsideRect(x, y, ancestorRect)) return false;
+          }
+          if (ancestor === scope) break;
+          ancestor = ancestor.parentElement;
+        }
+        return true;
+      }
+
+      function centerHitReport(doc, element) {
+        const rect = element.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const viewport = doc.querySelector("#canvasViewport")?.getBoundingClientRect() || {
+          left: 0,
+          top: 0,
+          right: doc.defaultView.innerWidth,
+          bottom: doc.defaultView.innerHeight
+        };
+        if (!isPointInsideRect(x, y, viewport) && element.closest("#canvasViewport")) return { ok: true, detail: "outside canvas viewport" };
+        const hit = doc.elementFromPoint(x, y);
+        const ok = Boolean(hit && (hit === element || element.contains(hit) || hit.contains(element) || hit.closest("[data-action], [data-file-id], [data-port], [data-link-id]") === element));
+        return {
+          ok,
+          detail: ok ? "" : `target=${describeElement(element)} hit=${describeElement(hit)}`
+        };
+      }
+
+      function centerHitMatches(doc, element) {
+        return centerHitReport(doc, element).ok;
+      }
+
+      async function keepCanvasElementCentered(win, doc, element) {
+        const viewport = doc.querySelector("#canvasViewport");
+        if (!viewport || !element) return;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const viewportRect = viewport.getBoundingClientRect();
+          const rect = element.getBoundingClientRect();
+          const x = rect.left + rect.width / 2;
+          const y = rect.top + rect.height / 2;
+          if (isPointInsideRect(x, y, viewportRect)) return;
+          viewport.scrollLeft += x - (viewportRect.left + viewportRect.width / 2);
+          viewport.scrollTop += y - (viewportRect.top + viewportRect.height / 2);
+          viewport.dispatchEvent(new win.Event("scroll", { bubbles: true }));
+          await wait(60);
+        }
+      }
+
+      function assertVisibleControlsClickable(label, doc, scopeSelector = ".app-shell") {
+        const selectors = [
+          "button:not([disabled])",
+          "input:not([type='hidden']):not([disabled])",
+          "textarea:not([disabled])",
+          "select:not([disabled])",
+          "[data-file-id]",
+          "[data-port]"
+        ].join(",");
+        const scope = doc.querySelector(scopeSelector) || doc;
+        const controls = visibleElements(scope, selectors)
+          .filter((element) => {
+            const rect = element.getBoundingClientRect();
+            if (rect.width < 8 || rect.height < 8) return false;
+            if (!isElementCenterInViewport(doc, element)) return false;
+            if (!isElementCenterInsideClippingAncestors(doc, element, scope)) return false;
+            if (isAllowedCanvasOverlayCoverage(doc, element)) return false;
+            if (element.closest(".event-sheet-scroll") && !isPointInsideRect(rect.left + rect.width / 2, rect.top + rect.height / 2, element.closest(".event-sheet-scroll").getBoundingClientRect())) return false;
+            return true;
+          })
+          .slice(0, 220);
+        let bad = null;
+        for (const control of controls) {
+          const hit = centerHitReport(doc, control);
+          if (!hit.ok) {
+            bad = hit.detail;
+            break;
+          }
+        }
+        const minimumControls = scopeSelector === ".app-shell" ? 20 : 3;
+        assert(`${label}: visible controls have clickable centers`, controls.length >= minimumControls && !bad, bad || `checked=${controls.length}`);
+      }
+
+      function assertNoUnexpectedTextOverflow(label, doc, scopeSelector = ".app-shell") {
+        const scope = doc.querySelector(scopeSelector) || doc;
+        const selectors = [
+          ".toolbar-button",
+          ".small-button",
+          ".file-item",
+          ".palette-item",
+          ".palette-row",
+          ".node-title",
+          ".node-type-label",
+          ".node-cast-chip",
+          ".event-column-button",
+          ".event-hidden-restore-button",
+          ".filter-chip",
+          ".playbook-tab",
+          ".stat-card",
+          ".character-card",
+          ".variable-row",
+          ".script-node-row",
+          ".runner-rule-card"
+        ].join(",");
+        const elements = visibleElements(scope, selectors).slice(0, 260);
+        const offenders = elements.filter((element) => {
+          const style = doc.defaultView.getComputedStyle(element);
+          if (style.overflow === "hidden" || style.textOverflow === "ellipsis") return false;
+          return element.scrollWidth > element.clientWidth + 2 || element.scrollHeight > element.clientHeight + 2;
+        });
+        assert(`${label}: visible UI text containers do not unexpectedly overflow`, offenders.length === 0, offenders.slice(0, 5).map((element) => `${element.className}: ${element.textContent.trim().slice(0, 60)}`).join(" | "));
+      }
+
+      function assertToolbarDoesNotOverlap(label, doc) {
+        const groups = [
+          [".workspace-global-bar button, .workspace-global-bar select", "global bar"],
+          ["#workspaceToolbar button:not([hidden]), #workspaceToolbar select", "canvas toolbar"],
+          [".document-actions button", "document actions"]
+        ];
+        groups.forEach(([selector, name]) => {
+          const controls = visibleElements(doc, selector);
+          let overlap = "";
+          for (let i = 0; i < controls.length; i += 1) {
+            for (let j = i + 1; j < controls.length; j += 1) {
+              const a = controls[i].getBoundingClientRect();
+              const b = controls[j].getBoundingClientRect();
+              if (rectsOverlap(a, b)) {
+                overlap = `${controls[i].textContent.trim()} ${rectDetail(a)} overlaps ${controls[j].textContent.trim()} ${rectDetail(b)}`;
+                break;
+              }
+            }
+            if (overlap) break;
+          }
+          assert(`${label}: ${name} controls do not overlap`, !overlap, overlap);
+        });
+      }
+
+      function assertActivePanelFits(label, doc) {
+        const active = doc.querySelector(".canvas-workspace-view.active");
+        const workspace = doc.querySelector(".canvas-workspace");
+        const activeRect = active?.getBoundingClientRect();
+        const workspaceRect = workspace?.getBoundingClientRect();
+        assert(
+          `${label}: active workspace view stays inside workspace`,
+          activeRect && workspaceRect
+            && activeRect.left >= workspaceRect.left - 1
+            && activeRect.right <= workspaceRect.right + 1
+            && activeRect.top >= workspaceRect.top - 1
+            && activeRect.bottom <= workspaceRect.bottom + 1,
+          activeRect && workspaceRect ? `active=${rectDetail(activeRect)} workspace=${rectDetail(workspaceRect)}` : ""
+        );
+      }
+
+      function assertMainShellNoPageOverflow(label, doc, options = {}) {
+        const root = doc.querySelector(".app-shell");
+        const main = doc.querySelector(".canvas-workspace");
+        assert(`${label}: app shell exists for layout scan`, Boolean(root && main));
+        if (!root || !main) return;
+        const shellWidth = root.getBoundingClientRect().width;
+        const bodyFits = doc.documentElement.scrollWidth <= doc.defaultView.innerWidth + 2;
+        const declaredScrollableShell = options.allowDeclaredMinWidth && doc.documentElement.scrollWidth <= shellWidth + 2;
+        assert(`${label}: app shell does not create unexpected body horizontal overflow`, bodyFits || declaredScrollableShell, `doc=${doc.documentElement.scrollWidth} viewport=${doc.defaultView.innerWidth} shell=${shellWidth.toFixed(1)}`);
+        assert(`${label}: main area has nonzero usable size`, main.clientWidth > 300 && main.clientHeight > 300, `${main.clientWidth}x${main.clientHeight}`);
+      }
+
+      function assertEventSheetGeometry(label, doc) {
+        const filter = doc.querySelector("[data-event-filter-bar]");
+        const firstHeader = doc.querySelector(".event-sheet-group-header");
+        const firstScroll = doc.querySelector(".event-sheet-scroll");
+        const filterRect = filter?.getBoundingClientRect();
+        const headerRect = firstHeader?.getBoundingClientRect();
+        assert(`${label}: event filter does not overlap first group header`, filterRect && headerRect && filterRect.bottom <= headerRect.top + 2, `filter=${rectDetail(filterRect || new DOMRect())} header=${rectDetail(headerRect || new DOMRect())}`);
+        assert(`${label}: event sheet keeps horizontal scrolling for wide columns`, firstScroll && firstScroll.scrollWidth > firstScroll.clientWidth + 1, `scroll=${firstScroll?.scrollWidth} client=${firstScroll?.clientWidth}`);
+        const nodeCell = firstScroll?.querySelector(".event-node-link");
+        const nodeRect = nodeCell?.getBoundingClientRect();
+        assert(`${label}: event node cell remains readable`, nodeRect && nodeRect.width >= 220, nodeRect ? rectDetail(nodeRect) : "");
+      }
+
+      function assertCardsDoNotOverflow(label, doc, selector) {
+        const cards = visibleElements(doc, selector).slice(0, 80);
+        const offender = cards.find((card) => card.scrollWidth > card.clientWidth + 2);
+        assert(`${label}: ${selector} cards do not horizontally overflow`, !offender, offender ? `${offender.className} scroll=${offender.scrollWidth} client=${offender.clientWidth}` : `checked=${cards.length}`);
+      }
+
+      function assertPlaybookTabsVisible(label, doc) {
+        const tabsShell = doc.querySelector(".playbook-tabs");
+        const tabs = visibleElements(doc, ".playbook-tab");
+        const shellRect = tabsShell?.getBoundingClientRect();
+        const details = tabs.map((tab) => `${tab.textContent.trim()}:${rectDetail(tab.getBoundingClientRect())}`).join(" | ");
+        const labels = tabs.map((tab) => tab.textContent.trim()).filter(Boolean);
+        const sameRow = tabs.length >= 3 && tabs.every((tab) => {
+          const rect = tab.getBoundingClientRect();
+          return shellRect
+            && rect.width >= 64
+            && rect.height >= 28
+            && Math.abs(rect.top - tabs[0].getBoundingClientRect().top) <= 2
+            && isPointInsideRect(rect.left + rect.width / 2, rect.top + rect.height / 2, shellRect);
+        });
+        const allClickable = tabs.slice(0, 3).every((tab) => centerHitMatches(doc, tab));
+        assert(`${label}: playbook tabs are visible horizontal controls`, Boolean(tabsShell && shellRect?.height >= 36 && labels.length >= 3 && sameRow && allClickable), details || describeElement(tabsShell));
+      }
+
+      async function assertChineseLocalization(label, win, doc) {
+        win.NarrativeCanvasApp?.setLanguage?.("zh", { persist: false, force: true });
+        await wait(120);
+        const fileLabels = [...doc.querySelectorAll(".nc-file-item-label")].map((item) => item.textContent.trim());
+        assert(`${label}: Chinese file tabs are localized`, ["叙事画布", "事件表", "角色", "演示设置"].every((text) => fileLabels.includes(text)), fileLabels.join(" | "));
+        assert(`${label}: Chinese play button says demo`, doc.querySelector("[data-action='play']")?.textContent.trim() === "演示");
+        click(doc.querySelector("[data-file-id='variables']"));
+        await waitFor(`${label}: Chinese playbook opens`, () => doc.querySelector(".playbook-tabs"));
+        const tabText = [...doc.querySelectorAll(".playbook-tab")].map((item) => item.textContent.trim()).join(" | ");
+        assert(`${label}: Chinese playbook tab names are localized`, tabText.includes("变量") && tabText.includes("脚本构建器") && tabText.includes("演示规则"), tabText);
+        click(doc.querySelector("[data-action='add-play-rule']"));
+        await waitFor(`${label}: Chinese add rule dialog opens`, () => doc.querySelector("#playRuleDialog")?.open);
+        const dialogText = doc.querySelector("#playRuleDialog")?.textContent || "";
+        assert(`${label}: Chinese add rule dialog is localized`, dialogText.includes("添加演示规则") && dialogText.includes("起始节点") && dialogText.includes("访问记录"), dialogText.slice(0, 240));
+        click(doc.querySelector("#playRuleDialog .confirm-cancel"));
+      }
+
+      function getSavedNode(win, nodeId) {
+        const node = win.NarrativeCanvasApp.getSavedState()?.project?.nodes?.find((candidate) => candidate.id === nodeId);
+        return node ? { ...node } : null;
+      }
+
+      function assertInputsAcceptText(label, win, doc) {
+        const projectInput = doc.querySelector("[data-project-field='title']");
+        setControlValue(win, projectInput, "GUI Regression Project");
+        assert(`${label}: project title input accepts text`, projectInput?.value === "GUI Regression Project");
+
+        click(doc.querySelector(".node[data-node-id]"));
+        const nodeTitle = doc.querySelector("[data-node-field='title']");
+        const nodeBody = doc.querySelector("[data-node-field='body']");
+        setControlValue(win, nodeTitle, "GUI Regression Node Title With Long But Contained Text");
+        setControlValue(win, nodeBody, "GUI regression body input accepts long copy without breaking the inspector panel.");
+        assert(`${label}: node title input accepts text`, nodeTitle?.value.includes("GUI Regression Node Title"));
+        assert(`${label}: node body textarea accepts text`, nodeBody?.value.includes("body input accepts"));
+      }
+
+      function dispatchPointerDrag(win, startElement, moveTarget, start, end, pointerId = 701) {
+        startElement.dispatchEvent(new win.PointerEvent("pointerdown", {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          button: 0,
+          buttons: 1,
+          clientX: start.x,
+          clientY: start.y
+        }));
+        moveTarget.dispatchEvent(new win.PointerEvent("pointermove", {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          button: 0,
+          buttons: 1,
+          clientX: end.x,
+          clientY: end.y
+        }));
+        moveTarget.dispatchEvent(new win.PointerEvent("pointerup", {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          button: 0,
+          buttons: 0,
+          clientX: end.x,
+          clientY: end.y
+        }));
+      }
+
+      async function assertCanvasDragResizeAndPorts(label, win, doc) {
+        click(doc.querySelector("[data-file-id='adventure']"));
+        await waitFor(`${label}: canvas is active for drag checks`, () => doc.querySelector(".node[data-node-id]"));
+        const viewport = doc.querySelector("#canvasViewport");
+
+        click(doc.querySelector("[data-action='add-node'][data-type='Marker']"));
+        await waitFor(`${label}: marker can be added for drag check`, () => doc.querySelector(".node.selected .node-header"));
+        const node = doc.querySelector(".node.selected");
+        const nodeId = node?.dataset.nodeId || "";
+        const header = node?.querySelector(".node-header");
+        const before = getSavedNode(win, nodeId);
+        const headerRect = header?.getBoundingClientRect();
+        dispatchPointerDrag(win, header, viewport, {
+          x: headerRect.left + 80,
+          y: headerRect.top + headerRect.height / 2
+        }, {
+          x: headerRect.left + 140,
+          y: headerRect.top + headerRect.height / 2 + 34
+        }, 711);
+        await wait(120);
+        const after = getSavedNode(win, nodeId);
+        assert(`${label}: node header drag moves selected node`, before && after && after.x > before.x + 20 && after.y > before.y + 10, before && after ? `before=${before.x},${before.y} after=${after.x},${after.y}` : "");
+
+        const resizeHandle = doc.querySelector(`.node[data-node-id='${nodeId}'] .node-resize-handle.right`);
+        const resizeBefore = doc.querySelector(`.node[data-node-id='${nodeId}']`)?.getBoundingClientRect();
+        dispatchPointerDrag(win, resizeHandle, viewport, {
+          x: resizeBefore.right,
+          y: resizeBefore.top + resizeBefore.height / 2
+        }, {
+          x: resizeBefore.right + 70,
+          y: resizeBefore.top + resizeBefore.height / 2
+        }, 712);
+        await wait(120);
+        const resizeAfter = doc.querySelector(`.node[data-node-id='${nodeId}']`)?.getBoundingClientRect();
+        assert(`${label}: node resize handle grows width`, resizeBefore && resizeAfter && resizeAfter.width > resizeBefore.width + 35, resizeBefore && resizeAfter ? `before=${resizeBefore.width} after=${resizeAfter.width}` : "");
+
+        const outputPort = doc.querySelector(`.port.output[data-node-id='${nodeId}']`);
+        await keepCanvasElementCentered(win, doc, outputPort);
+        const outputRect = outputPort?.getBoundingClientRect();
+        const outputHit = outputRect ? doc.elementFromPoint(outputRect.left + outputRect.width / 2, outputRect.top + outputRect.height / 2) : null;
+        const outputViewport = doc.querySelector("#canvasViewport")?.getBoundingClientRect();
+        assert(
+          `${label}: node output port is the clickable hit target`,
+          outputHit?.closest("[data-port]") === outputPort,
+          outputHit?.className || outputHit?.tagName || `rect=${outputRect ? rectDetail(outputRect) : "none"} viewport=${outputViewport ? rectDetail(outputViewport) : "none"} inner=${win.innerWidth}x${win.innerHeight}`
+        );
+
+        click(doc.querySelector("[data-action='add-node'][data-type='Content']"));
+        await waitFor(`${label}: top overlap node can be added`, () => {
+          const selected = doc.querySelector(".node.selected");
+          return selected && selected.dataset.nodeId !== nodeId;
+        });
+        const topNode = doc.querySelector(".node.selected");
+        const topNodeId = topNode?.dataset.nodeId || "";
+        const topHeader = topNode?.querySelector(".node-header");
+        const currentLowerOutput = doc.querySelector(`.port.output[data-node-id='${nodeId}']`);
+        await keepCanvasElementCentered(win, doc, currentLowerOutput);
+        const topHeaderRect = topHeader?.getBoundingClientRect();
+        const lowerOutputRect = currentLowerOutput?.getBoundingClientRect();
+        if (topHeader && topHeaderRect && lowerOutputRect) {
+          dispatchPointerDrag(win, topHeader, viewport, {
+            x: topHeaderRect.left + topHeaderRect.width / 2,
+            y: topHeaderRect.top + topHeaderRect.height / 2
+          }, {
+            x: lowerOutputRect.left + lowerOutputRect.width / 2,
+            y: lowerOutputRect.top + lowerOutputRect.height / 2
+          }, 714);
+          await wait(120);
+          const lowerPortAfterOverlap = doc.querySelector(`.port.output[data-node-id='${nodeId}']`);
+          const lowerPortRectAfterOverlap = lowerPortAfterOverlap?.getBoundingClientRect();
+          const overlapHit = lowerPortRectAfterOverlap
+            ? doc.elementFromPoint(lowerPortRectAfterOverlap.left + lowerPortRectAfterOverlap.width / 2, lowerPortRectAfterOverlap.top + lowerPortRectAfterOverlap.height / 2)
+            : null;
+          assert(
+            `${label}: lower node port does not float above overlapping top node`,
+            Boolean(overlapHit?.closest(".node")?.dataset.nodeId === topNodeId && overlapHit.closest("[data-port]") !== lowerPortAfterOverlap),
+            `hit=${describeElement(overlapHit)} rect=${lowerPortRectAfterOverlap ? rectDetail(lowerPortRectAfterOverlap) : "none"} viewport=${doc.querySelector("#canvasViewport") ? rectDetail(doc.querySelector("#canvasViewport").getBoundingClientRect()) : "none"} inner=${win.innerWidth}x${win.innerHeight} top=${topNodeId} lower=${nodeId}`
+          );
+        } else {
+          assert(`${label}: lower node port does not float above overlapping top node`, false, "Missing top node or lower port geometry");
+        }
+
+        click(doc.querySelector("[data-action='add-node'][data-type='Event']"));
+        await waitFor(`${label}: frame can be added for collapse/drag check`, () => doc.querySelector(".node.frame.selected"));
+        const frame = doc.querySelector(".node.frame.selected");
+        const frameId = frame?.dataset.nodeId || "";
+        const collapseButton = frame?.querySelector("[data-action='toggle-frame-collapse']");
+        click(collapseButton);
+        await waitFor(`${label}: frame collapse button remains clickable`, () => doc.querySelector(`.node.frame.collapsed[data-node-id='${frameId}']`));
+        const collapsedFrame = doc.querySelector(`.node.frame[data-node-id='${frameId}']`);
+        const collapsedHeader = collapsedFrame?.querySelector(".node-header");
+        const collapsedBefore = collapsedFrame?.getBoundingClientRect();
+        const collapsedHeaderRect = collapsedHeader?.getBoundingClientRect();
+        dispatchPointerDrag(win, collapsedHeader, viewport, {
+          x: collapsedHeaderRect.left + 80,
+          y: collapsedHeaderRect.top + collapsedHeaderRect.height / 2
+        }, {
+          x: collapsedHeaderRect.left + 140,
+          y: collapsedHeaderRect.top + collapsedHeaderRect.height / 2 + 24
+        }, 713);
+        await wait(120);
+        const collapsedAfter = doc.querySelector(`.node.frame[data-node-id='${frameId}']`)?.getBoundingClientRect();
+        assert(`${label}: collapsed frame header drag moves frame`, collapsedBefore && collapsedAfter && collapsedAfter.left > collapsedBefore.left + 20 && collapsedAfter.top > collapsedBefore.top + 8, collapsedBefore && collapsedAfter ? `before=${rectDetail(collapsedBefore)} after=${rectDetail(collapsedAfter)}` : "");
+        click(doc.querySelector(`.node.frame[data-node-id='${frameId}'] [data-action='toggle-frame-collapse']`));
+        await waitFor(`${label}: frame expands after drag`, () => !doc.querySelector(`.node.frame.collapsed[data-node-id='${frameId}']`));
+        if (doc.querySelector("#genericConfirmDialog")?.open) click(doc.querySelector("#genericConfirmDialog .confirm-cancel"));
+      }
+
+      async function assertEventsInteractions(label, win, doc) {
+        click(doc.querySelector("[data-file-id='events']"));
+        await waitFor(`${label}: events sheet opens`, () => doc.querySelector("[data-event-search]"));
+        assertActivePanelFits(`${label}: events`, doc);
+        assertEventSheetGeometry(label, doc);
+        assertVisibleControlsClickable(`${label}: events`, doc, "#eventsPanel");
+
+        const search = doc.querySelector("[data-event-search]");
+        assert(`${label}: events sheet omits inert all-visible filter chip`, !(doc.querySelector("[data-event-filter-bar]")?.textContent || "").includes("All event rows visible"));
+        setControlValue(win, search, "boarding");
+        assert(`${label}: event search accepts input`, search.value === "boarding");
+        assert(`${label}: event filter updates`, doc.querySelector("[data-event-filter-bar]")?.textContent.toLowerCase().includes("boarding"));
+        setControlValue(win, search, "");
+
+        const shell = doc.querySelector(".event-sheet-shell");
+        const shellRect = shell?.getBoundingClientRect();
+        shell?.dispatchEvent(new win.MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          view: win,
+          clientX: shellRect ? shellRect.left + 32 : 0,
+          clientY: shellRect ? shellRect.top + 140 : 0
+        }));
+        await wait(80);
+        assert(`${label}: events page right-click does not show canvas menu`, doc.querySelector("#nodeContextMenu")?.hidden !== false);
+
+        const hideFrameType = doc.querySelector("[data-action='hide-event-frame-type']");
+        assert(`${label}: events sheet exposes hide frame type button`, Boolean(hideFrameType));
+        const type = hideFrameType?.dataset.eventFrameType || "";
+        click(hideFrameType);
+        await waitFor(`${label}: hide frame type removes group`, () => type && !doc.querySelector(`[data-event-group-type='${type}']`));
+        const showFrameType = doc.querySelector(`[data-action='show-event-frame-type'][data-event-frame-type='${type}']`);
+        assert(`${label}: events sheet exposes restore hidden frame type button`, Boolean(showFrameType));
+        click(showFrameType);
+        await waitFor(`${label}: restore frame type returns group`, () => Boolean(doc.querySelector(`[data-event-group-type='${type}']`)));
+
+        const eventInput = doc.querySelector(".event-sheet-table input, .event-sheet-table textarea");
+        if (eventInput) {
+          setControlValue(win, eventInput, "GUI event cell text");
+          assert(`${label}: event sheet cell accepts input`, eventInput.value.includes("GUI event"));
+        } else {
+          assert(`${label}: event sheet cell accepts input`, false, "No editable event cell found");
+        }
+      }
+
+      async function assertCharactersInteractions(label, win, doc) {
+        click(doc.querySelector("[data-file-id='characters']"));
+        await waitFor(`${label}: characters page opens`, () => doc.querySelector("[data-character-search]"));
+        assertActivePanelFits(`${label}: characters`, doc);
+        assertCardsDoNotOverflow(label, doc, ".character-card");
+        assertVisibleControlsClickable(`${label}: characters`, doc, "#charactersPanel");
+        assert(`${label}: characters page omits inert all-visible filter chip`, !(doc.querySelector("[data-character-filter-bar]")?.textContent || "").includes("All characters visible"));
+        const search = doc.querySelector("[data-character-search]");
+        setControlValue(win, search, "mara");
+        assert(`${label}: character search accepts input`, search.value === "mara");
+        setControlValue(win, search, "");
+        click(doc.querySelector("[data-action='add-character']"));
+        await waitFor(`${label}: add character creates editable card`, () => doc.querySelector("[data-character-field='name']"));
+        const nameInput = doc.querySelector("[data-character-field='name']");
+        const characterId = nameInput?.dataset.characterId || "";
+        setControlValue(win, nameInput, "GUI Regression Character With Long Name");
+        assert(`${label}: character name accepts text`, nameInput.value.includes("GUI Regression Character"));
+        const card = doc.querySelector(`[data-character-id='${characterId}'][data-character-field='name']`)?.closest(".character-card");
+        click(card?.querySelector("[data-action='hide-character']"));
+        await waitFor(`${label}: character card hide button removes card`, () => !doc.querySelector(`[data-character-id='${characterId}'][data-character-field='name']`));
+        const restoreButton = doc.querySelector(`[data-action='show-character'][data-character-id='${characterId}']`);
+        assert(`${label}: hidden character restore button appears`, Boolean(restoreButton && doc.querySelector("[data-character-restore-bar]")));
+        click(restoreButton);
+        await waitFor(`${label}: hidden character can be restored`, () => Boolean(doc.querySelector(`[data-character-id='${characterId}'][data-character-field='name']`)));
+        assertCardsDoNotOverflow(label, doc, ".character-card");
+      }
+
+      async function assertPlaybookInteractions(label, win, doc) {
+        click(doc.querySelector("[data-file-id='variables']"));
+        await waitFor(`${label}: playbook opens`, () => doc.querySelector(".playbook-tabs"));
+        assertActivePanelFits(`${label}: playbook`, doc);
+        assertPlaybookTabsVisible(label, doc);
+        assertVisibleControlsClickable(`${label}: playbook`, doc, "#variablesPanel");
+        assertNoUnexpectedTextOverflow(`${label}: playbook`, doc, "#variablesPanel");
+
+        click(doc.querySelector("[data-action='add-variable']"));
+        await waitFor(`${label}: add variable creates row`, () => doc.querySelector("[data-variable-field='key']"));
+        const variableKey = doc.querySelector("[data-variable-field='key']");
+        const variableValue = doc.querySelector("[data-variable-field='value']");
+        assert(`${label}: new variable key field receives focus`, doc.activeElement === variableKey || Boolean(variableKey));
+        setControlValue(win, variableKey, "gui_flag");
+        setControlValue(win, variableValue, "true");
+        assert(`${label}: variable row accepts key/value input`, variableKey.value === "gui_flag" && variableValue.value === "true");
+
+        click(doc.querySelector("[data-action='select-playbook-tab'][data-playbook-tab='script']"));
+        await waitFor(`${label}: script builder tab opens`, () => doc.querySelector(".script-node-table"));
+        const scriptRow = doc.querySelector(".script-node-row:not(.script-node-heading)");
+        setControlValue(win, scriptRow?.querySelector("[data-script-node-field='requirements']"), "gui_flag == true");
+        setControlValue(win, scriptRow?.querySelector("[data-script-node-field='effects']"), "set gui_seen = true");
+        assert(`${label}: script builder inputs accept requirements/effects`, scriptRow?.querySelector("[data-script-node-field='requirements']")?.value.includes("gui_flag"));
+
+        click(doc.querySelector("[data-action='select-playbook-tab'][data-playbook-tab='rules']"));
+        await waitFor(`${label}: play rules tab opens`, () => doc.querySelector(".playbook-rule-grid"));
+        const addRule = doc.querySelector("[data-action='add-play-rule']");
+        assert(`${label}: play rules add button is clickable`, Boolean(addRule) && centerHitMatches(doc, addRule));
+      }
+
+      async function assertCompactLayout(label, win, doc, frame) {
+        frame.style.width = `${COMPACT_VIEWPORT.width}px`;
+        frame.style.height = `${COMPACT_VIEWPORT.height}px`;
+        win.dispatchEvent(new win.Event("resize"));
+        await wait(200);
+        assertMainShellNoPageOverflow(`${label}: compact`, doc, { allowDeclaredMinWidth: true });
+        assertActivePanelFits(`${label}: compact`, doc);
+        assertToolbarDoesNotOverlap(`${label}: compact`, doc);
+        assertNoUnexpectedTextOverflow(`${label}: compact`, doc);
+        assertVisibleControlsClickable(`${label}: compact`, doc);
+        click(doc.querySelector("[data-file-id='events']"));
+        await waitFor(`${label}: compact events opens`, () => doc.querySelector("#eventsPanel.active"));
+        assertActivePanelFits(`${label}: compact events`, doc);
+        assertEventSheetGeometry(`${label}: compact`, doc);
+      }
+
+      function extractBodyHtml(html) {
+        const match = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+        const bodyHtml = match ? match[1] : html;
+        return bodyHtml
+          .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+          .replace(/<link\b[^>]*rel=["']stylesheet["'][^>]*>/gi, "");
+      }
+
+      const projectBaseUrl = new URL("../", window.location.href);
+
+      function assetUrl(path) {
+        return new URL(path, projectBaseUrl).href;
+      }
+
+      function scopeCanvasCss(source) {
+        const keyframes = [];
+        let css = source
+          .replace(/:root/g, ".narrative-canvas-plugin-host")
+          .replace(/(^|})\s*html\s*,\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {")
+          .replace(/(^|})\s*body\s*{/g, "$1\n.narrative-canvas-plugin-host {");
+
+        css = css.replace(/@keyframes\s+[-_a-zA-Z0-9]+\s*{(?:[^{}]|{[^{}]*})*}/g, (match) => {
+          const token = `__NARRATIVE_CANVAS_KEYFRAMES_${keyframes.length}__`;
+          keyframes.push(match);
+          return token;
+        });
+
+        css = css.replace(/(^|[{}])\s*([^@{}][^{]+)\s*{/g, (match, boundary, selectorText) => {
+          const selectors = selectorText
+            .split(",")
+            .map((selector) => selector.trim())
+            .filter(Boolean)
+            .map((selector) => selector.startsWith(".narrative-canvas-plugin-host")
+              ? selector
+              : `.narrative-canvas-plugin-host ${selector}`);
+          return `${boundary}\n${selectors.join(", ")} {`;
+        });
+
+        return css.replace(/__NARRATIVE_CANVAS_KEYFRAMES_(\d+)__/g, (_match, index) => keyframes[Number(index)] || "");
+      }
+
+      async function loadWebFrame() {
+        window.localStorage?.removeItem(WEB_STORAGE_KEY);
+        const frame = document.createElement("iframe");
+        frame.title = "web GUI regression target";
+        frame.style.width = `${DESKTOP_VIEWPORT.width}px`;
+        frame.style.height = `${DESKTOP_VIEWPORT.height}px`;
+        frame.src = `${assetUrl("index.html")}?gui=${Date.now()}`;
+        document.body.append(frame);
+        await new Promise((resolve, reject) => {
+          frame.addEventListener("load", resolve, { once: true });
+          frame.addEventListener("error", reject, { once: true });
+        });
+        const win = frame.contentWindow;
+        const doc = frame.contentDocument;
+        await waitFor("web GUI app ready", () => Boolean(win.NarrativeCanvasApp && doc.querySelector(".app-shell[data-theme]")));
+        return { frame, win, doc };
+      }
+
+      async function loadPluginFrame() {
+        const [html, css, appJs] = await Promise.all([
+          fetch(`${assetUrl("index.html")}?gui=${Date.now()}`).then((response) => response.text()),
+          fetch(`${assetUrl("styles.css")}?gui=${Date.now()}`).then((response) => response.text()),
+          fetch(`${assetUrl("app.js")}?gui=${Date.now()}`).then((response) => response.text())
+        ]);
+        const frame = document.createElement("iframe");
+        frame.title = "plugin GUI regression target";
+        frame.style.width = `${DESKTOP_VIEWPORT.width}px`;
+        frame.style.height = `${DESKTOP_VIEWPORT.height}px`;
+        document.body.append(frame);
+        const doc = frame.contentDocument;
+        const win = frame.contentWindow;
+        doc.open();
+        doc.write("<!doctype html><html><head><meta charset=\"utf-8\"><title>Plugin Host GUI Regression</title></head><body></body></html>");
+        doc.close();
+        doc.documentElement.style.width = "100%";
+        doc.documentElement.style.height = "100%";
+        doc.documentElement.style.overflow = "hidden";
+        doc.body.style.width = "100%";
+        doc.body.style.height = "100%";
+        doc.body.style.margin = "0";
+        doc.body.style.overflow = "hidden";
+
+        const style = doc.createElement("style");
+        style.textContent = css;
+        doc.head.append(style);
+
+        const host = doc.createElement("div");
+        host.className = "narrative-canvas-plugin-host";
+        host.innerHTML = extractBodyHtml(html);
+        doc.body.append(host);
+
+        win.__saveProjectCalls = [];
+        win.NarrativeCanvasHost = {
+          root: host,
+          loadProject: async () => null,
+          saveProject: async (savedStateJson) => {
+            win.__saveProjectCalls.push(savedStateJson);
+            return "GUIRegression.ncanvas";
+          },
+          getLanguage: () => "en",
+          getAutoSaveIntervalMs: () => 1000,
+          ensureProjectFile: async () => "GUIRegression.ncanvas",
+          createProjectFile: async () => "GUIRegression-New.ncanvas",
+          previewNewProjectFile: async () => "GUIRegression-New.ncanvas",
+          getProjectFile: () => "GUIRegression.ncanvas"
+        };
+
+        const script = doc.createElement("script");
+        script.textContent = appJs;
+        doc.body.append(script);
+        await win.NarrativeCanvasApp.init();
+        await waitFor("plugin GUI app ready", () => Boolean(doc.querySelector(".narrative-canvas-plugin-host .app-shell[data-theme]")));
+        return { frame, win, doc };
+      }
+
+      async function runGuiChecks(label, target) {
+        const { win, doc, frame } = target;
+        assertMainShellNoPageOverflow(label, doc);
+        assertActivePanelFits(label, doc);
+        assertToolbarDoesNotOverlap(label, doc);
+        assertNoUnexpectedTextOverflow(label, doc);
+        assertVisibleControlsClickable(label, doc);
+        await assertChineseLocalization(label, win, doc);
+        assertInputsAcceptText(label, win, doc);
+        await assertCanvasDragResizeAndPorts(label, win, doc);
+        await assertEventsInteractions(label, win, doc);
+        await assertCharactersInteractions(label, win, doc);
+        await assertPlaybookInteractions(label, win, doc);
+        await assertCompactLayout(label, win, doc, frame);
+      }
+
+      async function run() {
+        try {
+          const web = await loadWebFrame();
+          await runGuiChecks("web", web);
+          web.win.NarrativeCanvasApp.destroy?.();
+          web.frame.remove();
+
+          const plugin = await loadPluginFrame();
+          await runGuiChecks("plugin", plugin);
+          plugin.win.NarrativeCanvasApp.destroy?.();
+          plugin.frame.remove();
+        } catch (error) {
+          fail("uncaught error", error?.stack || String(error));
+        } finally {
+          updateReport(true);
+        }
+      }
+
+      updateReport();
+      run();
+    </script>
+  </body>
+</html>

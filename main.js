@@ -87,8 +87,30 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       callback: () => this.openSampleProject().catch((error) => this.reportOpenError(error))
     });
 
-    this.registerEvent(this.app.workspace.on("file-open", (file) => {
-      this.handleVaultFileOpen(file);
+    // Duplicate-tab handling lives in View.onOpen — when Obsidian creates a fresh leaf for a
+    // file we already have open, that leaf's onOpen detects the survivor and detaches itself
+    // before the canvas singleton is touched. We no longer need a workspace file-open hook
+    // for dedup; active-leaf-change keeps the singleton aligned with the visible tab.
+
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      this.handleVaultFileDelete(file).catch((error) => console.error(error));
+    }));
+
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      this.handleVaultFileRename(file, oldPath).catch((error) => console.error(error));
+    }));
+
+    // When the user switches between Narrative Canvas tabs, the singleton canvas app may be
+    // pointed at a different file. Reload to match the newly-active leaf so the visible
+    // content corresponds to the tab the user just clicked on.
+    this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
+      if (!leaf || !this.isNarrativeCanvasLeaf(leaf)) return;
+      const file = leaf.view?.file;
+      if (!file) return;
+      if (this.settings.currentProjectPath === file) return;
+      this.setCurrentProjectPath(file, { leaf, syncViewState: false })
+        .then(() => window.NarrativeCanvasApp?.loadVaultProject?.())
+        .catch((error) => console.error(error));
     }));
   }
 
@@ -258,8 +280,9 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     const normalized = normalizeVaultPath(path);
     const leaves = this.app.workspace?.getLeavesOfType?.(VIEW_TYPE) || [];
     return leaves.find((leaf) => {
+      const ownFile = leaf.view?.file;
       const state = leaf.getViewState?.()?.state || {};
-      const leafPath = normalizeVaultPath(state.file || state.path);
+      const leafPath = normalizeVaultPath(ownFile || state.file || state.path);
       return leafPath && leafPath === normalized;
     }) || null;
   }
@@ -509,10 +532,82 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     }
   }
 
-  async handleVaultFileOpen(file) {
-    if (!file || !isProjectFileExtension(file.extension)) return;
-    if (!(await this.isNarrativeCanvasProjectFile(file.path))) return;
-    await this.openProjectFile(file.path, this.getProjectLeafForPath(file.path));
+  async handleVaultFileDelete(file) {
+    if (!file) return;
+    const deletedPath = normalizeVaultPath(file.path);
+    if (!deletedPath) return;
+    const isFolder = file instanceof TFolder;
+    const isProjectFile = file instanceof TFile && isProjectFileExtension(file.extension);
+    if (!isFolder && !isProjectFile) return;
+    const matchesDeleted = (candidate) => {
+      const normalized = normalizeVaultPath(candidate);
+      if (!normalized) return false;
+      if (normalized === deletedPath) return true;
+      return isFolder && normalized.startsWith(`${deletedPath}/`);
+    };
+    const matchingLeaves = (this.app.workspace?.getLeavesOfType?.(VIEW_TYPE) || []).filter((leaf) => {
+      const state = leaf.getViewState?.()?.state || {};
+      return matchesDeleted(leaf.view?.file || state.file || state.path);
+    });
+    const trackedCurrent = matchesDeleted(this.settings.currentProjectPath);
+    const trackedLast = matchesDeleted(this.settings.lastProjectPath);
+    if (!matchingLeaves.length && !trackedCurrent && !trackedLast) return;
+    // Only stop the singleton canvas app if it is currently bound to the deleted file. Other
+    // open Narrative Canvas tabs keep their state untouched.
+    if (trackedCurrent) {
+      try { window.NarrativeCanvasApp?.destroy?.(); } catch (error) { console.error(error); }
+    }
+    let changed = false;
+    if (trackedCurrent) {
+      this.settings.currentProjectPath = "";
+      changed = true;
+    }
+    if (trackedLast) {
+      this.settings.lastProjectPath = "";
+      changed = true;
+    }
+    if (changed) await this.savePluginData();
+    matchingLeaves.forEach((leaf) => leaf.detach());
+    if (matchingLeaves.length) new Notice(`Narrative Canvas closed — ${file.path} was deleted.`);
+  }
+
+  async handleVaultFileRename(file, oldPath) {
+    if (!(file instanceof TFile) || !isProjectFileExtension(file.extension)) return;
+    const newPath = normalizeVaultPath(file.path);
+    const previous = normalizeVaultPath(oldPath);
+    if (!newPath || !previous || newPath === previous) return;
+    let changed = false;
+    if (normalizeVaultPath(this.settings.currentProjectPath) === previous) {
+      this.settings.currentProjectPath = newPath;
+      changed = true;
+    }
+    if (normalizeVaultPath(this.settings.lastProjectPath) === previous) {
+      this.settings.lastProjectPath = newPath;
+      changed = true;
+    }
+    if (changed) {
+      await this.savePluginData();
+      this.refreshViewTitles();
+    }
+    const leaves = this.app.workspace?.getLeavesOfType?.(VIEW_TYPE) || [];
+    for (const leaf of leaves) {
+      const viewState = leaf.getViewState?.();
+      const leafPath = normalizeVaultPath(viewState?.state?.file || viewState?.state?.path);
+      const ownFile = normalizeVaultPath(leaf.view?.file);
+      if (leafPath !== previous && ownFile !== previous) continue;
+      // Update the per-view tracker so the tab header re-renders to the new name.
+      if (leaf.view) leaf.view.file = newPath;
+      leaf.updateHeader?.();
+      this.syncingProjectViewState = true;
+      try {
+        await leaf.setViewState({
+          ...viewState,
+          state: { ...(viewState.state || {}), file: newPath }
+        });
+      } finally {
+        this.syncingProjectViewState = false;
+      }
+    }
   }
 
   async openProjectFile(path, leaf = null) {
@@ -552,6 +647,16 @@ class NarrativeCanvasView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.styleEl = null;
+    // Each leaf tracks the file it is showing. Without this, getDisplayText / getState fell
+    // back to the plugin-level singleton (last-opened file), so multiple open .ncanvas tabs
+    // all showed the same name in their tab header.
+    this.file = "";
+    // Set true the moment we detect this leaf is a duplicate. Both setState and onOpen
+    // bail early when this is set so we never install a singleton on a doomed leaf.
+    this.duplicateOf = null;
+    // Earliest possible dedup: read the leaf's already-stored state inside the constructor
+    // and schedule self-detach if a sibling NC leaf already shows the same file.
+    this.tryDedupNow();
   }
 
   getViewType() {
@@ -559,8 +664,9 @@ class NarrativeCanvasView extends ItemView {
   }
 
   getDisplayText() {
-    const path = this.plugin.getCurrentProjectPath();
-    return projectDisplayName(path) || "Narrative Canvas";
+    return projectDisplayName(this.file)
+      || projectDisplayName(this.plugin.getCurrentProjectPath())
+      || "Narrative Canvas";
   }
 
   getIcon() {
@@ -569,15 +675,48 @@ class NarrativeCanvasView extends ItemView {
 
   getState() {
     const state = super.getState ? super.getState() : {};
-    const file = this.plugin.getCurrentProjectPath();
-    return file ? { ...state, file } : state;
+    return this.file ? { ...state, file: this.file } : state;
+  }
+
+  // Look at every NC leaf except mine. If any of them already shows the same intended file
+  // (either via its tracked view.file or the leaf's stored state), schedule a self-detach.
+  // Called from constructor, setState, and onOpen; safe to call any number of times.
+  tryDedupNow() {
+    if (this.duplicateOf) return true;
+    const intendedFile = this.file
+      || normalizeVaultPath(this.leaf?.getViewState?.()?.state?.file)
+      || normalizeVaultPath(this.leaf?.getViewState?.()?.state?.path);
+    if (!intendedFile) return false;
+    const workspace = this.app?.workspace;
+    const allLeaves = workspace?.getLeavesOfType?.(VIEW_TYPE) || [];
+    const survivor = allLeaves.find((leaf) => {
+      if (leaf === this.leaf) return false;
+      const otherFile = normalizeVaultPath(
+        leaf.view?.file
+        || leaf.getViewState?.()?.state?.file
+        || leaf.getViewState?.()?.state?.path
+      );
+      return otherFile && otherFile === intendedFile;
+    });
+    if (!survivor) return false;
+    this.duplicateOf = survivor;
+    workspace?.setActiveLeaf?.(survivor, { focus: true });
+    workspace?.revealLeaf?.(survivor);
+    // Defer to the next microtask so we don't tear ourselves down inside our own
+    // constructor / setState / onOpen call frame.
+    queueMicrotask(() => this.leaf?.detach?.());
+    return true;
   }
 
   async setState(state, result) {
     if (super.setState) await super.setState(state, result);
     const file = normalizeVaultPath(state?.file || state?.path);
     if (!file || !(await this.plugin.isNarrativeCanvasProjectFile(file))) return;
+    if (this.duplicateOf || this.tryDedupNow()) return;
+    const fileChanged = this.file !== file;
+    this.file = file;
     await this.plugin.setCurrentProjectPath(file, { leaf: this.leaf, syncViewState: false });
+    if (fileChanged) this.leaf.updateHeader?.();
     if (!this.plugin.syncingProjectViewState && window.NarrativeCanvasApp?.loadVaultProject) {
       await window.NarrativeCanvasApp.loadVaultProject();
     }
@@ -585,6 +724,8 @@ class NarrativeCanvasView extends ItemView {
 
   async onOpen() {
     this.contentEl.replaceChildren();
+    if (this.duplicateOf || this.tryDedupNow()) return;
+
     this.contentEl.addClass("narrative-canvas-plugin-host");
     this.contentEl.createEl("div", {
       cls: "narrative-canvas-plugin-loading",
@@ -1151,7 +1292,7 @@ const CANVAS_INDEX_HTML = [
   "    \u003cmeta charset=\"utf-8\"\u003e",
   "    \u003cmeta name=\"viewport\" content=\"width=device-width, initial-scale=1\"\u003e",
   "    \u003ctitle\u003eNarrative Canvas\u003c/title\u003e",
-  "    \u003clink rel=\"stylesheet\" href=\"./canvas.css?v=20260604-ui\"\u003e",
+  "    \u003clink rel=\"stylesheet\" href=\"./canvas.css?v=1.1.0\"\u003e",
   "  \u003c/head\u003e",
   "  \u003cbody\u003e",
   "    \u003cdiv class=\"app-shell\"\u003e",
@@ -1221,7 +1362,6 @@ const CANVAS_INDEX_HTML = [
   "            \u003cselect id=\"customNodeKind\" title=\"Node behavior\"\u003e",
   "              \u003coption value=\"node\"\u003eNode\u003c/option\u003e",
   "              \u003coption value=\"frame\"\u003eFrame\u003c/option\u003e",
-  "              \u003coption value=\"eventFrame\"\u003eEvent Frame\u003c/option\u003e",
   "            \u003c/select\u003e",
   "            \u003ctextarea id=\"customNodeFields\" class=\"custom-node-fields\" rows=\"3\" placeholder=\"Fields, one per line\" spellcheck=\"false\"\u003e\u003c/textarea\u003e",
   "          \u003c/div\u003e",
@@ -1268,6 +1408,7 @@ const CANVAS_INDEX_HTML = [
   "          \u003cdiv class=\"canvas-frame\"\u003e",
   "            \u003cdiv id=\"canvasViewport\" class=\"canvas-viewport\" tabindex=\"0\" aria-label=\"Node canvas\"\u003e",
   "              \u003cdiv id=\"canvasContent\" class=\"canvas-content\"\u003e",
+  "                \u003cdiv id=\"frameLayer\" class=\"frame-layer\"\u003e\u003c/div\u003e",
   "                \u003csvg id=\"linkLayer\" class=\"link-layer\" xmlns=\"http://www.w3.org/2000/svg\"\u003e\u003c/svg\u003e",
   "                \u003cdiv id=\"nodeLayer\" class=\"node-layer\"\u003e\u003c/div\u003e",
   "                \u003cdiv id=\"marqueeLayer\" class=\"marquee-layer\"\u003e\u003cdiv id=\"marqueeRect\" class=\"marquee-rect\" hidden\u003e\u003c/div\u003e\u003c/div\u003e",
@@ -1296,7 +1437,11 @@ const CANVAS_INDEX_HTML = [
   "              Find",
   "              \u003cinput id=\"eventSearchInput\" type=\"search\" data-event-search placeholder=\"Find event\" spellcheck=\"false\"\u003e",
   "            \u003c/label\u003e",
-  "            \u003cdiv id=\"matchCount\" data-search-scope=\"adventure\"\u003e0 matches\u003c/div\u003e",
+  "            \u003clabel class=\"workspace-search-box playbook-search-box\" data-search-scope=\"variables\" hidden\u003e",
+  "              Find",
+  "              \u003cinput id=\"playbookSearchInput\" type=\"search\" data-playbook-search placeholder=\"Find in Playbook\" spellcheck=\"false\"\u003e",
+  "            \u003c/label\u003e",
+  "            \u003cdiv id=\"matchCount\"\u003e0 / 0\u003c/div\u003e",
   "          \u003c/div\u003e",
   "        \u003c/footer\u003e",
   "      \u003c/main\u003e",
@@ -1396,7 +1541,7 @@ const CANVAS_INDEX_HTML = [
   "          \u003cspan class=\"pane-kicker\"\u003eEvents Sheet\u003c/span\u003e",
   "          \u003ch2\u003eReset sheet columns?\u003c/h2\u003e",
   "          \u003cp class=\"confirm-body\"\u003e",
-  "            This restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Event Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.",
+  "            This restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.",
   "          \u003c/p\u003e",
   "        \u003c/header\u003e",
   "        \u003cfooter class=\"confirm-actions\"\u003e",
@@ -1415,6 +1560,7 @@ const CANVAS_INDEX_HTML = [
   "        \u003c/header\u003e",
   "        \u003cfooter class=\"confirm-actions\"\u003e",
   "          \u003cbutton id=\"genericConfirmButton\" class=\"small-button danger-button\" value=\"confirm\"\u003eConfirm\u003c/button\u003e",
+  "          \u003cbutton id=\"genericConfirmSecondaryButton\" class=\"small-button\" value=\"secondary\" hidden\u003eKeep\u003c/button\u003e",
   "          \u003cbutton class=\"small-button confirm-cancel\" value=\"cancel\" autofocus\u003eCancel\u003c/button\u003e",
   "        \u003c/footer\u003e",
   "      \u003c/form\u003e",
@@ -1448,12 +1594,11 @@ const CANVAS_INDEX_HTML = [
   "          \u003csection\u003e",
   "            \u003ch3\u003eCan do\u003c/h3\u003e",
   "            \u003cul\u003e",
-  "                \u003cli\u003eStore project variables for text like \u003ccode\u003e{traveler}\u003c/code\u003e.\u003c/li\u003e",
-  "                \u003cli\u003eBuild category-based state lines such as \u003ccode\u003eSet Variable TalkWChief to True\u003c/code\u003e.\u003c/li\u003e",
-  "                \u003cli\u003eTell Play which node field becomes title, body, or choice buttons.\u003c/li\u003e",
-  "                \u003cli\u003eWrite variables when a node is visited.\u003c/li\u003e",
-  "                \u003cli\u003eRead simple condition fields such as \u003ccode\u003eflag == true\u003c/code\u003e.\u003c/li\u003e",
-  "                \u003cli\u003eUse the builder for common rules and Advanced JSON for exact edits.\u003c/li\u003e",
+  "              \u003cli\u003eStore project variables for text such as \u003ccode\u003e{traveler}\u003c/code\u003e.\u003c/li\u003e",
+  "              \u003cli\u003eBatch-edit node Requirements, Effects, and Routing in Script Builder.\u003c/li\u003e",
+  "              \u003cli\u003eGate simple branches with conditions such as \u003ccode\u003eflag == true\u003c/code\u003e.\u003c/li\u003e",
+  "              \u003cli\u003eControl the demo runner with Start Node, Choice Display, End Condition, Visit Tracking, and Debug Mode.\u003c/li\u003e",
+  "              \u003cli\u003eUse Advanced JSON for exact edits without changing the canvas schema.\u003c/li\u003e",
   "            \u003c/ul\u003e",
   "          \u003c/section\u003e",
   "          \u003csection\u003e",
@@ -1462,19 +1607,16 @@ const CANVAS_INDEX_HTML = [
   "              \u003cli\u003eRun arbitrary JavaScript.\u003c/li\u003e",
   "              \u003cli\u003eCreate canvas links, move nodes, or change layout.\u003c/li\u003e",
   "              \u003cli\u003eAdd or delete node fields directly. Use Node Library for schema changes.\u003c/li\u003e",
-  "              \u003cli\u003eEvaluate complex code expressions.\u003c/li\u003e",
+  "              \u003cli\u003eReplace a game engine runtime or evaluate complex code expressions.\u003c/li\u003e",
   "            \u003c/ul\u003e",
   "          \u003c/section\u003e",
   "        \u003c/div\u003e",
   "  \u003cpre class=\"playbook-example\"\u003e\u003ccode\u003e{",
-  "    \"variables\": { \"flag\": false },",
-  "    \"actions\": [",
-  "      { \"trigger\": \"onVisit\", \"target\": \"Dialog\", \"op\": \"set\", \"category\": \"Variable\", \"key\": \"TalkWChief\", \"value\": \"True\" }",
-  "    ],",
-  "    \"nodeTypes\": {",
-  "      \"Choice\": { \"body\": \"{body}\", \"choices\": \"choices\" },",
-  "    \"Set\": { \"set\": { \"key\": \"variable\", \"value\": \"value\" } },",
-  "    \"Condition\": { \"condition\": \"condition\" }",
+  "  \"variables\": { \"has_badge\": false, \"trust\": 1 },",
+  "  \"playRules\": {",
+  "    \"startNode\": { \"enabled\": true, \"value\": \"Start\" },",
+  "    \"choiceDisplay\": { \"enabled\": true, \"value\": \"hideUnavailable\" },",
+  "    \"debugMode\": { \"enabled\": false, \"value\": false }",
   "  }",
   "}\u003c/code\u003e\u003c/pre\u003e",
   "        \u003cfooter class=\"confirm-actions\"\u003e",
@@ -1489,30 +1631,26 @@ const CANVAS_INDEX_HTML = [
   "          \u003cspan class=\"pane-kicker\"\u003ePlaybook\u003c/span\u003e",
   "          \u003ch2\u003eAdd play rule\u003c/h2\u003e",
   "        \u003c/header\u003e",
-  "        \u003clabel class=\"field\"\u003e",
-  "          \u003cspan\u003eApply to (node type, label, or node id)\u003c/span\u003e",
-  "          \u003cinput id=\"playRuleTargetInput\" spellcheck=\"false\" autocomplete=\"off\" placeholder=\"Content\"\u003e",
-  "        \u003c/label\u003e",
   "        \u003cdiv class=\"playbook-rule-options\"\u003e",
-  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"text\"\u003e",
-  "            \u003cstrong\u003eText template\u003c/strong\u003e",
-  "            \u003cspan\u003eTitle and body for a node type.\u003c/span\u003e",
+  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"startNode\"\u003e",
+  "            \u003cstrong\u003eStart Node\u003c/strong\u003e",
+  "            \u003cspan\u003eChoose the exact node title Play starts from.\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"choices\"\u003e",
-  "            \u003cstrong\u003eChoices\u003c/strong\u003e",
-  "            \u003cspan\u003eTurn a field into Play buttons.\u003c/span\u003e",
+  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"choiceDisplay\"\u003e",
+  "            \u003cstrong\u003eChoice Display\u003c/strong\u003e",
+  "            \u003cspan\u003eDecide how gated choices appear in Play.\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"set\"\u003e",
-  "            \u003cstrong\u003eSet variable\u003c/strong\u003e",
-  "            \u003cspan\u003eWrite state when a node is visited.\u003c/span\u003e",
+  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"endCondition\"\u003e",
+  "            \u003cstrong\u003eEnd Condition\u003c/strong\u003e",
+  "            \u003cspan\u003eStop the demo route when a condition becomes true.\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"condition\"\u003e",
-  "            \u003cstrong\u003eCondition gate\u003c/strong\u003e",
-  "            \u003cspan\u003eUse a field to decide if a node can run.\u003c/span\u003e",
+  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"visitTracking\"\u003e",
+  "            \u003cstrong\u003eVisit Tracking\u003c/strong\u003e",
+  "            \u003cspan\u003eRecord visited node titles during Play.\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"selected\"\u003e",
-  "            \u003cstrong\u003eFrom selected node\u003c/strong\u003e",
-  "            \u003cspan\u003eInfer a rule from the selected node.\u003c/span\u003e",
+  "          \u003cbutton type=\"button\" data-action=\"create-play-rule\" data-playbook-rule-kind=\"debugMode\"\u003e",
+  "            \u003cstrong\u003eDebug Mode\u003c/strong\u003e",
+  "            \u003cspan\u003eShow variable and condition details while previewing.\u003c/span\u003e",
   "          \u003c/button\u003e",
   "        \u003c/div\u003e",
   "        \u003cfooter class=\"confirm-actions\"\u003e",
@@ -1554,7 +1692,6 @@ const CANVAS_INDEX_HTML = [
   "          \u003cselect id=\"nodeTypeKindInput\"\u003e",
   "            \u003coption value=\"node\"\u003eNode\u003c/option\u003e",
   "            \u003coption value=\"frame\"\u003eFrame\u003c/option\u003e",
-  "            \u003coption value=\"eventFrame\"\u003eEvent Frame\u003c/option\u003e",
   "          \u003c/select\u003e",
   "        \u003c/label\u003e",
   "        \u003clabel class=\"field\"\u003e",
@@ -1569,6 +1706,10 @@ const CANVAS_INDEX_HTML = [
   "          \u003clabel class=\"nc-checkbox-field\"\u003e",
   "            \u003cinput id=\"nodeTypeHiddenInput\" type=\"checkbox\"\u003e",
   "            \u003cspan\u003eHide from library\u003c/span\u003e",
+  "          \u003c/label\u003e",
+  "          \u003clabel class=\"nc-checkbox-field\"\u003e",
+  "            \u003cinput id=\"nodeTypeEventHiddenInput\" type=\"checkbox\"\u003e",
+  "            \u003cspan\u003eHide frame rows from Events Sheet\u003c/span\u003e",
   "          \u003c/label\u003e",
   "        \u003c/div\u003e",
   "        \u003cfooter class=\"confirm-actions\"\u003e",
@@ -1649,6 +1790,20 @@ function installNarrativeCanvasApp() {
     "Custom",
     "Manual Enter"
   ];
+  const PLAYBOOK_CHOICE_DISPLAY_OPTIONS = [
+    { value: "hideUnavailable", label: "Hide unavailable choices" },
+    { value: "disableUnavailable", label: "Show unavailable choices disabled" },
+    { value: "showAll", label: "Show all choices" }
+  ];
+  const NODE_ROUTING_MODES = [
+    { value: "continue", label: "Continue by link" },
+    { value: "end", label: "End route" },
+    { value: "goTo", label: "Go to title" }
+  ];
+  const CHOICE_REVEAL_MODES = [
+    { value: "hide", label: "Hide unavailable choices" },
+    { value: "disabled", label: "Show unavailable choices disabled" }
+  ];
   const CONDITION_BRANCH_LABELS = Object.freeze(["true", "false"]);
   const SAMPLE_PROJECT_FILENAME = "Sample.ncanvas";
   const FALLBACK_AUTO_SAVE_INTERVAL_MS = 2000;
@@ -1699,7 +1854,7 @@ function installNarrativeCanvasApp() {
     { id: "POV", label: "POV scenes" },
     { id: "Target", label: "Target scenes" },
     { id: "Owner", label: "Owned nodes" },
-    { id: "EventFrames", label: "Event frames" }
+    { id: "EventFrames", label: "Frames" }
   ];
   const CHARACTER_BACKLINK_PREVIEW_LIMIT = 6;
   const DOCUMENT_RENDER_INITIAL_LIMIT = 80;
@@ -1717,13 +1872,12 @@ function installNarrativeCanvasApp() {
     : null;
 
   const nodeTypes = {
-    Entry: { badge: "E", color: "#cdd6f4", width: 155 },
+    Entry: { badge: "E", color: "#cdd6f4", width: 155, system: true },
     Content: { badge: "C", color: "#61afef", width: 200 },
     Dialog: { badge: "D", color: "#56b6c2", width: 200 },
     Choice: { badge: "C", color: "#d19a66", width: 200 },
-    Condition: { badge: "C", color: "#e06c75", width: 190 },
-    Set: { badge: "S", color: "#98c379", width: 190 },
-    Jump: { badge: "J", color: "#abb2bf", width: 170 },
+    Condition: { badge: "C", color: "#e06c75", width: 190, legacy: true },
+    Set: { badge: "S", color: "#98c379", width: 190, legacy: true },
     Marker: { badge: "M", color: "#7fdbca", width: 170 },
     Event: { badge: "E", color: DEFAULT_EVENT_FRAME_COLOR, width: 420 }
   };
@@ -1754,7 +1908,7 @@ function installNarrativeCanvasApp() {
   function createSampleProject() {
     return {
       title: "Midnight Line Demo",
-      notes: "A fuller sample that touches every default node type, all variable value types, Characters cast roles, Events Sheet groups, custom event-frame classes, custom node types, a visual frame, hidden library entries, and Playbook rule cards.",
+      notes: "A fuller sample that touches every default node type, all variable value types, Characters cast roles, Events Sheet groups, custom frame presets, custom node types, a frame hidden from Events Sheet, hidden library entries, and Playbook rule cards.",
       variables: {
         traveler: "Mara",
         route: "northbound",
@@ -1764,6 +1918,7 @@ function installNarrativeCanvasApp() {
         talked_to_conductor: false,
         knows_old_reyes: true,
         reyes_watch_offered: false,
+        guard_suspicion: 0,
         inventory: {
           watch: "Reyes pocketwatch",
           coins: 3,
@@ -1794,13 +1949,14 @@ function installNarrativeCanvasApp() {
             body: "Check: {condition}",
             condition: "trust_level >= 2"
           },
-          Jump: {
-            body: "Jump to {body}."
-          },
           Clue: {
             title: "Clue - {title}",
             body: "{body}",
             set: { key: "active_clue", value: "{title}" }
+          },
+          ConversationFrame: {
+            title: "Conversation - {title}",
+            body: "{body}"
           },
           StorySequence: {
             title: "Story Sequence - {title}",
@@ -1821,7 +1977,14 @@ function installNarrativeCanvasApp() {
           { id: "a6", trigger: "onVisit", target: "Glass Key", op: "append", category: "Quest", key: "Main.clues", value: "{title}", append: true },
           { id: "a7", trigger: "onChoose", target: "The Conductor", op: "add", category: "Actor", key: "Mara.trust", value: "1" },
           { id: "a8", trigger: "manual", target: "", op: "toggle", category: "Sim Status", key: "lantern_lit", value: "" }
-        ]
+        ],
+        playRules: {
+          startNode: { enabled: true, value: "All Aboard" },
+          choiceDisplay: { enabled: true, value: "hideUnavailable" },
+          endCondition: { enabled: true, value: "route == terminus" },
+          visitTracking: { enabled: true, value: true },
+          debugMode: { enabled: false, value: false }
+        }
       },
       eventSheet: {
         columns: [
@@ -1852,7 +2015,8 @@ function installNarrativeCanvasApp() {
           width: 520,
           custom: true,
           badgeCustom: true,
-          kind: "eventFrame",
+          kind: "frame",
+          eventSheetHidden: true,
           fields: [
             { key: "location", label: "Location" },
             { key: "timeWeather", label: "Time / Weather" },
@@ -1893,6 +2057,21 @@ function installNarrativeCanvasApp() {
           hidden: false
         },
         {
+          type: "ConversationFrame",
+          label: "Conversation Frame",
+          badge: "CF",
+          color: "#56b6c2",
+          width: 520,
+          custom: true,
+          badgeCustom: true,
+          kind: "frame",
+          fields: [
+            { key: "participants", label: "Participants" },
+            { key: "summary", label: "Summary" }
+          ],
+          hidden: false
+        },
+        {
           type: "InvestigationEvent",
           label: "Investigation Event",
           badge: "IE",
@@ -1900,7 +2079,7 @@ function installNarrativeCanvasApp() {
           width: 520,
           custom: true,
           badgeCustom: true,
-          kind: "eventFrame",
+          kind: "frame",
           fields: [
             { key: "clueStatus", label: "Clue Status" },
             { key: "risk", label: "Risk" },
@@ -1960,31 +2139,32 @@ function installNarrativeCanvasApp() {
       ],
       nodes: [
         { id: "n0", type: "Entry", title: "All Aboard", body: "The Midnight Line waits at the far platform. {traveler} has a ticket, a lantern, and a watch no one should recognize.", x: 80, y: 700, cast: [{ characterId: "c0", role: "POV" }] },
-        { id: "lf1", type: "LocationFrame", title: "Far Platform", body: "A visual frame for the station-side beats. This one is not an Events Sheet row.", x: 220, y: 220, width: 1040, height: 900, customFields: { region: "North terminal", mood: "Fog, brass, late departures" } },
-        { id: "e1", type: "StorySequence", title: "Boarding the Line", body: "Custom Story Sequence frame. Event Frame is the behavior type; this is one concrete class built on it.", x: 270, y: 340, width: 920, height: 700, act: "I", chapter: "1", beatList: "Boarding / ticket check", eventType: "Opening Scene", eventDescription: "Mara boards the Midnight Line, meets the Conductor, and lights the lantern.", location: "Far Platform", timeWeather: "00:03 / fog", questEpisode: "Q01", customFields: { status: "Drafted" } },
+        { id: "lf1", type: "LocationFrame", title: "Far Platform", body: "A frame for the station-side beats. Frames appear in Events Sheet unless that frame type is hidden there.", x: 220, y: 220, width: 1040, height: 900, customFields: { region: "North terminal", mood: "Fog, brass, late departures" } },
+        { id: "e1", type: "StorySequence", title: "Boarding the Line", body: "Custom Story Sequence frame. All frame presets share the same frame behavior and can appear in Events Sheet.", x: 270, y: 340, width: 920, height: 700, act: "I", chapter: "1", beatList: "Boarding / ticket check", eventType: "Opening Scene", eventDescription: "Mara boards the Midnight Line, meets the Conductor, and lights the lantern.", location: "Far Platform", timeWeather: "00:03 / fog", questEpisode: "Q01", customFields: { status: "Drafted" } },
         { id: "n1", type: "Content", title: "Platform 9, Midnight", body: "Fog swallows the rails. The watch once owned by @Old Reyes is heavier than it looks in {traveler}'s coat.", x: 320, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
         { id: "n16", type: "Condition", title: "First-time briefing?", body: "talked_to_conductor == false", condition: "talked_to_conductor == false", x: 600, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
         { id: "n2", type: "Dialog", title: "The Conductor", body: "Tickets, please. {traveler}, is it? The Line has been waiting for that watch.", x: 880, y: 500, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
         { id: "n18", type: "Dialog", title: "The Conductor", body: "You know the terms now: the watch, the key, or the cold compartment. Do not make the Line repeat itself.", x: 880, y: 760, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
         { id: "n3", type: "Set", title: "Light the lantern", body: "lantern_lit = true", variable: "lantern_lit", value: "true", x: 600, y: 785, cast: [{ characterId: "c0", role: "POV" }] },
         { id: "n13", type: "Marker", title: "Designer note", body: "Playbook actions now mirror dialogue-graph rules: talked_to_conductor picks first briefing or repeat line, knows_old_reyes unlocks an extra branch, and trust_level plus lantern_lit gates the map door.", x: 950, y: 930 },
-        { id: "e2", type: "StorySequence", title: "The Bargain", body: "Choice, Set, and conditional branch outcome nodes inside the custom Story Sequence event-frame class.", x: 1240, y: 340, width: 1160, height: 860, act: "II", chapter: "2", beatList: "Watch bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara can spend prior knowledge to improve trust before the bargain resolves.", location: "Car 3", timeWeather: "00:17 / rain on glass", questEpisode: "Q02", customFields: { status: "Branching" } },
+        { id: "e2", type: "StorySequence", title: "The Bargain", body: "Choice, Set, and conditional branch outcome nodes inside the custom Story Sequence frame preset.", x: 1240, y: 340, width: 1160, height: 860, act: "II", chapter: "2", beatList: "Watch bargain", eventType: "Choice", eventDescription: "The Conductor asks for Reyes's pocketwatch; Mara can spend prior knowledge to improve trust before the bargain resolves.", location: "Car 3", timeWeather: "00:17 / rain on glass", questEpisode: "Q02", customFields: { status: "Branching" } },
+        { id: "cf1", type: "ConversationFrame", title: "Three-way bargain", body: "A nested conversation frame for Mara, the Conductor, and Vesper. Collapse it to see the exchange as one conversation beat while keeping the choice and variable logic inside.", x: 1510, y: 430, width: 850, height: 390, customFields: { participants: "Mara / The Conductor / Vesper", summary: "Prior knowledge and radio advice reshape the watch bargain." }, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }, { characterId: "c4", role: "Present" }] },
         { id: "n17", type: "Condition", title: "Reyes clue available?", body: "knows_old_reyes == true", condition: "knows_old_reyes == true", x: 1290, y: 500, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
-        { id: "n19", type: "Dialog", title: "Mara", body: "I met Old Reyes before boarding. He said the watch only opens for someone willing to lose it.", x: 1580, y: 500, cast: [{ characterId: "c0", role: "Speaker" }, { characterId: "c2", role: "Mentioned" }, { characterId: "c1", role: "Present" }] },
+        { id: "n19", type: "Dialog", title: "Three-way warning", body: "Mara: I met Old Reyes before boarding. He said the watch only opens for someone willing to lose it.\nThe Conductor: Reyes always did mistake sacrifice for proof.\nVesper: Radio says the Brakeman heard that. Keep the lantern lit and choose fast.", turns: [{ speaker: "Mara", line: "I met Old Reyes before boarding. He said the watch only opens for someone willing to lose it." }, { speaker: "The Conductor", line: "Reyes always did mistake sacrifice for proof." }, { speaker: "Vesper", line: "Radio says the Brakeman heard that. Keep the lantern lit and choose fast." }], x: 1580, y: 500, cast: [{ characterId: "c0", role: "Speaker" }, { characterId: "c1", role: "Speaker" }, { characterId: "c4", role: "Speaker" }, { characterId: "c2", role: "Mentioned" }] },
         { id: "n20", type: "Set", title: "Share Reyes warning", body: "knows_old_reyes = false; trust_level += 1", variable: "knows_old_reyes", value: "false", x: 1580, y: 735, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
         { id: "n21", type: "Set", title: "Briefing complete", body: "talked_to_conductor = true", variable: "talked_to_conductor", value: "true", x: 1880, y: 735, cast: [{ characterId: "c1", role: "Speaker" }] },
-        { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you and the aisle. Prior knowledge, trust, and the lantern now decide which branch can survive the next gate.", choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"], x: 1900, y: 500, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
-        { id: "n5", type: "Set", title: "Offer the watch", body: "trust_level = 2", variable: "trust_level", value: "2", x: 1290, y: 800, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c1", role: "Present" }] },
-        { id: "n6", type: "Content", title: "Hide it from the Brakeman", body: "{traveler} slips the watch deeper into her coat. The Brakeman notices the movement.", x: 1570, y: 800, cast: [{ characterId: "c3", role: "Target" }, { characterId: "c0", role: "POV" }] },
-        { id: "n14", type: "Dialog", title: "Vesper", body: "Radio check. If the lantern is lit, follow the blue carriage marks.", x: 1850, y: 520, cast: [{ characterId: "c4", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
-        { id: "e3", type: "InvestigationEvent", title: "Glass Key Investigation", body: "Custom Event Frame. Its fields appear as extra Events Sheet columns for this group.", x: 2320, y: 340, width: 1060, height: 760, act: "II", chapter: "3", beatList: "Find the glass key", eventType: "Investigation", eventDescription: "Mara checks the luggage rack, identifies the key, and decides whether she has enough trust to use it.", location: "Luggage car", timeWeather: "00:31 / sparks outside", questEpisode: "Q03", customFields: { status: "Needs clue art", clueStatus: "Found", risk: "Medium", evidenceOwner: "Old Reyes" }, cast: [{ characterId: "c4", role: "Present" }] },
+        { id: "n4", type: "Choice", title: "The Conductor", body: "A gloved hand opens between you and the aisle. Prior knowledge, trust, and the lantern now decide which branch can survive the next gate.", choiceRevealMode: "disabled", choices: ["Offer the watch", "Hide the watch", "Ask about Old Reyes"], choiceOptions: [{ id: "opt_offer_watch", label: "Offer the watch", requires: "trust_level >= 1", effects: [{ trigger: "onChoose", op: "set", key: "reyes_watch_offered", value: "true" }, { trigger: "onChoose", op: "add", key: "trust_level", value: "1" }] }, { id: "opt_hide_watch", label: "Hide the watch", requires: "", effects: [{ trigger: "onChoose", op: "add", key: "guard_suspicion", value: "1" }] }, { id: "opt_ask_reyes", label: "Ask about Old Reyes", requires: "knows_old_reyes == true", effects: [{ trigger: "onChoose", op: "set", key: "route", value: "radio" }] }], x: 1900, y: 500, stateLogic: { effects: [{ trigger: "onChoose", op: "set", key: "bargain_started", value: "true" }] }, cast: [{ characterId: "c1", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+        { id: "n5", type: "Set", title: "Offer the watch", body: "trust_level = 2", variable: "trust_level", value: "2", x: 1290, y: 800, stateLogic: { effects: [{ trigger: "onVisit", op: "set", key: "route", value: "watch" }, { trigger: "onVisit", op: "set", key: "reyes_watch_offered", value: "true" }] }, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c1", role: "Present" }] },
+        { id: "n6", type: "Content", title: "Hide it from the Brakeman", body: "{traveler} slips the watch deeper into her coat. The Brakeman notices the movement.", x: 1570, y: 800, stateLogic: { effects: [{ trigger: "onVisit", op: "set", key: "route", value: "hide" }, { trigger: "onVisit", op: "add", key: "guard_suspicion", value: "1" }] }, cast: [{ characterId: "c3", role: "Target" }, { characterId: "c0", role: "POV" }] },
+        { id: "n14", type: "Dialog", title: "Vesper radio check", body: "Vesper: Radio check. If the lantern is lit, follow the blue carriage marks.", turns: [{ speaker: "Vesper", line: "Radio check. If the lantern is lit, follow the blue carriage marks." }], x: 1850, y: 520, stateLogic: { requirements: "lantern_lit == true", effects: [{ trigger: "onVisit", op: "set", key: "route", value: "radio" }] }, cast: [{ characterId: "c4", role: "Speaker" }, { characterId: "c0", role: "Present" }] },
+        { id: "e3", type: "InvestigationEvent", title: "Glass Key Investigation", body: "Custom frame preset. Its fields appear as extra Events Sheet columns for this group.", x: 2320, y: 340, width: 1060, height: 760, act: "II", chapter: "3", beatList: "Find the glass key", eventType: "Investigation", eventDescription: "Mara checks the luggage rack, identifies the key, and decides whether she has enough trust to use it.", location: "Luggage car", timeWeather: "00:31 / sparks outside", questEpisode: "Q03", customFields: { status: "Needs clue art", clueStatus: "Found", risk: "Medium", evidenceOwner: "Old Reyes" }, cast: [{ characterId: "c4", role: "Present" }] },
         { id: "n7", type: "Condition", title: "Enough trust and lantern?", body: "trust_level >= 2 && lantern_lit == true", condition: "trust_level >= 2 && lantern_lit == true", x: 2370, y: 520, cast: [{ characterId: "c0", role: "POV" }] },
         { id: "n8", type: "Clue", title: "Glass Key", body: "A brittle key catches lantern light. It is stamped with Reyes's maker mark.", x: 2660, y: 520, customFields: { evidence: "Maker mark R-17", owner: "Old Reyes", outcome: "Unlocks the map door" }, cast: [{ characterId: "c2", role: "Owner" }, { characterId: "c4", role: "Present" }] },
         { id: "n9", type: "Content", title: "Map door opens", body: "The Conductor nods. A door unlocks that was never printed on the map.", x: 3000, y: 520, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
         { id: "n10", type: "Content", title: "Cold compartment", body: "The Brakeman blocks the aisle. {traveler} has to bluff with a ticket and a dark lantern.", x: 2660, y: 795, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c3", role: "Target" }] },
-        { id: "e4", type: "StorySequence", title: "Terminus", body: "Jump and epilogue beats gathered into the final Story Sequence frame.", x: 980, y: 1220, width: 1060, height: 620, act: "III", chapter: "4", beatList: "Terminus arrival", eventType: "Resolution", eventDescription: "Branches merge at the northern terminus; the watch points to the next mystery.", location: "Northern Terminus", timeWeather: "05:40 / pale dawn", questEpisode: "Q04", customFields: { status: "Outline" } },
-        { id: "n11", type: "Jump", title: "Merge at Terminus", body: "Terminus", x: 1030, y: 1400 },
-        { id: "n12", type: "Content", title: "Epilogue", body: "Dawn. {traveler} steps down at the edge of the northern dark, the watch warm in her hand.", x: 1320, y: 1400, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
+        { id: "e4", type: "StorySequence", title: "Terminus", body: "Routing and epilogue beats gathered into the final Story Sequence frame.", x: 980, y: 1220, width: 1060, height: 620, act: "III", chapter: "4", beatList: "Terminus arrival", eventType: "Resolution", eventDescription: "Branches merge at the northern terminus; the watch points to the next mystery.", location: "Northern Terminus", timeWeather: "05:40 / pale dawn", questEpisode: "Q04", customFields: { status: "Outline" } },
+        { id: "n11", type: "Content", title: "Merge at Terminus", body: "Routing example: this node jumps to the Epilogue by title after branch convergence.", x: 1030, y: 1400, routing: { mode: "goTo", target: "Epilogue" } },
+        { id: "n12", type: "Content", title: "Epilogue", body: "Dawn. {traveler} steps down at the edge of the northern dark, the watch warm in her hand.", x: 1320, y: 1400, stateLogic: { effects: [{ trigger: "onVisit", op: "set", key: "route", value: "terminus" }] }, cast: [{ characterId: "c0", role: "POV" }, { characterId: "c2", role: "Mentioned" }] },
         { id: "n15", type: "Marker", title: "Next pass", body: "Try filtering Characters for Mara, filtering Events for boarding, exporting Characters.json, and opening Advanced JSON.", x: 1660, y: 1645 }
       ],
       links: [
@@ -2000,9 +2180,9 @@ function installNarrativeCanvasApp() {
         { id: "l21", from: "n20", to: "n21" },
         { id: "l22", from: "n21", to: "n4" },
         { id: "l23", from: "n18", to: "n4" },
-        { id: "l4", from: "n4", to: "n5", label: "Offer the watch", choiceIndex: 0 },
-        { id: "l5", from: "n4", to: "n6", label: "Hide the watch", choiceIndex: 1 },
-        { id: "l6", from: "n4", to: "n14", label: "Ask about Old Reyes", choiceIndex: 2 },
+        { id: "l4", from: "n4", to: "n5", label: "Offer the watch", choiceIndex: 0, choiceOptionId: "opt_offer_watch" },
+        { id: "l5", from: "n4", to: "n6", label: "Hide the watch", choiceIndex: 1, choiceOptionId: "opt_hide_watch" },
+        { id: "l6", from: "n4", to: "n14", label: "Ask about Old Reyes", choiceIndex: 2, choiceOptionId: "opt_ask_reyes" },
         { id: "l7", from: "n5", to: "n7" },
         { id: "l8", from: "n6", to: "n7" },
         { id: "l9", from: "n14", to: "n7" },
@@ -2023,17 +2203,25 @@ function installNarrativeCanvasApp() {
     variables: PLAYBOOK_FILE_NAME
   };
 
+  const fileViewLabels = {
+    adventure: "Narrative canvas page",
+    characters: "Characters page",
+    events: "Events sheet page",
+    variables: "Playbook page"
+  };
+
   const uiTranslations = {
     zh: {
       "Add": "添加",
       "Add character": "添加角色",
-      "Add event frame": "添加事件框",
-      "Add play rule": "添加播放规则",
-      "Add script line": "添加脚本行",
+      "Add frame": "添加框架",
+      "Add play rule": "添加演示规则",
+      "Add script line": "添加旧脚本行",
       "Add variable": "添加变量",
       "Advanced JSON": "高级 JSON",
       "All": "全部",
       "All characters visible": "显示全部角色",
+      "All characters visible.": "全部角色已显示。",
       "All event rows visible": "显示全部事件行",
       "Action name": "动作名",
       "Action": "动作",
@@ -2042,6 +2230,7 @@ function installNarrativeCanvasApp() {
       "Any node": "任意节点",
       "Append": "追加",
       "Append instead of replacing": "追加而不是替换",
+      "Applies to all {count} nodes of type {type}.": "应用到 {count} 个 {type} 类型节点。",
       "Apply to": "应用到",
       "Archived": "已归档",
       "Auto references": "自动引用",
@@ -2050,6 +2239,7 @@ function installNarrativeCanvasApp() {
       "Build state changes with Playbook categories.": "用 Playbook 分类构建状态变化。",
       "Buttons": "按钮",
       "Browser storage": "浏览器存储",
+      "A new project file will be created when possible.": "可以创建文件时会新建一个项目文件。",
       "Cancel": "取消",
       "Category": "分类",
       "Center": "居中",
@@ -2072,8 +2262,10 @@ function installNarrativeCanvasApp() {
       "Dark": "深色",
       "Delete": "删除",
       "Delete character": "删除角色",
+      "Delete link": "删除连线",
       "Delete node": "删除节点",
-      "Delete script line": "删除脚本行",
+      "Delete selected nodes": "删除选中的节点",
+      "Delete script line": "删除旧脚本行",
       "Description": "描述",
       "Destination label": "目标标签",
       "Destination note": "目标备注",
@@ -2088,7 +2280,7 @@ function installNarrativeCanvasApp() {
       "Edit": "编辑",
       "Empty rule": "空规则",
       "Event search cleared.": "事件搜索已清除。",
-      "Event Frame": "事件框",
+      "Event Frame": "事件框架",
       "Event Sheet": "事件表",
       "Event description": "事件描述",
       "Event title": "事件标题",
@@ -2103,18 +2295,23 @@ function installNarrativeCanvasApp() {
       "Expand left sidebar": "展开左侧栏",
       "Expand right sidebar": "展开右侧栏",
       "File": "文件",
+      "Fields, one per line": "字段，每行一个",
       "Files": "文件",
       "Find": "查找",
       "Find character": "查找角色",
       "Find event": "查找事件",
       "Find nodes": "查找节点",
+      "Find in Playbook": "在演示设置中查找",
       "Focus": "聚焦",
-      "Frame": "框",
-      "Gate": "关卡",
+      "Frame": "框架",
+      "Gate": "条件门",
       "Gate name": "条件名",
       "Go to": "跳转到",
       "Hide": "隐藏",
+      "Hide frame type": "隐藏此类框架",
+      "Hide this frame type from Events Sheet": "从事件表隐藏这一类框架",
       "Hidden": "隐藏",
+      "Hidden frame types": "隐藏的框架类型",
       "Hide JSON": "隐藏 JSON",
       "HTML exported.": "HTML 已导出。",
       "HTML": "HTML",
@@ -2129,6 +2326,7 @@ function installNarrativeCanvasApp() {
       "Key": "键",
       "Light": "浅色",
       "Line": "台词",
+      "Link": "连线",
       "Links": "连线",
       "Location": "地点",
       "Lock choice": "锁定选项",
@@ -2140,22 +2338,26 @@ function installNarrativeCanvasApp() {
       "Name": "名称",
       "Narration": "叙述",
       "New": "新建",
+      "New Canvas": "新画布",
       "New project": "新建项目",
+      "Name the new project": "命名新项目",
       "No .ncanvas selected": "未选择 .ncanvas",
       "No characters yet.": "还没有角色。",
       "No characters yet": "还没有角色",
       "No characters match {query}.": "没有匹配 {query} 的角色。",
       "No linked scenes yet": "还没有关联场景",
       "No manual cast links.": "还没有手动演员关联。",
-      "No event frame nodes yet.": "还没有事件框节点。",
+      "No visible frame nodes yet.": "还没有可显示的框架节点。",
       "No hidden columns": "没有隐藏列",
-      "No matching event frames.": "没有匹配的事件框。",
-      "No play rules yet.": "还没有播放规则。",
-      "No script lines yet.": "还没有脚本行。",
-      "No script lines in this category yet.": "该分类下暂无脚本行。",
+      "No matching frames.": "没有匹配的框架。",
+      "No play rules yet.": "还没有演示规则。",
+      "No script lines yet.": "还没有旧脚本行。",
+      "No script lines in this category yet.": "该分类下暂无旧脚本行。",
       "No project file to reload.": "没有可重新加载的项目文件。",
       "No variables yet.": "还没有变量。",
       "Node": "节点",
+      "Node behavior": "节点行为",
+      "Node color": "节点颜色",
       "Node Library": "节点库",
       "Nodes": "节点",
       "Notes": "备注",
@@ -2165,13 +2367,14 @@ function installNarrativeCanvasApp() {
       "On choose": "选择时",
       "Open": "打开",
       "Owned nodes": "拥有的节点",
-      "Play": "播放",
-      "Play from entry": "从入口播放",
-      "Play rules": "播放规则",
-      "{pages} play pages, {frames} frames": "{pages} 个播放页，{frames} 个框",
-      "Playbook": "播放手册",
+      "Play": "演示",
+      "Play from entry": "从入口演示",
+      "Play rules": "演示规则",
+      "{pages} play pages, {frames} frames": "{pages} 个演示页，{frames} 个框架",
+      "Playbook": "演示设置",
       "Project": "项目",
       "Project File": "项目文件",
+      "Project name": "项目名称",
       "Project notes": "项目备注",
       "Project title": "项目标题",
       "Prompt text": "提示文本",
@@ -2184,6 +2387,8 @@ function installNarrativeCanvasApp() {
       "Remove cast link": "移除演员关联",
       "Re-sort by graph": "按图排序",
       "Reset": "重置",
+      "Reset columns": "重置列",
+      "Reset sheet columns?": "重置表格列？",
       "Resize": "调整大小",
       "Restore default types": "恢复默认类型",
       "Role": "定位",
@@ -2201,6 +2406,7 @@ function installNarrativeCanvasApp() {
       "Select character...": "选择角色...",
       "Speaker scenes": "发言场景",
       "Show": "显示",
+      "Show this frame type in Events Sheet": "在事件表中显示这一类框架",
       "Show fewer": "收起",
       "Set": "设置",
       "Present scenes": "出现场景",
@@ -2210,7 +2416,7 @@ function installNarrativeCanvasApp() {
       "Sim Status": "模拟状态",
       "Mentioned in": "被提及于",
       "POV scenes": "POV 场景",
-      "Event frames": "事件框",
+      "Event frames": "框架",
       "State categories": "状态分类",
       "State key": "状态键",
       "Story": "故事",
@@ -2237,8 +2443,101 @@ function installNarrativeCanvasApp() {
       "True": "True",
       "False": "False",
       "Custom": "自定义",
-      "{variables} variables, {rules} Play rules": "{variables} 个变量，{rules} 条播放规则",
-      "{variables} variables, {rules} Play rules, {actions} script lines": "{variables} 个变量，{rules} 条播放规则，{actions} 行脚本",
+      "Add effect": "添加效果",
+      "Apply": "应用",
+      "Batch-edit node requirements, effects, and routing. These are the same fields shown inside each node.": "批量编辑节点的条件要求、效果和路线；这些字段和节点内部显示的是同一组。",
+      "Batch-edit node Requirements, Effects, and Routing in Script Builder.": "在脚本构建器中批量编辑节点的条件要求、效果和路线。",
+      "Bring forward": "上移一层",
+      "Bring to front": "置于顶层",
+      "Can do": "可以做",
+      "Cannot do": "不能做",
+      "Control the demo runner with Start Node, Choice Display, End Condition, Visit Tracking, and Debug Mode.": "用起始节点、选项显示、结束条件、访问记录和调试模式控制演示路线。",
+      "Create canvas links, move nodes, or change layout.": "创建画布连线、移动节点或更改布局。",
+      "Characters page": "角色",
+      "Choice Display": "选项显示",
+      "Choose the exact node title Play starts from.": "填写演示开始时使用的精确节点标题。",
+      "Close preview": "关闭演示",
+      "Confirm action?": "确认操作？",
+      "Choice branch": "选项分支",
+      "Condition branch": "条件分支",
+      "Continue": "继续",
+      "Continue by link": "沿连线继续",
+      "Debug": "调试",
+      "Debug Mode": "调试模式",
+      "Decide how gated choices appear in Play.": "设置不满足条件的选项在演示中如何显示。",
+      "Delete effect": "删除效果",
+      "Delete play rule": "删除演示规则",
+      "Delete node fields directly. Use Node Library for schema changes.": "直接增删节点字段。字段结构请在节点库里改。",
+      "Discard": "放弃",
+      "Discard unsaved changes?": "放弃未保存改动？",
+      "Edit value": "编辑值",
+      "End Condition": "结束条件",
+      "End route": "结束路线",
+      "Effects": "效果",
+      "Event Column": "事件列",
+      "Events sheet page": "事件表",
+      "Exact node title": "精确节点标题",
+      "Go to title": "跳到标题",
+      "Got it": "知道了",
+      "Gate simple branches with conditions such as flag == true.": "用类似 flag == true 的条件控制简单分支。",
+      "Hidden characters": "隐藏的角色",
+      "Hide character": "隐藏角色",
+      "Hide unavailable choices": "隐藏不可用选项",
+      "Keep": "保留",
+      "Matches 1 node by title.": "按标题匹配到 1 个节点。",
+      "Matches node:": "匹配节点：",
+      "Narrative canvas page": "叙事画布",
+      "Next page": "下一页",
+      "No editable node logic yet.": "还没有可编辑的节点逻辑。",
+      "No effects yet.": "还没有效果。",
+      "No matching node, type, or ID.": "没有匹配的节点、类型或 ID。",
+      "All characters are hidden.": "所有角色都已隐藏。",
+      "Playbook page": "演示设置",
+      "Playbook sections": "演示设置分区",
+      "Playbook.json stores variables, node logic, and demo runner rules. Variables define state. Script Builder batch-edits node Requirements, Effects, and Routing. Play Rules only control the sample runner: start node, choice display, end condition, visit tracking, and debug mode. It does not run JavaScript or replace a game engine.": "Playbook.json 保存变量、节点逻辑和演示运行规则。变量定义状态；脚本构建器批量编辑节点的条件要求、效果和路线；演示规则只控制样例演示器的起始节点、选项显示、结束条件、访问记录和调试模式。它不会运行 JavaScript，也不能替代游戏引擎。",
+      "Previous": "上一页",
+      "Previous line": "上一句",
+      "Record visited node titles": "记录已访问的节点标题",
+      "Record visited node titles during Play.": "演示过程中记录已经访问过的节点标题。",
+      "Reconnect from output": "从输出端重连",
+      "Reconnect to input": "重连到输入端",
+      "Requirements": "条件要求",
+      "Requirements not met": "条件未满足",
+      "Restart": "重新开始",
+      "Replace a game engine runtime or evaluate complex code expressions.": "替代游戏引擎运行时，或计算复杂代码表达式。",
+      "Routing": "路线",
+      "Next": "下一步",
+      "On choose effects": "选择时效果",
+      "No effects.": "暂无效果。",
+      "Next step follows the outgoing link.": "下一步由节点的出口连线决定。",
+      "Route ends at this node — no next step.": "路线在此结束，没有后续节点。",
+      "Runner rule": "演示规则",
+      "Runtime": "运行时",
+      "Run arbitrary JavaScript.": "运行任意 JavaScript。",
+      "Script action": "脚本动作",
+      "Send backward": "下移一层",
+      "Send to back": "置于底层",
+      "Show all choices": "显示全部选项",
+      "Show all characters": "显示全部角色",
+      "Show character": "显示角色",
+      "Show unavailable choices disabled": "显示但禁用不可用选项",
+      "Show variable and condition details while previewing.": "预览时显示变量和条件细节。",
+      "Show variables and gate checks in Play": "演示时显示变量和条件检查",
+      "Start Node": "起始节点",
+      "State Logic": "状态逻辑",
+      "Store project variables for text such as {traveler}.": "保存项目变量，例如文本中的 {traveler}。",
+      "Stop the demo route when a condition becomes true.": "当条件成立时停止演示路线。",
+      "Unsaved changes": "未保存改动",
+      "Visit Tracking": "访问记录",
+      "What Playbook.json controls": "Playbook.json 控制什么",
+      "Use Advanced JSON for exact edits without changing the canvas schema.": "用高级 JSON 做精确编辑，不改变画布结构。",
+      "{count} hidden": "{count} 个隐藏",
+      "{count} selected": "已选择 {count} 个",
+      "{name} hidden.": "{name} 已隐藏。",
+      "{name} shown.": "{name} 已显示。",
+      "{count} nodes share this title — rule applies to all.": "{count} 个节点共用这个标题，规则会应用到全部。",
+      "{variables} variables, {rules} Play rules": "{variables} 个变量，{rules} 条演示规则",
+      "{variables} variables, {rules} Play rules, {actions} node logic rows": "{variables} 个变量，{rules} 条演示规则，{actions} 行节点逻辑",
       "Voice": "语气",
       "What can Playbook.json do?": "Playbook.json 能做什么？",
       "Zoom": "缩放",
@@ -2274,6 +2573,11 @@ function installNarrativeCanvasApp() {
       value = value.replace(new RegExp(`\\{${name}\\}`, "g"), String(replacement));
     });
     return value;
+  }
+
+  function getFileViewLabel(fileId) {
+    const key = fileViewLabels[fileId] || fileViews[fileId] || fileViews.adventure;
+    return t(key);
   }
 
   function getInitialLanguage() {
@@ -2320,6 +2624,8 @@ function installNarrativeCanvasApp() {
     view: { x: 0, y: 0, scale: DEFAULT_CANVAS_ZOOM },
     connectingFrom: null,
     draggingNode: null,
+    draggingPort: null,
+    suppressPortClick: false,
     geometryHistoryTarget: null,
     draggingStoryNodeId: null,
     storyPointerDrag: null,
@@ -2334,13 +2640,21 @@ function installNarrativeCanvasApp() {
     eventColumnDeleteKey: null,
     genericConfirmAction: null,
     genericTextAction: null,
+    pendingNodeTitleEdit: null,
     reconnectingLinkId: null,
     reconnectingEnd: null,
     characterFocusId: null,
     characterSearch: "",
     eventSearch: "",
+    playbookSearch: "",
+    searchIndex: -1,
+    characterSearchIndex: -1,
+    eventSearchIndex: -1,
+    playbookSearchIndex: -1,
     playbookJsonOpen: false,
     playbookCategoryFilter: null,
+    playbookFocusTarget: null,
+    playbookTab: "variables",
     projectFilePath: "",
     hasUnsavedChanges: false,
     isSaving: false,
@@ -2355,6 +2669,7 @@ function installNarrativeCanvasApp() {
     documentRenderedVersions: { characters: 0, events: 0, variables: 0 },
     autoSaveTimer: null,
     characterBacklinkExpandedIds: new Set(),
+    choiceOptionExpandedIds: new Set(),
     history: { undo: [], redo: [], current: "", pending: null, applying: false },
     editHistoryTarget: null,
     lastAppInteractionAt: 0,
@@ -2364,6 +2679,7 @@ function installNarrativeCanvasApp() {
     lastNodeClick: { id: null, time: 0 },
     playNodeId: null,
     playPath: [],
+    playTurnIndex: 0,
     search: "",
     eventRowDrag: null,
     eventColumnResize: null,
@@ -2393,7 +2709,7 @@ function installNarrativeCanvasApp() {
   const state = createInitialRuntimeState();
 
   const dom = {};
-  const optionalDomKeys = new Set(["activeFileTab", "mentionPopover"]);
+  const optionalDomKeys = new Set(["activeFileTab", "mentionPopover", "playRuleTargetInput"]);
   let initialized = false;
 
   window.NarrativeCanvasApp = {
@@ -2463,6 +2779,7 @@ function installNarrativeCanvasApp() {
     dom.variablesPanel = dom.scope.querySelector("#variablesPanel");
     dom.eventsPanel = dom.scope.querySelector("#eventsPanel");
     dom.content = dom.scope.querySelector("#canvasContent");
+    dom.frameLayer = dom.scope.querySelector("#frameLayer");
     dom.nodeLayer = dom.scope.querySelector("#nodeLayer");
     dom.linkLayer = dom.scope.querySelector("#linkLayer");
     dom.marqueeLayer = dom.scope.querySelector("#marqueeLayer");
@@ -2494,6 +2811,7 @@ function installNarrativeCanvasApp() {
     dom.queryInput = dom.scope.querySelector("#queryInput");
     dom.characterSearchInput = dom.scope.querySelector("#characterSearchInput");
     dom.eventSearchInput = dom.scope.querySelector("#eventSearchInput");
+    dom.playbookSearchInput = dom.scope.querySelector("#playbookSearchInput");
     dom.matchCount = dom.scope.querySelector("#matchCount");
     dom.fileInput = dom.scope.querySelector("#fileInput");
     dom.activeFileTab = dom.scope.querySelector("#activeFileTab");
@@ -2513,6 +2831,7 @@ function installNarrativeCanvasApp() {
     dom.nodeTypeFieldsInput = dom.scope.querySelector("#nodeTypeFieldsInput");
     dom.nodeTypeColorInput = dom.scope.querySelector("#nodeTypeColorInput");
     dom.nodeTypeHiddenInput = dom.scope.querySelector("#nodeTypeHiddenInput");
+    dom.nodeTypeEventHiddenInput = dom.scope.querySelector("#nodeTypeEventHiddenInput");
     dom.playDialog = dom.scope.querySelector("#playDialog");
     dom.confirmDialog = dom.scope.querySelector("#confirmDialog");
     dom.playRuleDialog = dom.scope.querySelector("#playRuleDialog");
@@ -2526,6 +2845,7 @@ function installNarrativeCanvasApp() {
     dom.genericConfirmTitle = dom.scope.querySelector("#genericConfirmTitle");
     dom.genericConfirmBody = dom.scope.querySelector("#genericConfirmBody");
     dom.genericConfirmButton = dom.scope.querySelector("#genericConfirmButton");
+    dom.genericConfirmSecondaryButton = dom.scope.querySelector("#genericConfirmSecondaryButton");
     dom.genericTextDialog = dom.scope.querySelector("#genericTextDialog");
     dom.genericTextKicker = dom.scope.querySelector("#genericTextKicker");
     dom.genericTextTitle = dom.scope.querySelector("#genericTextTitle");
@@ -2593,6 +2913,7 @@ function installNarrativeCanvasApp() {
     eventRoot.addEventListener("focusin", handleEditFocusIn, { signal });
     eventRoot.addEventListener("focusout", handleEditFocusOut, { signal });
     eventRoot.addEventListener("keydown", handleKeyDown, { signal });
+    eventRoot.addEventListener("keydown", handleWorkspaceSearchKeyDown, { signal });
     eventRoot.addEventListener("pointerdown", handleStoryPointerDown, { signal });
     dom.mentionPopover?.addEventListener("pointerdown", handleMentionPopoverPointerDown, { signal });
     document.addEventListener("pointerdown", handleGlobalAppPointerContext, { capture: true, signal });
@@ -2856,6 +3177,22 @@ function installNarrativeCanvasApp() {
     setStatus(`${titleCase(validSide)} sidebar ${state.sidebar[collapsedKey] ? "collapsed" : "expanded"}.`);
   }
 
+  function safeSetPointerCapture(element, pointerId) {
+    try {
+      element?.setPointerCapture?.(pointerId);
+    } catch (error) {
+      // Pointer capture can be unavailable in synthetic tests or after a pointer is already gone.
+    }
+  }
+
+  function safeReleasePointerCapture(element, pointerId) {
+    try {
+      element?.releasePointerCapture?.(pointerId);
+    } catch (error) {
+      // Pointer capture is already gone.
+    }
+  }
+
   function handleSidebarPointerDown(event) {
     if (event.button !== 0) return;
     const resizer = event.target?.closest?.("[data-sidebar-resizer]");
@@ -2873,11 +3210,7 @@ function installNarrativeCanvasApp() {
     dom.root.classList.add("sidebar-resizing");
     dom.root.setAttribute("data-sidebar-resizing", side);
     hideNodeContextMenu();
-    try {
-      resizer.setPointerCapture(event.pointerId);
-    } catch (error) {
-      // Pointer capture is unavailable.
-    }
+    safeSetPointerCapture(resizer, event.pointerId);
     event.preventDefault();
     event.stopPropagation();
   }
@@ -2898,11 +3231,7 @@ function installNarrativeCanvasApp() {
   function handleSidebarPointerUp(event) {
     const resizing = state.sidebar?.resizing;
     if (!resizing) return;
-    try {
-      resizing.resizer?.releasePointerCapture(resizing.pointerId ?? event.pointerId);
-    } catch (error) {
-      // Pointer capture is already gone.
-    }
+    safeReleasePointerCapture(resizing.resizer, resizing.pointerId ?? event.pointerId);
     const side = resizing.side;
     state.sidebar.resizing = null;
     dom.root?.classList.remove("sidebar-resizing");
@@ -2938,6 +3267,7 @@ function installNarrativeCanvasApp() {
       characterFocusId: state.characterFocusId,
       characterSearch: state.characterSearch,
       eventSearch: state.eventSearch,
+      playbookSearch: state.playbookSearch,
       playbookJsonOpen: state.playbookJsonOpen,
       search: state.search
     });
@@ -2993,8 +3323,9 @@ function installNarrativeCanvasApp() {
 
   function beginGeometryHistoryCapture(node) {
     if (!node || state.history?.applying) return null;
+    const nodes = Array.isArray(node) ? node.filter(Boolean) : [node];
     state.geometryHistoryTarget = {
-      before: [captureNodeGeometry(node)]
+      before: nodes.map(captureNodeGeometry)
     };
     return state.geometryHistoryTarget;
   }
@@ -3121,8 +3452,13 @@ function installNarrativeCanvasApp() {
     state.characterFocusId = payload.characterFocusId && getCharacterById(payload.characterFocusId) ? payload.characterFocusId : null;
     state.characterSearch = typeof payload.characterSearch === "string" ? payload.characterSearch : "";
     state.eventSearch = typeof payload.eventSearch === "string" ? payload.eventSearch : "";
+    state.playbookSearch = typeof payload.playbookSearch === "string" ? payload.playbookSearch : "";
     state.playbookJsonOpen = Boolean(payload.playbookJsonOpen);
     state.search = typeof payload.search === "string" ? payload.search : "";
+    state.searchIndex = -1;
+    state.characterSearchIndex = -1;
+    state.eventSearchIndex = -1;
+    state.playbookSearchIndex = -1;
     state.connectingFrom = null;
     state.reconnectingLinkId = null;
     state.reconnectingEnd = null;
@@ -3148,9 +3484,14 @@ function installNarrativeCanvasApp() {
       "hide-node-type",
       "delete-custom-node-type",
       "add-character",
+      "hide-character",
+      "show-character",
+      "show-all-characters",
       "delete-character",
       "add-node-cast",
       "delete-node-cast",
+      "add-node-effect",
+      "delete-node-effect",
       "add-variable",
       "add-playbook-action",
       "create-play-rule",
@@ -3158,6 +3499,7 @@ function installNarrativeCanvasApp() {
       "add-playbook-choice-rule",
       "add-playbook-state-rules",
       "delete-playbook-action",
+      "delete-playbook-rule",
       "delete-variable",
       "auto-layout",
       "rename-event-column",
@@ -3171,6 +3513,7 @@ function installNarrativeCanvasApp() {
       "delete-node",
       "delete-selected-nodes",
       "delete-context-link",
+      "toggle-frame-collapse",
       "assign-choice-link"
     ]).has(action);
   }
@@ -3196,7 +3539,7 @@ function installNarrativeCanvasApp() {
     if (!dom.canvasPanel || !dom.nodeLayer || !dom.linkLayer) return;
     const shouldRender = options.force
       || state.canvasRenderedVersion !== state.canvasRenderVersion
-      || !dom.nodeLayer.childElementCount;
+      || (!dom.nodeLayer.childElementCount && !dom.frameLayer?.childElementCount);
     renderTransform();
     if (shouldRender) {
       const canvasRenderContext = options.renderContext || getCanvasRenderContext();
@@ -3273,10 +3616,12 @@ function installNarrativeCanvasApp() {
       const isActive = button.dataset.fileId === state.activeFileId;
       button.classList.toggle("active", isActive);
       button.setAttribute("aria-pressed", String(isActive));
+      const label = button.querySelector(".nc-file-item-label");
+      if (label) label.textContent = getFileViewLabel(button.dataset.fileId);
     });
 
     if (dom.activeFileTab) {
-      dom.activeFileTab.textContent = fileViews[state.activeFileId] || fileViews.adventure;
+      dom.activeFileTab.textContent = getFileViewLabel(state.activeFileId);
     }
 
     dom.workspaceToolbar.hidden = state.activeFileId !== "adventure";
@@ -3311,6 +3656,11 @@ function installNarrativeCanvasApp() {
         element.prepend(document.createTextNode(`${t(key)} `));
       }
     };
+    const setAllText = (selector, key) => {
+      dom.scope.querySelectorAll(selector).forEach((element) => {
+        element.textContent = t(key);
+      });
+    };
 
     setText(".project-file-section h2", "Project File");
     setText(".sidebar-left .nav-section:nth-of-type(2) h2", "Files");
@@ -3320,6 +3670,10 @@ function installNarrativeCanvasApp() {
     setText("[data-panel='project']", "Project");
     setText("[data-panel='node']", "Node");
     setText("[data-panel='story']", "Story");
+    dom.scope.querySelectorAll(".nc-file-item[data-file-id]").forEach((button) => {
+      const label = button.querySelector(".nc-file-item-label");
+      if (label) label.textContent = getFileViewLabel(button.dataset.fileId);
+    });
 
     setText("[data-action='save-project']", "Save");
     setText("[data-action='new-project']", "New");
@@ -3334,6 +3688,7 @@ function installNarrativeCanvasApp() {
     setText("[data-action='export-json']", "Export JSON");
     setText("[data-action='export-image']", "Image");
     setText("[data-action='export-html']", "HTML");
+    setAllText(".confirm-cancel", "Cancel");
 
     setAttr("[data-action='save-project']", "title", "Save project state");
     setAttr("[data-action='new-project']", "title", "New project");
@@ -3344,6 +3699,7 @@ function installNarrativeCanvasApp() {
     setAttr("[data-action='export-json']", "title", "Export full project JSON");
     setAttr("[data-action='export-image']", "title", "Export canvas as PNG");
     setAttr("#exportImageScale", "title", "Image export resolution");
+    setAttr("#playDialog [value='close']", "aria-label", "Close preview");
 
     setLabelText(".canvas-search-box", "Query");
     setLabelText(".character-search-box", "Find");
@@ -3351,14 +3707,104 @@ function installNarrativeCanvasApp() {
     setAttr("#queryInput", "placeholder", "Find nodes");
     setAttr("#characterSearchInput", "placeholder", "Find character");
     setAttr("#eventSearchInput", "placeholder", "Find event");
+    setAttr("#playbookSearchInput", "placeholder", "Find in Playbook");
+    setAttr("#customNodeName", "placeholder", "Name");
+    setAttr("#customNodeColor", "title", "Node color");
+    setAttr("#customNodeKind", "title", "Node behavior");
+    setAttr("#customNodeFields", "placeholder", "Fields, one per line");
 
     const customKind = dom.scope.querySelector("#customNodeKind");
     if (customKind) {
-      const labels = { node: "Node", frame: "Frame", eventFrame: "Event Frame" };
+      const labels = { node: "Node", frame: "Frame" };
       [...customKind.options].forEach((option) => {
         option.textContent = t(labels[option.value] || option.textContent);
       });
     }
+    localizeStaticDialogs();
+  }
+
+  function localizeStaticDialogs() {
+    if (!dom.scope) return;
+    const setText = (selector, key) => {
+      const element = dom.scope.querySelector(selector);
+      if (element) element.textContent = t(key);
+    };
+    setText("#playDialog .pane-kicker", "Runtime");
+    if (dom.playTitle && dom.playTitle.textContent === "Preview") dom.playTitle.textContent = t("Play");
+    setText("#confirmDialog .pane-kicker", "New Canvas");
+    setText("#confirmDialog h2", "Name the new project");
+    setText("#confirmDialog label span", "Project name");
+    setText("#newProjectPathPreview", "A new project file will be created when possible.");
+    setText("#eventColumnDeleteDialog .pane-kicker", "Event Column");
+    setText("#eventColumnDeleteDialog [value='confirm']", "Delete");
+    setText("#eventColumnsResetDialog .pane-kicker", "Events Sheet");
+    setText("#eventColumnsResetDialog h2", "Reset sheet columns?");
+    setText("#eventColumnsResetDialog [value='confirm']", "Reset columns");
+    setText("#genericConfirmKicker", "Confirm");
+    setText("#genericConfirmTitle", "Confirm action?");
+    setText("#genericConfirmButton", "Confirm");
+    setText("#genericConfirmSecondaryButton", "Keep");
+    setText("#genericTextKicker", "Edit");
+    setText("#genericTextTitle", "Edit value");
+    setText("#genericTextLabel", "Value");
+    setText("#genericTextButton", "Apply");
+    localizePlaybookHelpDialog();
+    localizePlayRuleDialog();
+  }
+
+  function localizePlaybookHelpDialog() {
+    const dialog = dom.scope?.querySelector("#playbookHelpDialog");
+    if (!dialog) return;
+    const canItems = [
+      "Store project variables for text such as {traveler}.",
+      "Batch-edit node Requirements, Effects, and Routing in Script Builder.",
+      "Gate simple branches with conditions such as flag == true.",
+      "Control the demo runner with Start Node, Choice Display, End Condition, Visit Tracking, and Debug Mode.",
+      "Use Advanced JSON for exact edits without changing the canvas schema."
+    ];
+    const cannotItems = [
+      "Run arbitrary JavaScript.",
+      "Create canvas links, move nodes, or change layout.",
+      "Delete node fields directly. Use Node Library for schema changes.",
+      "Replace a game engine runtime or evaluate complex code expressions."
+    ];
+    dialog.querySelector(".pane-kicker").textContent = t("Playbook");
+    dialog.querySelector("h2").textContent = t("What Playbook.json controls");
+    const sections = dialog.querySelectorAll(".playbook-help-grid section");
+    const renderItems = (items) => items.map((item) => `<li>${escapeHtml(t(item))}</li>`).join("");
+    if (sections[0]) {
+      sections[0].querySelector("h3").textContent = t("Can do");
+      sections[0].querySelector("ul").innerHTML = renderItems(canItems);
+    }
+    if (sections[1]) {
+      sections[1].querySelector("h3").textContent = t("Cannot do");
+      sections[1].querySelector("ul").innerHTML = renderItems(cannotItems);
+    }
+    const confirmButton = dialog.querySelector("footer button[value='confirm']");
+    if (confirmButton) confirmButton.textContent = t("Got it");
+  }
+
+  function localizePlayRuleDialog() {
+    const dialog = dom.playRuleDialog;
+    if (!dialog) return;
+    dialog.setAttribute("aria-label", t("Add play rule"));
+    dialog.querySelector(".pane-kicker").textContent = t("Playbook");
+    dialog.querySelector("h2").textContent = t("Add play rule");
+    const labels = {
+      startNode: ["Start Node", "Choose the exact node title Play starts from."],
+      choiceDisplay: ["Choice Display", "Decide how gated choices appear in Play."],
+      endCondition: ["End Condition", "Stop the demo route when a condition becomes true."],
+      visitTracking: ["Visit Tracking", "Record visited node titles during Play."],
+      debugMode: ["Debug Mode", "Show variable and condition details while previewing."]
+    };
+    dialog.querySelectorAll("[data-playbook-rule-kind]").forEach((button) => {
+      const [title, body] = labels[button.dataset.playbookRuleKind] || [];
+      if (!title) return;
+      button.querySelector("strong").textContent = t(title);
+      button.querySelector("span").textContent = t(body);
+    });
+    const cancel = dialog.querySelector(".confirm-cancel");
+    if (cancel) cancel.textContent = t("Cancel");
   }
 
   function syncWorkspaceSearchControls() {
@@ -3370,12 +3816,16 @@ function installNarrativeCanvasApp() {
     if (dom.eventSearchInput && dom.eventSearchInput.value !== state.eventSearch) {
       dom.eventSearchInput.value = state.eventSearch || "";
     }
+    if (dom.playbookSearchInput && dom.playbookSearchInput.value !== state.playbookSearch) {
+      dom.playbookSearchInput.value = state.playbookSearch || "";
+    }
 
-    const hasSearch = activeFile === "adventure" || activeFile === "characters" || activeFile === "events";
+    const hasSearch = activeFile === "adventure" || activeFile === "characters" || activeFile === "events" || activeFile === "variables";
     if (dom.workspaceSearchControls) dom.workspaceSearchControls.hidden = !hasSearch;
     dom.scope.querySelectorAll("[data-search-scope]").forEach((element) => {
       element.hidden = element.dataset.searchScope !== activeFile;
     });
+    refreshWorkspaceSearchCount();
   }
 
   function renderProjectFileStatus() {
@@ -3637,6 +4087,7 @@ function installNarrativeCanvasApp() {
         <div class="document-filter-bar" data-character-filter-bar>
           ${renderCharacterFilterBar(model)}
         </div>
+        ${renderHiddenCharacterRestoreBar(model)}
         <div class="character-grid">
           ${renderCharacterCardsMarkup(model, limit)}
         </div>
@@ -3647,56 +4098,77 @@ function installNarrativeCanvasApp() {
 
   function buildCharacterDocumentModel(context = getCharacterRenderContext()) {
     const characters = context.characters;
+    const hidden = characters.filter((character) => character.hidden);
+    const visibleCharacters = characters.filter((character) => !character.hidden);
     const focusedCharacter = getActiveCharacterFocus();
     const queryRaw = state.characterSearch || "";
     const query = queryRaw.trim().toLowerCase();
     const visible = query
-      ? characters.filter((character) => characterMatchesSearch(character, query, context))
-      : characters;
+      ? visibleCharacters.filter((character) => characterMatchesSearch(character, query, context))
+      : visibleCharacters;
     return {
       context,
       characters,
+      hidden,
+      visibleCharacters,
       visible,
       focusedCharacter,
       query,
       queryRaw,
       linkCount: context.linkCount,
       totalCount: characters.length,
+      hiddenCount: hidden.length,
       visibleCount: visible.length
     };
   }
 
   function formatCharacterMeta(model) {
     const focusText = model.focusedCharacter ? t(", focusing {name}", { name: model.focusedCharacter.name }) : "";
-    if (model.query) return `${t("{visible} of {total} characters match {query}", { visible: model.visibleCount, total: model.totalCount, query: `"${model.queryRaw.trim()}"` })}${focusText}`;
-    return `${t("{characters} characters, {links} character links", { characters: model.totalCount, links: model.linkCount })}${focusText}`;
+    const hiddenText = model.hiddenCount ? `, ${t("{count} hidden", { count: model.hiddenCount })}` : "";
+    if (model.query) return `${t("{visible} of {total} characters match {query}", { visible: model.visibleCount, total: model.totalCount, query: `"${model.queryRaw.trim()}"` })}${hiddenText}${focusText}`;
+    return `${t("{characters} characters, {links} character links", { characters: model.totalCount, links: model.linkCount })}${hiddenText}${focusText}`;
   }
 
   function renderCharacterFilterBar(model) {
     const chips = [];
     if (model.query) {
       chips.push(`
-        <span class="filter-chip">
-          ${t("Search")}: ${escapeHtml(model.queryRaw.trim())}
-          <button type="button" data-action="clear-character-search" aria-label="${escapeAttr(t("Clear character search"))}">${t("Clear")}</button>
-        </span>
+        <button type="button" class="filter-chip filter-chip-button" data-action="clear-character-search" aria-label="${escapeAttr(t("Clear character search"))}">
+          <span>${t("Search")}: ${escapeHtml(model.queryRaw.trim())}</span>
+          <span class="filter-chip-clear">${t("Clear")}</span>
+        </button>
       `);
     }
     if (model.focusedCharacter) {
       chips.push(`
-        <span class="filter-chip">
-          ${t("Focus")}: ${escapeHtml(model.focusedCharacter.name)}
-          <button type="button" data-action="clear-character-focus" aria-label="${escapeAttr(t("Clear character focus"))}">${t("Clear")}</button>
-        </span>
+        <button type="button" class="filter-chip filter-chip-button" data-action="clear-character-focus" aria-label="${escapeAttr(t("Clear character focus"))}">
+          <span>${t("Focus")}: ${escapeHtml(model.focusedCharacter.name)}</span>
+          <span class="filter-chip-clear">${t("Clear")}</span>
+        </button>
       `);
     }
-    if (!chips.length) chips.push(`<span class="filter-chip quiet">${t("All characters visible")}</span>`);
     return chips.join("");
+  }
+
+  function renderHiddenCharacterRestoreBar(model) {
+    if (!model.hidden?.length) return "";
+    return `
+      <div class="document-restore-bar character-restore-bar" data-character-restore-bar>
+        <span>${t("Hidden characters")}:</span>
+        ${model.hidden.map((character) => `
+          <button type="button" class="filter-chip" data-action="show-character" data-character-id="${escapeAttr(character.id)}" title="${escapeAttr(t("Show character"))}">
+            ${escapeHtml(character.name || t("Unnamed Character"))}
+          </button>
+        `).join("")}
+        <button type="button" class="small-button" data-action="show-all-characters">${t("Show all characters")}</button>
+      </div>
+    `;
   }
 
   function renderCharacterCardsMarkup(model, limit = getDocumentRenderLimit("characters")) {
     if (!model.characters.length) return `<div class="nc-empty-state">${t("No characters yet.")}</div>`;
     const visible = model.visible.slice(0, Math.max(0, limit));
+    if (!model.visibleCharacters.length && model.hiddenCount) return `<div class="nc-empty-state">${t("All characters are hidden.")}</div>`;
     if (!visible.length) return `<div class="nc-empty-state">${escapeHtml(t("No characters match {query}.", { query: `"${model.queryRaw.trim()}"` }))}</div>`;
     return renderCharacterMasonryColumns(visible, model.context);
   }
@@ -3776,6 +4248,9 @@ function installNarrativeCanvasApp() {
     const shownCount = Math.min(model.visible.length, limit);
     if (meta) meta.textContent = formatCharacterMeta(model);
     if (filterBar) filterBar.innerHTML = renderCharacterFilterBar(model);
+    const restoreBar = dom.charactersPanel?.querySelector("[data-character-restore-bar]");
+    if (restoreBar) restoreBar.outerHTML = renderHiddenCharacterRestoreBar(model);
+    else if (filterBar) filterBar.insertAdjacentHTML("afterend", renderHiddenCharacterRestoreBar(model));
     grid.innerHTML = renderCharacterCardsMarkup(model, limit);
     const shell = dom.charactersPanel?.querySelector(".document-shell");
     shell?.querySelector("[data-document-limit-notice]")?.remove();
@@ -3787,7 +4262,7 @@ function installNarrativeCanvasApp() {
     const groups = context?.backlinkIndex?.get(character.id) || getCharacterBacklinkGroups(character);
     const isExpanded = state.characterBacklinkExpandedIds?.has(character.id);
     return `
-      <article class="character-card ${isFocused ? "focused" : ""}">
+      <article class="character-card ${isFocused ? "focused" : ""}" data-character-card-id="${escapeAttr(character.id)}">
         <div class="character-card-header">
           <label class="field">
             <span>${t("Name")}</span>
@@ -3795,6 +4270,7 @@ function installNarrativeCanvasApp() {
           </label>
           <div class="character-card-actions">
             <button class="small-button" data-action="${isFocused ? "clear-character-focus" : "focus-character"}" data-character-id="${escapeAttr(character.id)}">${isFocused ? t("Clear") : t("Focus")}</button>
+            <button class="small-button" data-action="hide-character" data-character-id="${escapeAttr(character.id)}">${t("Hide")}</button>
             <button class="icon-button danger-button" title="${escapeAttr(t("Delete character"))}" data-action="delete-character" data-character-id="${escapeAttr(character.id)}">x</button>
           </div>
         </div>
@@ -3876,25 +4352,23 @@ function installNarrativeCanvasApp() {
     const limit = getDocumentRenderLimit("variables");
     const visibleEntries = entries.slice(0, limit);
     const activeCategoryFilter = state.playbookCategoryFilter;
-    const filteredActions = activeCategoryFilter
-      ? actions.filter((action) => action.category === activeCategoryFilter)
-      : actions;
-    const visibleActions = filteredActions.slice(0, limit);
+    const scriptNodes = getScriptBuilderNodes();
+    const visibleScriptNodes = scriptNodes.slice(0, limit);
     const visibleRuleCards = ruleCards.slice(0, limit);
-    const shownCount = Math.max(visibleEntries.length, visibleActions.length, visibleRuleCards.length);
-    const totalCount = Math.max(entries.length, actionCount, ruleCount);
+    const shownCount = Math.max(visibleEntries.length, visibleScriptNodes.length, visibleRuleCards.length);
+    const totalCount = Math.max(entries.length, scriptNodes.length, ruleCount);
     const playbookJson = buildVariablesJson();
+    const activeTab = getValidPlaybookTab(state.playbookTab);
     dom.variablesPanel.innerHTML = `
       <div class="document-shell">
         <header class="document-header">
           <div>
             <span class="pane-kicker">Playbook</span>
             <h2>${PLAYBOOK_FILE_NAME}</h2>
-            <div class="document-meta">${t("{variables} variables, {rules} Play rules, {actions} script lines", { variables: entries.length, rules: ruleCount, actions: actionCount })}</div>
+            <div class="document-meta">${t("{variables} variables, {rules} Play rules, {actions} node logic rows", { variables: entries.length, rules: ruleCount, actions: scriptNodes.length })}</div>
           </div>
           <div class="document-actions">
             <button class="help-button" type="button" data-action="show-playbook-help" aria-label="${escapeAttr(t("What can Playbook.json do?"))}">?</button>
-            <button class="small-button" type="button" data-action="add-playbook-action">${t("Add script line")}</button>
             <button class="small-button" type="button" data-action="add-variable">${t("Add variable")}</button>
             <button class="small-button" type="button" data-action="add-play-rule">${t("Add play rule")}</button>
             <button class="small-button" type="button" data-action="toggle-playbook-json">${state.playbookJsonOpen ? t("Hide JSON") : t("Advanced JSON")}</button>
@@ -3902,30 +4376,29 @@ function installNarrativeCanvasApp() {
           </div>
         </header>
         ${renderPlaybookValueDatalists()}
-        <section class="playbook-section playbook-builder-section">
+        ${renderPlaybookTabs(activeTab)}
+        ${activeTab === "script" ? `
+          <section class="playbook-section playbook-builder-section">
           <header class="playbook-section-header">
             <div>
               <h3>${t("Script Builder")}</h3>
-              <p>${t("Build state changes with Playbook categories.")}</p>
+              <p>${t("Batch-edit node requirements, effects, and routing. These are the same fields shown inside each node.")}</p>
             </div>
-            <span>${actionCount}</span>
+            <span>${scriptNodes.length}</span>
           </header>
-          ${renderPlaybookCategoryStrip(actions)}
-          <div class="playbook-action-table">
-            <div class="playbook-action-row playbook-action-heading">
-              <span>${t("When")}</span>
-              <span>${t("Apply to")}</span>
-              <span>${t("Action")}</span>
-              <span>${t("Category")}</span>
-              <span>${t("State key")}</span>
-              <span>${t("Value")}</span>
-              <span>${t("Append")}</span>
-              <span></span>
+          <div class="script-node-table">
+            <div class="script-node-row script-node-heading">
+              <span>${t("Node")}</span>
+              <span>${t("Requirements")}</span>
+              <span>${t("Effects")}</span>
+              <span>${t("Routing")}</span>
+              <span>${t("Go to title")}</span>
             </div>
-            ${visibleActions.map(renderPlaybookActionRow).join("") || `<div class="nc-empty-state">${activeCategoryFilter ? t("No script lines in this category yet.") : t("No script lines yet.")}</div>`}
+            ${visibleScriptNodes.map(renderScriptNodeRow).join("") || `<div class="nc-empty-state">${t("No editable node logic yet.")}</div>`}
           </div>
-        </section>
-        <section class="playbook-section">
+        </section>` : ""}
+        ${activeTab === "variables" ? `
+          <section class="playbook-section">
           <header class="playbook-section-header">
             <h3>${t("Variables")}</h3>
             <span>${entries.length}</span>
@@ -3939,8 +4412,9 @@ function installNarrativeCanvasApp() {
             </div>
             ${visibleEntries.map(([key, value]) => renderVariableRow(key, value)).join("") || `<div class="nc-empty-state">${t("No variables yet.")}</div>`}
           </div>
-        </section>
-        <section class="playbook-section">
+        </section>` : ""}
+        ${activeTab === "rules" ? `
+          <section class="playbook-section">
           <header class="playbook-section-header">
             <h3>${t("Play rules")}</h3>
             <span>${ruleCount}</span>
@@ -3948,7 +4422,7 @@ function installNarrativeCanvasApp() {
           <div class="playbook-rule-grid">
             ${visibleRuleCards.length ? visibleRuleCards.map(renderPlaybookRuleCard).join("") : `<div class="nc-empty-state">${t("No play rules yet.")}</div>`}
           </div>
-        </section>
+        </section>` : ""}
         ${renderDocumentLimitNotice("variables", shownCount, totalCount)}
         ${state.playbookJsonOpen ? `
           <label class="field json-field">
@@ -3961,23 +4435,41 @@ function installNarrativeCanvasApp() {
     requestAnimationFrame(() => {
       const textarea = resizePlaybookJsonTextarea();
       if (options.focusJsonToken) focusPlaybookJsonToken(options.focusJsonToken, textarea);
+      focusPendingPlaybookTarget();
     });
   }
 
   function renderPlaybookValueDatalists() {
     const stateKeys = getPlaybookStateKeySuggestions();
-    const targets = getPlaybookTargetSuggestions();
+    const targets = getPlaybookTargetEntries();
     const values = ["True", "False", "0", "1", "{title}", "{body}", "{value}", "{traveler}", "{route}"];
     return `
       <datalist id="playbookStateKeyOptions">
         ${stateKeys.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("")}
       </datalist>
       <datalist id="playbookTargetOptions">
-        ${targets.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("")}
+        ${targets.map((entry) => `<option value="${escapeAttr(entry.value)}" label="${escapeAttr([entry.label, entry.hint].filter(Boolean).join(" "))}"></option>`).join("")}
       </datalist>
       <datalist id="playbookValueOptions">
         ${values.map((value) => `<option value="${escapeAttr(value)}"></option>`).join("")}
       </datalist>
+    `;
+  }
+
+  function renderPlaybookTabs(activeTab) {
+    const tabs = [
+      { id: "variables", label: "Variables" },
+      { id: "script", label: "Script Builder" },
+      { id: "rules", label: "Play rules" }
+    ];
+    return `
+      <div class="playbook-tabs" role="tablist" aria-label="${escapeAttr(t("Playbook sections"))}">
+        ${tabs.map((tab) => `
+          <button type="button" class="playbook-tab${activeTab === tab.id ? " active" : ""}" data-action="select-playbook-tab" data-playbook-tab="${escapeAttr(tab.id)}" aria-selected="${activeTab === tab.id}">
+            ${escapeHtml(t(tab.label))}
+          </button>
+        `).join("")}
+      </div>
     `;
   }
 
@@ -4001,13 +4493,62 @@ function installNarrativeCanvasApp() {
     `;
   }
 
+  function getScriptBuilderNodes() {
+    return state.project.nodes
+      .filter((node) => node && !isFrameNode(node))
+      .sort(compareNodesByIdentity);
+  }
+
+  function renderScriptNodeRow(node) {
+    const logic = normalizeNodeStateLogic(node.stateLogic);
+    const routing = normalizeNodeRouting(node.routing);
+    const targetStatus = routing.mode === "goTo" ? renderTargetResolutionStatus(routing.target) : "";
+    return `
+      <div class="script-node-row" data-script-node-id="${escapeAttr(node.id)}">
+        <button class="linked-node script-node-link" type="button" data-action="focus-canvas-node" data-node-id="${escapeAttr(node.id)}">
+          <strong>${escapeHtml(node.title || getNodeDisplayId(node))}</strong>
+          <small>${escapeHtml(getNodeTypeLabel(node.type))} ${escapeHtml(getNodeDisplayId(node))}</small>
+        </button>
+        <textarea data-script-node-id="${escapeAttr(node.id)}" data-script-node-field="requirements" placeholder="trust_level >= 2" spellcheck="false">${escapeHtml(logic.requirements)}</textarea>
+        <textarea data-script-node-id="${escapeAttr(node.id)}" data-script-node-field="effects" placeholder="set route = badge">${escapeHtml(formatNodeEffectsText(node))}</textarea>
+        <select data-script-node-id="${escapeAttr(node.id)}" data-script-node-field="routingMode">
+          ${renderPlaybookOptionList(NODE_ROUTING_MODES, routing.mode)}
+        </select>
+        ${renderScriptNodeTargetSlot(node, routing, targetStatus)}
+      </div>
+    `;
+  }
+
+  function renderScriptNodeTargetSlot(node, routing, targetStatus) {
+    if (routing.mode === "goTo") {
+      return `
+        <div class="script-node-target">
+          <input data-script-node-id="${escapeAttr(node.id)}" data-script-node-field="routingTarget" list="playbookTargetOptions" value="${escapeAttr(routing.target)}" placeholder="${escapeAttr(t("Exact node title"))}" spellcheck="false">
+          ${targetStatus}
+        </div>
+      `;
+    }
+    const hint = routing.mode === "end"
+      ? t("Route ends at this node — no next step.")
+      : t("Next step follows the outgoing link.");
+    return `
+      <div class="script-node-target script-node-target-hint">
+        <p class="nc-routing-hint-body">${escapeHtml(hint)}</p>
+      </div>
+    `;
+  }
+
   function renderPlaybookActionRow(action) {
+    const targetStatus = renderTargetResolutionStatus(action.target);
     return `
       <div class="playbook-action-row">
         <select data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="trigger">
           ${renderPlaybookOptionList(PLAYBOOK_ACTION_TRIGGERS, action.trigger)}
         </select>
-        <input data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="target" list="playbookTargetOptions" value="${escapeAttr(action.target)}" placeholder="${escapeAttr(t("Any node"))}" spellcheck="false">
+        <div class="script-node-target">
+          <input data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="target" list="playbookTargetOptions" value="${escapeAttr(action.target)}" placeholder="${escapeAttr(t("Any node"))}" spellcheck="false">
+          ${targetStatus}
+        </div>
         <select data-playbook-action-id="${escapeAttr(action.id)}" data-playbook-action-field="op">
           ${renderPlaybookOptionList(PLAYBOOK_ACTION_OPERATIONS, action.op)}
         </select>
@@ -4052,24 +4593,67 @@ function installNarrativeCanvasApp() {
     return [...targets].filter(Boolean).sort((a, b) => a.localeCompare(b));
   }
 
+  // Richer datalist entries that disambiguate duplicate titles by appending the node id.
+  // Used by the renderer in Phase 4 to fix the "two scenes both called Hesitation" silent-fail mode.
+  function getPlaybookTargetEntries() {
+    const out = [];
+    const titleCounts = new Map();
+    state.project.nodes.forEach((n) => {
+      const t = String(n.title || "").trim();
+      if (t) titleCounts.set(t, (titleCounts.get(t) || 0) + 1);
+    });
+    // node type entries
+    getProjectNodeTypes().forEach((typeDef) => out.push({ value: typeDef.type, label: typeDef.type, hint: "(type)" }));
+    // node title / id entries with disambiguation
+    state.project.nodes.forEach((n) => {
+      const title = String(n.title || "").trim();
+      if (n.id) out.push({ value: n.id, label: n.id, hint: title ? `— "${title}"` : "" });
+      if (title) {
+        const ambig = (titleCounts.get(title) || 0) > 1;
+        out.push({ value: title, label: title, hint: ambig ? `(${getNodeDisplayId(n)})` : "" });
+      }
+    });
+    return out;
+  }
+
+  // Render a status line under target inputs showing what the typed value resolves to.
+  // Empty input → nothing; helps writers spot typos and intentional type/title broadcasts.
+  function renderTargetResolutionStatus(value, options = {}) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return "";
+    const resolved = resolveTarget(trimmed);
+    if (resolved.kind === "none") {
+      return `<small class="target-status target-status-error">${escapeHtml(t("No matching node, type, or ID."))}</small>`;
+    }
+    if (resolved.kind === "id") {
+      const n = resolved.matches[0];
+      return `<small class="target-status target-status-ok">${escapeHtml(t("Matches node:"))} ${escapeHtml(n.title || n.id)} (${escapeHtml(getNodeDisplayId(n))})</small>`;
+    }
+    if (resolved.kind === "title") {
+      const count = resolved.matches.length;
+      if (count === 1) return `<small class="target-status target-status-ok">${escapeHtml(t("Matches 1 node by title."))}</small>`;
+      return `<small class="target-status target-status-warn">${escapeHtml(t("{count} nodes share this title — rule applies to all.", { count }))}</small>`;
+    }
+    if (resolved.kind === "type") {
+      return `<small class="target-status target-status-info">${escapeHtml(t("Applies to all {count} nodes of type {type}.", { count: resolved.matches.length, type: trimmed }))}</small>`;
+    }
+    return "";
+  }
+
   function renderPlaybookRuleCard(card) {
     return `
       <article class="playbook-rule-card">
         <header>
           <div>
-            <span class="playbook-rule-kind">${escapeHtml(formatPlaybookRuleKindLabel(card.kind))}</span>
-            <h4>${escapeHtml(card.target)}</h4>
+            <span class="playbook-rule-kind">${escapeHtml(t(card.kind))}</span>
+            <h4>${escapeHtml(t(card.title))}</h4>
           </div>
-          <button class="small-button" type="button" data-action="focus-playbook-json" data-playbook-token="${escapeAttr(JSON.stringify(card.target))}">JSON</button>
+          <div class="playbook-rule-card-actions">
+            <button class="small-button" type="button" data-action="focus-playbook-json" data-playbook-token="${escapeAttr(JSON.stringify(card.jsonToken))}">JSON</button>
+            ${card.required ? "" : `<button class="icon-button danger-button" type="button" title="${escapeAttr(t("Delete play rule"))}" data-action="delete-playbook-rule" data-playbook-rule-target="${escapeAttr(card.id)}">x</button>`}
+          </div>
         </header>
-        <dl>
-          ${card.rows.map((row) => `
-            <div>
-              <dt>${escapeHtml(t(row.label))}</dt>
-              <dd>${escapeHtml(row.value)}</dd>
-            </div>
-          `).join("")}
-        </dl>
+        ${card.body}
       </article>
     `;
   }
@@ -4082,32 +4666,62 @@ function installNarrativeCanvasApp() {
   }
 
   function getPlaybookRuleCards() {
-    return Object.entries(getScriptNodeTypes()).map(([target, script]) => {
-      const rows = [];
-      const kinds = [];
-      if (script.title || script.body) {
-        kinds.push("Text");
-        rows.push({ label: "Title", value: script.title || "{title}" });
-        rows.push({ label: "Body", value: script.body || "{body}" });
-      }
-      if (script.choices && (Array.isArray(script.choices) ? script.choices.length : String(script.choices).trim())) {
-        kinds.push("Choices");
-        rows.push({ label: "Buttons", value: formatPlaybookChoicesSummary(script.choices) });
-      }
-      if (script.set?.key || script.set?.value) {
-        kinds.push("Set");
-        rows.push({ label: "On visit", value: `${script.set.key || "variable"} = ${script.set.value || "value"}` });
-      }
-      if (script.condition) {
-        kinds.push("Condition");
-        rows.push({ label: "Gate", value: script.condition });
-      }
-      return {
-        target,
-        kind: kinds.length ? kinds.join(" + ") : "Rule",
-        rows: rows.length ? rows : [{ label: "Rule", value: "Empty rule" }]
-      };
-    });
+    const rules = getRunnerRules();
+    return Object.entries(rules)
+      .filter(([, rule]) => rule.enabled)
+      .map(([id, rule]) => renderRunnerRuleCardModel(id, rule));
+  }
+
+  function renderRunnerRuleCardModel(id, rule) {
+    const bodyById = {
+      startNode: `
+        <label class="field">
+          <span>${t("Exact node title")}</span>
+          <input data-runner-rule-field="startNode" list="playbookTargetOptions" value="${escapeAttr(rule.value || "")}" placeholder="Start" spellcheck="false">
+        </label>
+      `,
+      choiceDisplay: `
+        <label class="field">
+          <span>${t("Choice Display")}</span>
+          <select data-runner-rule-field="choiceDisplay">
+            ${renderPlaybookOptionList(PLAYBOOK_CHOICE_DISPLAY_OPTIONS, rule.value || "hideUnavailable")}
+          </select>
+        </label>
+      `,
+      endCondition: `
+        <label class="field">
+          <span>${t("End Condition")}</span>
+          <input data-runner-rule-field="endCondition" value="${escapeAttr(rule.value || "")}" placeholder="ending_reached == true" spellcheck="false">
+        </label>
+      `,
+      visitTracking: `
+        <label class="nc-checkbox-field">
+          <input type="checkbox" data-runner-rule-field="visitTracking" ${rule.value ? "checked" : ""}>
+          <span>${t("Record visited node titles")}</span>
+        </label>
+      `,
+      debugMode: `
+        <label class="nc-checkbox-field">
+          <input type="checkbox" data-runner-rule-field="debugMode" ${rule.value ? "checked" : ""}>
+          <span>${t("Show variables and gate checks in Play")}</span>
+        </label>
+      `
+    };
+    const titles = {
+      startNode: "Start Node",
+      choiceDisplay: "Choice Display",
+      endCondition: "End Condition",
+      visitTracking: "Visit Tracking",
+      debugMode: "Debug Mode"
+    };
+    return {
+      id,
+      kind: "Runner rule",
+      title: titles[id] || id,
+      jsonToken: id,
+      required: id === "startNode" || id === "choiceDisplay",
+      body: bodyById[id] || `<p>${escapeHtml(String(rule.value ?? ""))}</p>`
+    };
   }
 
   function formatPlaybookChoicesSummary(value) {
@@ -4124,6 +4738,25 @@ function installNarrativeCanvasApp() {
     textarea.style.height = "auto";
     textarea.style.height = `${Math.max(520, textarea.scrollHeight + 2)}px`;
     return textarea;
+  }
+
+  function focusPendingPlaybookTarget() {
+    const target = state.playbookFocusTarget;
+    if (!target || !dom.variablesPanel) return;
+    state.playbookFocusTarget = null;
+    let selector = "";
+    if (target.kind === "variable") {
+      selector = `[data-variable-key="${CSS.escape(target.id)}"][data-variable-field="${CSS.escape(target.field || "key")}"]`;
+    } else if (target.kind === "action") {
+      selector = `[data-playbook-action-id="${CSS.escape(target.id)}"][data-playbook-action-field="${CSS.escape(target.field || "target")}"]`;
+    } else if (target.kind === "runnerRule") {
+      selector = `[data-runner-rule-field="${CSS.escape(target.id)}"]`;
+    }
+    const element = selector ? dom.variablesPanel.querySelector(selector) : null;
+    if (!element) return;
+    element.scrollIntoView({ block: "center", inline: "nearest" });
+    element.focus({ preventScroll: true });
+    if (typeof element.select === "function") element.select();
   }
 
   function focusPlaybookJsonToken(token, textarea = dom.variablesPanel?.querySelector("textarea[data-project-field='variables']")) {
@@ -4189,7 +4822,7 @@ function installNarrativeCanvasApp() {
             <div class="document-meta" data-event-search-meta>${escapeHtml(formatEventSheetMeta(model))}</div>
           </div>
           <div class="document-actions">
-            <button class="small-button" type="button" data-action="add-node" data-type="Event">${t("Add event frame")}</button>
+            <button class="small-button" type="button" data-action="add-node" data-type="Event">${t("Add frame")}</button>
             <button class="small-button" type="button" data-action="reset-event-row-order" title="${escapeAttr(t("Clear manual drag order and re-sort rows by the canvas flow"))}">${t("Re-sort by graph")}</button>
             <button class="small-button" type="button" data-action="export-event-sheet">${t("Export CSV")}</button>
             <button class="small-button" type="button" data-action="export-event-sheet-json">${t("Export JSON")}</button>
@@ -4252,8 +4885,8 @@ function installNarrativeCanvasApp() {
 
   function renderEventSheetGroupsMarkup(model, groups = model.groups) {
     if (groups.length) return groups.map(renderEventSheetGroup).join("");
-    if (model.allGroups.length) return `<div class="nc-empty-state">${t("No matching event frames.")}</div>`;
-    return `<div class="nc-empty-state">${t("No event frame nodes yet.")}</div>`;
+    if (model.allGroups.length) return `<div class="nc-empty-state">${t("No matching frames.")}</div>`;
+    return `<div class="nc-empty-state">${t("No visible frame nodes yet.")}</div>`;
   }
 
   function formatEventSheetMeta(model) {
@@ -4262,13 +4895,29 @@ function installNarrativeCanvasApp() {
   }
 
   function renderEventFilterBar(model) {
-    if (!model.query) return `<span class="filter-chip quiet">${t("All event rows visible")}</span>`;
-    return `
-      <span class="filter-chip">
-        ${t("Search")}: ${escapeHtml(model.query)}
-        <button type="button" data-action="clear-event-search" aria-label="${escapeAttr(t("Clear event search"))}">${t("Clear")}</button>
-      </span>
-    `;
+    const hiddenTypes = getHiddenEventFrameTypes();
+    const chips = [];
+    if (model.query) {
+      chips.push(`
+        <span class="filter-chip">
+          ${t("Search")}: ${escapeHtml(model.query)}
+          <button type="button" data-action="clear-event-search" aria-label="${escapeAttr(t("Clear event search"))}">${t("Clear")}</button>
+        </span>
+      `);
+    }
+    if (hiddenTypes.length) {
+      chips.push(`
+        <span class="filter-chip">
+          ${t("Hidden frame types")}:
+          ${hiddenTypes.map((typeDef) => `
+            <button type="button" data-action="show-event-frame-type" data-event-frame-type="${escapeAttr(typeDef.type)}" title="${escapeAttr(t("Show this frame type in Events Sheet"))}">
+              ${escapeHtml(typeDef.label || typeDef.type)}
+            </button>
+          `).join("")}
+        </span>
+      `);
+    }
+    return chips.join("");
   }
 
   function clearEventSearch() {
@@ -4276,6 +4925,43 @@ function installNarrativeCanvasApp() {
     if (dom.eventSearchInput) dom.eventSearchInput.value = "";
     renderEventSheetGroupsForSearch();
     setStatus("Event search cleared.");
+  }
+
+  function hideEventFrameType(type) {
+    const key = normalizeOptionalString(type).trim();
+    if (!key) return;
+    const typeDef = getProjectNodeTypes().find((item) => item.type === key);
+    if (!typeDef || !isFrameKind(typeDef.kind)) {
+      setStatus("Frame type not found.");
+      return;
+    }
+    typeDef.eventSheetHidden = true;
+    markProjectStructureChanged({ nodeTypes: true });
+    if (state.activeFileId === "events") renderEventsSheetPage();
+    else renderAll();
+    setStatus(`${typeDef.label || key} hidden from Events Sheet.`);
+  }
+
+  function showEventFrameType(type) {
+    const key = normalizeOptionalString(type).trim();
+    if (!key) return;
+    const typeDef = getProjectNodeTypes().find((item) => item.type === key);
+    if (!typeDef || !isFrameKind(typeDef.kind)) {
+      setStatus("Frame type not found.");
+      return;
+    }
+    typeDef.eventSheetHidden = false;
+    markProjectStructureChanged({ nodeTypes: true });
+    if (state.activeFileId === "events") renderEventsSheetPage();
+    else renderAll();
+    setStatus(`${typeDef.label || key} shown in Events Sheet.`);
+  }
+
+  function getHiddenEventFrameTypes() {
+    const rowTypes = new Set(state.project.nodes.filter((node) => isFrameNode(node)).map((node) => node.type));
+    return getProjectNodeTypes()
+      .filter((typeDef) => rowTypes.has(typeDef.type) && isFrameKind(typeDef.kind) && typeDef.eventSheetHidden)
+      .sort((a, b) => (a.label || a.type).localeCompare(b.label || b.type));
   }
 
   function captureEventSheetScrollState() {
@@ -4314,7 +5000,10 @@ function installNarrativeCanvasApp() {
       <section class="event-sheet-group" data-event-group-type="${escapeAttr(group.type)}">
         <header class="event-sheet-group-header">
           <h3>${escapeHtml(group.label)}</h3>
-          <span>${group.totalRows && group.totalRows !== group.rows.length ? t("{visible} of {total} rows", { visible: group.rows.length, total: group.totalRows }) : t("{count} rows", { count: group.rows.length })}</span>
+          <div class="event-sheet-group-actions">
+            <span>${group.totalRows && group.totalRows !== group.rows.length ? t("{visible} of {total} rows", { visible: group.rows.length, total: group.totalRows }) : t("{count} rows", { count: group.rows.length })}</span>
+            <button class="small-button" type="button" data-action="hide-event-frame-type" data-event-frame-type="${escapeAttr(group.type)}" title="${escapeAttr(t("Hide this frame type from Events Sheet"))}">${t("Hide frame type")}</button>
+          </div>
         </header>
         <div class="event-sheet-scroll">
           <table class="event-sheet-table">
@@ -4430,7 +5119,7 @@ function installNarrativeCanvasApp() {
     const columns = getProjectEventSheetColumns().filter((column) => !hidden.has(column.key));
     const seen = new Set(columns.map((column) => column.key));
     getProjectNodeTypes()
-      .filter((typeDef) => isEventFrameKind(typeDef.kind))
+      .filter(isEventSheetTypeDef)
       .filter((typeDef) => !eventType || typeDef.type === eventType)
       .flatMap((typeDef) => typeDef.fields || [])
       .forEach((field) => {
@@ -4458,7 +5147,7 @@ function installNarrativeCanvasApp() {
     eventSheetColumns.forEach((column) => defs.set(column.key, column));
     getProjectEventSheetColumns().forEach((column) => defs.set(column.key, column));
     getProjectNodeTypes()
-      .filter((typeDef) => isEventFrameKind(typeDef.kind))
+      .filter(isEventSheetTypeDef)
       .filter((typeDef) => !eventType || typeDef.type === eventType)
       .flatMap((typeDef) => typeDef.fields || [])
       .forEach((field) => {
@@ -4589,7 +5278,7 @@ function installNarrativeCanvasApp() {
 
     if (column?.custom) {
       getProjectNodeTypes()
-        .filter((typeDef) => isEventFrameKind(typeDef.kind))
+        .filter(isEventSheetTypeDef)
         .forEach((typeDef) => {
           (typeDef.fields || [])
             .filter((field) => field.key === key)
@@ -4637,7 +5326,7 @@ function installNarrativeCanvasApp() {
 
     if (column.custom) {
       getProjectNodeTypes()
-        .filter((typeDef) => isEventFrameKind(typeDef.kind))
+        .filter(isEventSheetTypeDef)
         .forEach((typeDef) => {
           typeDef.fields = (typeDef.fields || []).filter((field) => field.key !== key);
         });
@@ -4669,14 +5358,20 @@ function installNarrativeCanvasApp() {
     }
     state.genericConfirmAction = {
       onConfirm: typeof options.onConfirm === "function" ? options.onConfirm : null,
+      onSecondary: typeof options.onSecondary === "function" ? options.onSecondary : null,
       recordHistory: Boolean(options.recordHistory)
     };
-    dom.genericConfirmKicker.textContent = options.kicker || "Confirm";
-    dom.genericConfirmTitle.textContent = options.title || "Confirm action?";
-    dom.genericConfirmBody.textContent = options.message || "";
-    dom.genericConfirmButton.textContent = options.confirmLabel || "Confirm";
+    dom.genericConfirmKicker.textContent = t(options.kicker || "Confirm");
+    dom.genericConfirmTitle.textContent = t(options.title || "Confirm action?");
+    dom.genericConfirmBody.textContent = t(options.message || "");
+    dom.genericConfirmButton.textContent = t(options.confirmLabel || "Confirm");
     dom.genericConfirmButton.classList.toggle("danger-button", options.danger !== false);
     dom.genericConfirmButton.classList.toggle("primary", options.danger === false);
+    if (dom.genericConfirmSecondaryButton) {
+      const hasSecondary = typeof options.onSecondary === "function";
+      dom.genericConfirmSecondaryButton.hidden = !hasSecondary;
+      dom.genericConfirmSecondaryButton.textContent = t(options.secondaryLabel || "Keep");
+    }
     dom.genericConfirmDialog.returnValue = "";
     dom.genericConfirmDialog.showModal();
     return true;
@@ -4685,10 +5380,14 @@ function installNarrativeCanvasApp() {
   function handleGenericConfirmClose() {
     const pending = state.genericConfirmAction;
     state.genericConfirmAction = null;
-    if (dom.genericConfirmDialog.returnValue !== "confirm" || !pending?.onConfirm) return;
+    const returnValue = dom.genericConfirmDialog.returnValue;
+    const callback = returnValue === "confirm"
+      ? pending?.onConfirm
+      : (returnValue === "secondary" ? pending?.onSecondary : null);
+    if (!callback) return;
     const historyBefore = pending.recordHistory ? getHistorySnapshot() : null;
     try {
-      const result = pending.onConfirm();
+      const result = callback();
       if (result && typeof result.catch === "function") result.catch((error) => console.error(error));
     } catch (error) {
       console.error(error);
@@ -4705,13 +5404,13 @@ function installNarrativeCanvasApp() {
       onConfirm: typeof options.onConfirm === "function" ? options.onConfirm : null,
       recordHistory: Boolean(options.recordHistory)
     };
-    dom.genericTextKicker.textContent = options.kicker || "Edit";
-    dom.genericTextTitle.textContent = options.title || "Edit value";
-    dom.genericTextLabel.textContent = options.label || "Value";
+    dom.genericTextKicker.textContent = t(options.kicker || "Edit");
+    dom.genericTextTitle.textContent = t(options.title || "Edit value");
+    dom.genericTextLabel.textContent = t(options.label || "Value");
     dom.genericTextInput.value = options.value || "";
     dom.genericTextInput.maxLength = options.maxLength ? String(options.maxLength) : "";
-    dom.genericTextBody.textContent = options.message || "";
-    dom.genericTextButton.textContent = options.confirmLabel || "Apply";
+    dom.genericTextBody.textContent = t(options.message || "");
+    dom.genericTextButton.textContent = t(options.confirmLabel || "Apply");
     dom.genericTextDialog.returnValue = "";
     dom.genericTextDialog.showModal();
     requestAnimationFrame(() => {
@@ -4740,8 +5439,8 @@ function installNarrativeCanvasApp() {
     if (!column) return;
     state.eventColumnDeleteKey = key;
     const deleteImpact = column.custom
-      ? `Delete removes "${column.label}" from all Event Frame type definitions and clears that value from existing Event Frame nodes.`
-      : `Delete removes "${column.label}" from the Events Sheet schema and clears that value from existing Event Frame nodes.`;
+      ? `Delete removes "${column.label}" from all Events Sheet frame type definitions and clears that value from existing frame nodes.`
+      : `Delete removes "${column.label}" from the Events Sheet schema and clears that value from existing frame nodes.`;
     const message = `Hide only hides the column and keeps data. ${deleteImpact}`;
     const title = `Delete ${column.label} column?`;
 
@@ -4775,7 +5474,7 @@ function installNarrativeCanvasApp() {
     const columns = [];
     const seen = new Set([...eventSheetColumns.map((column) => column.key), EVENT_ELEMENTS_COLUMN_KEY]);
     getProjectNodeTypes()
-      .filter((typeDef) => isEventFrameKind(typeDef.kind))
+      .filter(isEventSheetTypeDef)
       .flatMap((typeDef) => typeDef.fields || [])
       .forEach((field) => {
         if (!field?.key || seen.has(field.key)) return;
@@ -4808,7 +5507,7 @@ function installNarrativeCanvasApp() {
   }
 
   function showResetEventColumnsConfirm() {
-    const message = "Reset restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Event Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.";
+    const message = "Reset restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.";
     if (dom.eventColumnsResetDialog?.showModal) {
       dom.eventColumnsResetDialog.returnValue = "";
       dom.eventColumnsResetDialog.showModal();
@@ -4842,17 +5541,22 @@ function installNarrativeCanvasApp() {
   function renderPalette() {
     const entries = getNodeTypeEntries();
     const visibleRows = entries.length ? entries
-      .map(([type, meta]) => `
-        <div class="palette-row">
-          <button class="palette-badge" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(type)}" data-icon-size="${getNodeIconSize(meta.badge)}" style="--node-color:${escapeAttr(meta.color)}" title="Edit icon for ${escapeAttr(getNodeTypeLabel(type))}" aria-label="Edit icon for ${escapeAttr(getNodeTypeLabel(type))}">${escapeHtml(meta.badge)}</button>
-          <button class="palette-item" data-action="add-node" data-type="${escapeAttr(type)}">
-            <span class="palette-label">${escapeHtml(getNodeTypeLabel(type))}</span>
-          </button>
-          <button class="icon-button palette-settings-button" aria-label="Edit node type" data-action="edit-node-type" data-node-type="${escapeAttr(type)}">...</button>
-          <button class="icon-button palette-hide-button" aria-label="Hide node type" data-action="hide-node-type" data-node-type="${escapeAttr(type)}">-</button>
-          <button class="icon-button danger-button palette-delete-button" aria-label="Delete node type" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">x</button>
-        </div>
-      `)
+      .map(([type, meta]) => {
+        const deleteControl = meta.system
+          ? `<button class="icon-button palette-delete-button system-lock-button" type="button" disabled title="${escapeAttr(t("This is a system type. Delete is disabled to keep Play working."))}" aria-label="${escapeAttr(t("System type"))}">lock</button>`
+          : `<button class="icon-button danger-button palette-delete-button" aria-label="Delete node type" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">x</button>`;
+        return `
+          <div class="palette-row">
+            <button class="palette-badge" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(type)}" data-icon-size="${getNodeIconSize(meta.badge)}" style="--node-color:${escapeAttr(meta.color)}" title="Edit icon for ${escapeAttr(getNodeTypeLabel(type))}" aria-label="Edit icon for ${escapeAttr(getNodeTypeLabel(type))}">${escapeHtml(meta.badge)}</button>
+            <button class="palette-item" data-action="add-node" data-type="${escapeAttr(type)}">
+              <span class="palette-label">${escapeHtml(getNodeTypeLabel(type))}</span>
+            </button>
+            <button class="icon-button palette-settings-button" aria-label="Edit node type" data-action="edit-node-type" data-node-type="${escapeAttr(type)}">...</button>
+            <button class="icon-button palette-hide-button" aria-label="Hide node type" data-action="hide-node-type" data-node-type="${escapeAttr(type)}">-</button>
+            ${deleteControl}
+          </div>
+        `;
+      })
       .join("") : `<div class="custom-node-empty">No visible node types.</div>`;
     dom.palette.innerHTML = `
       <div class="palette-tools">
@@ -4890,6 +5594,7 @@ function installNarrativeCanvasApp() {
     syncCanvasScrollBounds();
     const transform = `translate(${state.view.x}px, ${state.view.y}px) scale(${state.view.scale})`;
     dom.content.style.transform = "";
+    if (dom.frameLayer) dom.frameLayer.style.transform = transform;
     dom.linkLayer.style.transform = transform;
     dom.nodeLayer.style.transform = transform;
     if (dom.marqueeLayer) dom.marqueeLayer.style.transform = transform;
@@ -4899,20 +5604,44 @@ function installNarrativeCanvasApp() {
 
   function normalizeCanvasViewScroll() {
     if (!dom.viewport) return;
+    // For each axis: when the scaled board is wider/taller than the viewport (i.e. the user
+    // needs to scroll), force view.x/y to 0 and transfer any positive offset into the scroll
+    // position. With view.x>0 the layer sits inside a wasted padding gap and scrolling all
+    // the way to scrollLeft=0 keeps the leftmost board column hidden behind that gap. When
+    // the board fits inside the viewport we keep view.x positive so the centering done by
+    // centerView still places small projects in the middle.
+    const viewportWidth = dom.viewport.clientWidth || 0;
+    const viewportHeight = dom.viewport.clientHeight || 0;
+    const scale = Math.max(CANVAS_MIN_ZOOM, state.view.scale || DEFAULT_CANVAS_ZOOM);
+    const scaledBoardWidth = BOARD_WIDTH * scale;
+    const scaledBoardHeight = BOARD_HEIGHT * scale;
     let shiftX = 0;
     let shiftY = 0;
-    if (state.view.x < CANVAS_VIEW_PADDING) {
-      shiftX = CANVAS_VIEW_PADDING - state.view.x;
-      state.view.x += shiftX;
+    if (scaledBoardWidth > viewportWidth) {
+      if (state.view.x !== 0) {
+        shiftX = state.view.x;
+        state.view.x = 0;
+      }
+    } else if (state.view.x < 0) {
+      shiftX = state.view.x;
+      state.view.x = 0;
     }
-    if (state.view.y < CANVAS_VIEW_PADDING) {
-      shiftY = CANVAS_VIEW_PADDING - state.view.y;
-      state.view.y += shiftY;
+    if (scaledBoardHeight > viewportHeight) {
+      if (state.view.y !== 0) {
+        shiftY = state.view.y;
+        state.view.y = 0;
+      }
+    } else if (state.view.y < 0) {
+      shiftY = state.view.y;
+      state.view.y = 0;
     }
     if (shiftX || shiftY) {
       syncCanvasScrollBounds();
-      dom.viewport.scrollLeft += shiftX;
-      dom.viewport.scrollTop += shiftY;
+      // Visual position is preserved by pulling the scroll position the opposite direction.
+      // Browser will clamp into [0, maxScroll] which is exactly what we want — a negative
+      // request becomes 0 (leftmost edge of the layer flush with the viewport).
+      dom.viewport.scrollLeft -= shiftX;
+      dom.viewport.scrollTop -= shiftY;
     }
   }
 
@@ -4938,55 +5667,75 @@ function installNarrativeCanvasApp() {
   function renderNodes(renderContext = getCanvasRenderContext()) {
     const query = renderContext.query;
     const focusedCharacterId = getActiveCharacterFocusId();
-    dom.nodeLayer.innerHTML = getCanvasRenderNodes(renderContext.visibleNodeIds)
-      .map((node) => {
-        const meta = getNodeMeta(node.type);
-        const isSelected = node.id === state.selectedNodeId;
-        const isMultiSelected = state.selectedNodeIds.includes(node.id);
-        const isFrame = isFrameNode(node);
-        const frameClass = isFrame ? (isEventSheetNode(node) ? "event-frame" : "visual-frame") : "";
-        const match = query && nodeMatches(node, query);
-        const characterFocusClass = focusedCharacterId
-          ? (isNodeRelatedToCharacter(node, focusedCharacterId) ? "character-focus-match" : "character-focus-muted")
-          : "";
-        const size = nodeLayoutSize(node);
-        const width = size.width;
-        const height = size.height;
-        const icon = getNodeIcon(node);
-        const inlineEditField = node.id === state.inlineEditNodeId ? state.inlineEditField : "";
-        const inputPortStyle = `left:${node.x - 11}px; top:${node.y + height / 2}px; --node-color:${meta.color};`;
-        const outputPortStyle = `left:${node.x + width - 11}px; top:${node.y + height / 2}px; --node-color:${meta.color};`;
-        const nodeClasses = [
-          "node",
-          isFrame ? `frame ${frameClass}` : "",
-          isSelected ? "selected" : "",
-          isMultiSelected ? "multi-selected" : "",
-          characterFocusClass
-        ].filter(Boolean).join(" ");
-        return `
-          <article class="${nodeClasses}" data-node-id="${node.id}" style="left:${node.x}px; top:${node.y}px; width:${width}px; height:${height}px; --node-color:${meta.color}; ${match ? "outline:1px solid var(--accent-orange);" : ""}">
-            <div class="node-header" data-drag-handle="true" data-node-id="${node.id}">
-              <button class="node-icon" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(node.type)}" data-node-id="${node.id}" data-no-drag="true" data-icon-size="${getNodeIconSize(icon)}" title="Edit ${escapeAttr(getNodeTypeLabel(node.type))} icon" aria-label="Edit icon for all ${escapeAttr(getNodeTypeLabel(node.type))} nodes">${escapeHtml(icon)}</button>
-              <span class="node-type">${escapeHtml(getNodeTypeLabel(node.type))}</span>
-            <span class="node-id">${escapeHtml(getNodeDisplayId(node))}</span>
-            </div>
-            <div class="node-body">
-              ${renderNodeTitle(node, inlineEditField)}
-              ${renderNodeCastChips(node)}
-              ${renderNodeText(node, inlineEditField)}
-              ${hasNodeChoices(node) ? `<div class="node-meta">${node.choices.length} choices</div>` : ""}
-            </div>
-            <button class="node-resize-handle right" data-resize-handle="e" data-node-id="${node.id}" title="Resize width" aria-label="Resize width"></button>
-            <button class="node-resize-handle bottom" data-resize-handle="s" data-node-id="${node.id}" title="Resize height" aria-label="Resize height"></button>
-            <button class="node-resize-handle corner" data-resize-handle="se" data-node-id="${node.id}" title="Resize node" aria-label="Resize node"></button>
-          </article>
-          <button class="port input" style="${inputPortStyle}" data-port="input" data-node-id="${node.id}" title="Input" aria-label="Input port"></button>
-          <button class="port output ${node.id === state.connectingFrom ? "active" : ""}" style="${outputPortStyle}" data-port="output" data-node-id="${node.id}" title="Output" aria-label="Output port"></button>
-        `;
-      })
-      .join("");
+    const frameMarkup = [];
+    const nodeMarkup = [];
+    const visibleNodeIds = renderContext.visibleNodeIds;
+    getCanvasLayerItems()
+      .filter((item) => visibleNodeIds.has(item.node.id))
+      .forEach(({ node, order }) => {
+      const markup = renderCanvasNodeMarkup(node, query, focusedCharacterId, order);
+      if (isDefaultFrameLayerNode(node)) frameMarkup.push(markup);
+      else nodeMarkup.push(markup);
+    });
+    if (dom.frameLayer) dom.frameLayer.innerHTML = frameMarkup.join("");
+    dom.nodeLayer.innerHTML = nodeMarkup.join("");
+    refreshWorkspaceSearchCount();
+  }
 
-    dom.matchCount.textContent = t("{count} matches", { count: renderContext.matchCount });
+  function renderCanvasNodeMarkup(node, query, focusedCharacterId, layerOrder = getNodeLayerOrder(node, state.project.nodes.indexOf(node))) {
+    const meta = getNodeMeta(node.type);
+    const isSelected = node.id === state.selectedNodeId;
+    const isMultiSelected = state.selectedNodeIds.includes(node.id);
+    const isFrame = isFrameNode(node);
+    const frameClass = isFrame ? (isEventSheetNode(node) ? "event-frame" : "visual-frame") : "";
+    const match = query && nodeMatches(node, query);
+    const characterFocusClass = focusedCharacterId
+      ? (isNodeRelatedToCharacter(node, focusedCharacterId) ? "character-focus-match" : "character-focus-muted")
+      : "";
+    const size = nodeLayoutSize(node);
+    const width = size.width;
+    const height = size.height;
+    const icon = getNodeIcon(node);
+    const inlineEditField = node.id === state.inlineEditNodeId ? state.inlineEditField : "";
+    const inputPoint = getInputPoint(node);
+    const outputPoint = getOutputPoint(node);
+    const inputPortStyle = `left:${inputPoint.x - node.x}px; top:${inputPoint.y - node.y}px; --node-color:${meta.color};`;
+    const outputPortStyle = `left:${outputPoint.x - node.x}px; top:${outputPoint.y - node.y}px; --node-color:${meta.color};`;
+    const nodeClasses = [
+      "node",
+      isFrame ? `frame ${frameClass}` : "",
+      isFrameCollapsed(node) ? "collapsed" : "",
+      isSelected ? "selected" : "",
+      isMultiSelected ? "multi-selected" : "",
+      characterFocusClass
+    ].filter(Boolean).join(" ");
+    return `
+      <div class="node-stack" data-node-stack-id="${escapeAttr(node.id)}" style="left:${node.x}px; top:${node.y}px; width:${width}px; height:${height}px; --node-layer-order:${Number(layerOrder) || 0};">
+        <article class="${nodeClasses}" data-node-id="${escapeAttr(node.id)}" style="left:0; top:0; width:${width}px; height:${height}px; --node-color:${meta.color}; ${match ? "outline:1px solid var(--accent-orange);" : ""}">
+          <div class="node-header" data-drag-handle="true" data-node-id="${escapeAttr(node.id)}">
+            <button class="node-icon" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(node.type)}" data-node-id="${escapeAttr(node.id)}" data-no-drag="true" data-icon-size="${getNodeIconSize(icon)}" title="Edit ${escapeAttr(getNodeTypeLabel(node.type))} icon" aria-label="Edit icon for all ${escapeAttr(getNodeTypeLabel(node.type))} nodes">${escapeHtml(icon)}</button>
+            <span class="node-type">${escapeHtml(getNodeTypeLabel(node.type))}</span>
+            <span class="node-id">${escapeHtml(getNodeDisplayId(node))}</span>
+            ${isFrame ? `<button class="frame-collapse-button" type="button" data-action="toggle-frame-collapse" data-node-id="${escapeAttr(node.id)}" data-no-drag="true" title="${escapeAttr(isFrameCollapsed(node) ? t("Expand frame") : t("Collapse frame"))}" aria-label="${escapeAttr(isFrameCollapsed(node) ? t("Expand frame") : t("Collapse frame"))}">${isFrameCollapsed(node) ? "+" : "-"}</button>` : ""}
+          </div>
+          <div class="node-body">
+            ${renderNodeTitle(node, inlineEditField)}
+            ${renderNodeCastChips(node)}
+            ${renderNodeText(node, inlineEditField)}
+            ${hasNodeChoices(node) ? `<div class="node-meta">${node.choices.length} choices</div>` : ""}
+          </div>
+          <button class="node-resize-handle right" data-resize-handle="e" data-node-id="${escapeAttr(node.id)}" title="Resize width" aria-label="Resize width"></button>
+          <button class="node-resize-handle bottom" data-resize-handle="s" data-node-id="${escapeAttr(node.id)}" title="Resize height" aria-label="Resize height"></button>
+          <button class="node-resize-handle corner" data-resize-handle="se" data-node-id="${escapeAttr(node.id)}" title="Resize node" aria-label="Resize node"></button>
+        </article>
+        <button class="port input" style="${inputPortStyle}" data-port="input" data-node-id="${escapeAttr(node.id)}" title="Input" aria-label="Input port"></button>
+        <button class="port output ${node.id === state.connectingFrom ? "active" : ""}" style="${outputPortStyle}" data-port="output" data-node-id="${escapeAttr(node.id)}" title="Output" aria-label="Output port"></button>
+      </div>
+    `;
+  }
+
+  function isDefaultFrameLayerNode(node) {
+    return isFrameNode(node) && getNodeLayerOrder(node, state.project.nodes.indexOf(node)) < REGULAR_LAYER_BASE;
   }
 
   function renderNodeTitle(node, inlineEditField) {
@@ -5157,6 +5906,7 @@ function installNarrativeCanvasApp() {
     const bounds = getCanvasViewportBounds();
     const ids = new Set();
     state.project.nodes.forEach((node) => {
+      if (isNodeHiddenByCollapsedFrame(node)) return;
       if (shouldForceCanvasNodeRender(node, query) || boundsIntersect(getNodeBounds(node), bounds)) {
         ids.add(node.id);
       }
@@ -5164,10 +5914,47 @@ function installNarrativeCanvasApp() {
     return ids;
   }
 
+  function isFrameCollapsed(node) {
+    return Boolean(node && isFrameNode(node) && node.collapsed);
+  }
+
+  function isNodeHiddenByCollapsedFrame(node) {
+    return Boolean(getCollapsedFrameForNode(node));
+  }
+
+  function getCollapsedFrameForNode(node) {
+    if (!node) return null;
+    const nodeMap = getNodeIndex();
+    let current = normalizeOptionalString(node.frameId).trim();
+    const seen = new Set();
+    while (current) {
+      if (seen.has(current)) return null;
+      seen.add(current);
+      const frame = nodeMap.get(current);
+      if (!frame || !isFrameNode(frame)) return null;
+      if (isFrameCollapsed(frame)) return frame;
+      current = normalizeOptionalString(frame.frameId).trim();
+    }
+    return null;
+  }
+
+  function getRenderedLinkEndpoints(link, nodeMap = getNodeIndex()) {
+    const rawFrom = nodeMap.get(link.from);
+    const rawTo = nodeMap.get(link.to);
+    if (!rawFrom || !rawTo) return null;
+    const fromFrame = getCollapsedFrameForNode(rawFrom);
+    const toFrame = getCollapsedFrameForNode(rawTo);
+    if (fromFrame && toFrame && fromFrame.id === toFrame.id) return null;
+    const from = fromFrame || rawFrom;
+    const to = toFrame || rawTo;
+    if (!from || !to || from.id === to.id) return null;
+    return { from, to };
+  }
+
   function getNodeTypeLabel(type) {
     const meta = getNodeMeta(type);
     if (meta.label) return meta.label;
-    return type === "Event" ? "Event Frame" : type;
+    return type === "Event" ? "Frame" : type;
   }
 
   function getNodeDisplayTitle(node, fallback = "Untitled") {
@@ -5205,7 +5992,10 @@ function installNarrativeCanvasApp() {
         custom: Boolean(typeDef.custom),
         kind: typeDef.kind,
         fields: typeDef.fields || [],
-        hidden: Boolean(typeDef.hidden)
+        hidden: Boolean(typeDef.hidden),
+        eventSheetHidden: Boolean(typeDef.eventSheetHidden),
+        system: Boolean(typeDef.system),
+        legacy: Boolean(typeDef.legacy)
       };
     });
     state.derived.nodeTypeMap = { source: types, value: map };
@@ -5215,9 +6005,18 @@ function installNarrativeCanvasApp() {
   function getFallbackNodeMeta(type) {
     const builtIn = nodeTypes[type];
     if (builtIn) {
-      return { ...builtIn, label: getDefaultNodeTypeLabel(type), kind: type === "Event" ? "eventFrame" : "node", fields: [], hidden: false };
+      return {
+        ...builtIn,
+        label: getDefaultNodeTypeLabel(type),
+        kind: type === "Event" ? "frame" : "node",
+        fields: [],
+        hidden: Boolean(builtIn.legacy),
+        eventSheetHidden: false,
+        system: Boolean(builtIn.system),
+        legacy: Boolean(builtIn.legacy)
+      };
     }
-    return { ...FALLBACK_NODE_META, label: type || FALLBACK_NODE_META.label, kind: "node", fields: [], hidden: false };
+    return { ...FALLBACK_NODE_META, label: type || FALLBACK_NODE_META.label, kind: "node", fields: [], hidden: false, eventSheetHidden: false, system: false, legacy: false };
   }
 
   function defaultNodeTypeList() {
@@ -5228,14 +6027,17 @@ function installNarrativeCanvasApp() {
       color: meta.color,
       width: meta.width,
       custom: false,
-      kind: type === "Event" ? "eventFrame" : "node",
+      kind: type === "Event" ? "frame" : "node",
       fields: [],
-      hidden: false
+      hidden: Boolean(meta.legacy),
+      eventSheetHidden: false,
+      system: Boolean(meta.system),
+      legacy: Boolean(meta.legacy)
     }));
   }
 
   function getDefaultNodeTypeLabel(type) {
-    return type === "Event" ? "Event Frame" : type;
+    return type === "Event" ? "Frame" : type;
   }
 
   function getNodeTypeEntries(includeType = null) {
@@ -5289,15 +6091,17 @@ function installNarrativeCanvasApp() {
     ];
 
     state.project.links.forEach((link) => {
-      if (link.id !== state.selectedLinkId && !visibleNodeIds.has(link.from) && !visibleNodeIds.has(link.to)) return;
-      const from = nodeMap.get(link.from);
-      const to = nodeMap.get(link.to);
-      if (!from || !to) return;
-      const path = linkPath(getOutputPoint(from), getInputPoint(to));
-      linkSvg.push(`<path class="link-hitpath" d="${path}" data-link-id="${link.id}"></path>`);
-      linkSvg.push(`<path class="link-path ${link.id === state.selectedLinkId ? "selected" : ""}" d="${path}" marker-end="url(#arrow-head)" data-link-id="${link.id}"></path>`);
+      const endpoints = getRenderedLinkEndpoints(link, nodeMap);
+      if (!endpoints) return;
+      const { from, to } = endpoints;
+      if (link.id !== state.selectedLinkId && !visibleNodeIds.has(from.id) && !visibleNodeIds.has(to.id)) return;
+      const fromPoint = getOutputPoint(from);
+      const toPoint = getInputPoint(to);
+      const path = linkPath(fromPoint, toPoint);
+      linkSvg.push(`<path class="link-hitpath" d="${path}" data-link-id="${escapeAttr(link.id)}"></path>`);
+      linkSvg.push(`<path class="link-path ${link.id === state.selectedLinkId ? "selected" : ""}" d="${path}" marker-end="url(#arrow-head)" data-link-id="${escapeAttr(link.id)}"></path>`);
       if (link.label) {
-        const mid = midpoint(getOutputPoint(from), getInputPoint(to));
+        const mid = midpoint(fromPoint, toPoint);
         linkSvg.push(`<text class="link-label" x="${mid.x}" y="${mid.y - 8}" font-size="12" text-anchor="middle" data-link-id="${escapeAttr(link.id)}">${escapeHtml(link.label)}</text>`);
       }
     });
@@ -5366,12 +6170,22 @@ function installNarrativeCanvasApp() {
       dom.nodePanel.replaceChildren();
       return;
     }
+    const meta = getNodeMeta(node.type);
+    const legacyBanner = meta.legacy ? `
+      <div class="legacy-node-banner" role="note">
+        <div class="legacy-node-banner-body">
+          <strong>${t("Legacy node type")}</strong>
+          <span>${t("Set / Condition are now node properties. The State Logic section below records this node's effects and gate.")}</span>
+        </div>
+        <button class="small-button" type="button" data-action="convert-legacy-node">${t("Convert to property")}</button>
+      </div>` : "";
     dom.nodePanel.innerHTML = `
       <div class="form-stack">
+        ${legacyBanner}
         <label class="field">
           <span>${t("Type")}</span>
           <select data-node-field="type">
-            ${getNodeTypeEntries(node.type).map(([type, meta]) => `<option value="${escapeAttr(type)}" ${node.type === type ? "selected" : ""}>${escapeHtml(getNodeTypeLabel(type))}${meta.hidden ? " (hidden)" : ""}${meta.removed ? " (removed)" : ""}</option>`).join("")}
+            ${getNodeTypeEntries(node.type).map(([type, m]) => `<option value="${escapeAttr(type)}" ${node.type === type ? "selected" : ""}>${escapeHtml(getNodeTypeLabel(type))}${m.legacy ? " (legacy)" : ""}${m.hidden && !m.legacy ? " (hidden)" : ""}${m.removed ? " (removed)" : ""}</option>`).join("")}
           </select>
         </label>
         <label class="field">
@@ -5379,7 +6193,9 @@ function installNarrativeCanvasApp() {
           <input data-node-field="title" value="${escapeAttr(node.title || "")}">
         </label>
         ${renderNodeBodyField(node)}
+        ${node.type === "Dialog" ? renderNodeDialogTurnsField(node) : ""}
         ${isEventSheetNode(node) ? "" : renderNodeCastFields(node)}
+        ${!isFrameNode(node) ? renderNodeStateLogicFields(node) : ""}
         ${renderTypeFields(node)}
         ${renderCustomFields(node)}
         ${isEventSheetNode(node) ? renderEventFields(node) : ""}
@@ -5392,15 +6208,47 @@ function installNarrativeCanvasApp() {
     `;
   }
 
+  function renderNodeDialogTurnsField(node) {
+    const turns = Array.isArray(node.turns) ? node.turns : [];
+    const headerHint = turns.length
+      ? t("{count} turns — Play steps through each line. Cast Speaker chips auto-fill from speakers below.", { count: turns.length })
+      : t("Optional: split this Dialog into multiple turns so a single node carries a back-and-forth exchange.");
+    return `
+      <section class="dialog-turns-editor">
+        <header>
+          <span>${t("Turns")}</span>
+          <button class="small-button" type="button" data-action="add-dialog-turn">${t("Add turn")}</button>
+        </header>
+        <div class="dialog-turns-hint">${escapeHtml(headerHint)}</div>
+        <div class="dialog-turns-list">
+          ${turns.length === 0 ? `<div class="nc-empty-state">${t("No turns yet.")}</div>` : turns.map((turn, index) => `
+            <div class="dialog-turn-row" data-dialog-turn-index="${index}">
+              <input data-dialog-turn-index="${index}" data-dialog-turn-field="speaker" list="dialogTurnSpeakerOptions" value="${escapeAttr(turn.speaker || "")}" placeholder="${escapeAttr(t("Speaker"))}" spellcheck="false" data-dialog-turn-focus-target="speaker">
+              <textarea data-dialog-turn-index="${index}" data-dialog-turn-field="line" placeholder="${escapeAttr(t("Line"))}" spellcheck="false">${escapeHtml(turn.line || "")}</textarea>
+              <div class="dialog-turn-actions">
+                <button class="icon-button" type="button" title="${escapeAttr(t("Move turn up"))}" data-action="move-dialog-turn-up" data-dialog-turn-index="${index}" ${index === 0 ? "disabled" : ""}>^</button>
+                <button class="icon-button" type="button" title="${escapeAttr(t("Move turn down"))}" data-action="move-dialog-turn-down" data-dialog-turn-index="${index}" ${index === turns.length - 1 ? "disabled" : ""}>v</button>
+                <button class="icon-button" type="button" title="${escapeAttr(t("Copy turn"))}" data-action="copy-dialog-turn" data-dialog-turn-index="${index}">C</button>
+                <button class="icon-button danger-button" type="button" title="${escapeAttr(t("Delete turn"))}" data-action="delete-dialog-turn" data-dialog-turn-index="${index}">x</button>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+        <datalist id="dialogTurnSpeakerOptions">
+          ${getCharacters().map((char) => `<option value="${escapeAttr(char.name)}"></option>`).join("")}
+        </datalist>
+      </section>
+    `;
+  }
+
   function getNodeTitleLabel(node) {
     const labels = {
       Entry: "Start label",
       Content: "Scene title",
-      Dialog: "Speaker",
+      Dialog: "Scene title",
       Choice: "Choice prompt",
       Condition: "Gate name",
       Set: "Action name",
-      Jump: "Destination label",
       Marker: "Marker label",
       Event: "Event title"
     };
@@ -5413,7 +6261,6 @@ function installNarrativeCanvasApp() {
       Content: "Narration",
       Dialog: "Line",
       Choice: "Prompt text",
-      Jump: "Destination note",
       Marker: "Note",
       Event: "Event description"
     };
@@ -5472,6 +6319,71 @@ function installNarrativeCanvasApp() {
           </div>
         ` : ""}
       </section>
+    `;
+  }
+
+  function renderNodeStateLogicFields(node) {
+    const logic = normalizeNodeStateLogic(node.stateLogic);
+    const routing = normalizeNodeRouting(node.routing);
+    return `
+      <section class="node-logic-box">
+        <header>
+          <span>${t("State Logic")}</span>
+          <button class="small-button" type="button" data-action="add-node-effect">${t("Add effect")}</button>
+        </header>
+        <label class="field">
+          <span>${t("Requirements")}</span>
+          <textarea data-node-logic-field="requirements" spellcheck="false" placeholder="trust_level >= 2">${escapeHtml(logic.requirements)}</textarea>
+        </label>
+        <div class="node-effect-list">
+          ${logic.effects.length ? logic.effects.map((effect, index) => renderNodeEffectRow(effect, index)).join("") : `<div class="nc-empty-state">${t("No effects yet.")}</div>`}
+        </div>
+        <div class="node-routing-grid">
+          <label class="field">
+            <span>${t("Routing")}</span>
+            <select data-node-routing-field="mode">
+              ${renderPlaybookOptionList(NODE_ROUTING_MODES, routing.mode)}
+            </select>
+          </label>
+          ${renderNodeRoutingTargetSlot(routing)}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderNodeRoutingTargetSlot(routing) {
+    if (routing.mode === "goTo") {
+      return `
+        <label class="field">
+          <span>${t("Go to title")}</span>
+          <input data-node-routing-field="target" list="playbookTargetOptions" value="${escapeAttr(routing.target)}" placeholder="${escapeAttr(t("Exact node title"))}" spellcheck="false">
+        </label>
+      `;
+    }
+    const hint = routing.mode === "end"
+      ? t("Route ends at this node — no next step.")
+      : t("Next step follows the outgoing link.");
+    return `
+      <div class="field node-routing-hint">
+        <span>${t("Next")}</span>
+        <p class="nc-routing-hint-body">${escapeHtml(hint)}</p>
+      </div>
+    `;
+  }
+
+  function renderNodeEffectRow(effect, index) {
+    return `
+      <div class="node-effect-row">
+        <select data-node-effect-index="${index}" data-node-effect-field="trigger">
+          ${renderPlaybookOptionList(PLAYBOOK_ACTION_TRIGGERS.filter((option) => option.value !== "gate" && option.value !== "manual"), effect.trigger)}
+        </select>
+        <select data-node-effect-index="${index}" data-node-effect-field="op">
+          ${renderPlaybookOptionList(PLAYBOOK_ACTION_OPERATIONS, effect.op)}
+        </select>
+        <input data-node-effect-index="${index}" data-node-effect-field="key" value="${escapeAttr(effect.key)}" placeholder="${escapeAttr(t("State key"))}" spellcheck="false">
+        <input data-node-effect-index="${index}" data-node-effect-field="value" value="${escapeAttr(effect.value)}" placeholder="${escapeAttr(t("Value"))}" spellcheck="false">
+        <button class="icon-button danger-button" type="button" title="${escapeAttr(t("Delete effect"))}" data-action="delete-node-effect" data-node-effect-index="${index}">x</button>
+      </div>
     `;
   }
 
@@ -5552,12 +6464,7 @@ function installNarrativeCanvasApp() {
 
   function renderTypeFields(node) {
     if (node.type === "Choice") {
-      return `
-        <label class="field">
-          <span>${t("Choices, one per line")}</span>
-          <textarea data-node-field="choices">${escapeHtml((node.choices || []).join("\n"))}</textarea>
-        </label>
-      `;
+      return renderChoiceOptionsField(node);
     }
     if (node.type === "Set") {
       return `
@@ -5576,6 +6483,105 @@ function installNarrativeCanvasApp() {
       `;
     }
     return "";
+  }
+
+  function renderChoiceOptionsField(node) {
+    const options = Array.isArray(node.choiceOptions) ? node.choiceOptions : [];
+    const revealMode = normalizeChoiceRevealMode(node.choiceRevealMode || node.revealMode);
+    return `
+      <section class="choice-options-editor">
+        <header>
+          <span>${t("Choices")}</span>
+          <button class="small-button" type="button" data-action="add-choice-option">${t("Add choice")}</button>
+        </header>
+        <label class="field">
+          <span>${t("Unavailable choices")}</span>
+          <select data-node-field="choiceRevealMode">
+            ${renderPlaybookOptionList(CHOICE_REVEAL_MODES, revealMode)}
+          </select>
+        </label>
+        <div class="choice-options-hint">${escapeHtml(t("Each option: visible only when Requires passes; selected option runs its Effects. Empty Requires = always visible."))}</div>
+        <div class="choice-options-list">
+          ${options.length === 0 ? `<div class="nc-empty-state">${t("No choices yet.")}</div>` : options.map((opt, index) => renderChoiceOptionCard(opt, index)).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderChoiceOptionCard(option, index) {
+    const optionId = option.id || "";
+    const effects = Array.isArray(option.effects) ? option.effects : [];
+    const expanded = isChoiceOptionExpanded(optionId, effects.length);
+    return `
+      <article class="choice-option-card" data-choice-option-id="${escapeAttr(optionId)}">
+        <header class="choice-option-head">
+          <span class="choice-option-index">${index + 1}</span>
+          <input data-choice-option-id="${escapeAttr(optionId)}" data-choice-option-field="label" value="${escapeAttr(option.label || "")}" placeholder="${escapeAttr(t("Choice text"))}" spellcheck="false" data-choice-option-focus-target="label">
+          <button class="icon-button" type="button" title="${escapeAttr(t("Move up"))}" data-action="move-choice-option-up" data-choice-option-id="${escapeAttr(optionId)}">${index === 0 ? "" : "&#8593;"}</button>
+          <button class="icon-button" type="button" title="${escapeAttr(t("Move down"))}" data-action="move-choice-option-down" data-choice-option-id="${escapeAttr(optionId)}">&#8595;</button>
+          <button class="icon-button danger-button" type="button" title="${escapeAttr(t("Delete choice"))}" data-action="delete-choice-option" data-choice-option-id="${escapeAttr(optionId)}">x</button>
+        </header>
+        <label class="field">
+          <span>${t("Requires")}</span>
+          <input data-choice-option-id="${escapeAttr(optionId)}" data-choice-option-field="requires" value="${escapeAttr(option.requires || "")}" placeholder="trust_level >= 2" spellcheck="false">
+        </label>
+        <section class="choice-option-effects${expanded ? " expanded" : ""}" data-choice-option-id="${escapeAttr(optionId)}">
+          <header class="choice-option-effects-head">
+            <button class="choice-option-effects-toggle" type="button" data-action="toggle-choice-option-expanded" data-choice-option-id="${escapeAttr(optionId)}" aria-expanded="${expanded ? "true" : "false"}">
+              <span class="choice-option-effects-caret" aria-hidden="true">${expanded ? "▾" : "▸"}</span>
+              <span>${t("On choose effects")} (${effects.length})</span>
+            </button>
+            <button class="small-button" type="button" data-action="add-choice-option-effect" data-choice-option-id="${escapeAttr(optionId)}">${t("Add effect")}</button>
+          </header>
+          ${expanded ? `<div class="choice-option-effect-list">
+            ${effects.length === 0 ? `<div class="nc-empty-state">${t("No effects.")}</div>` : effects.map((effect, effectIndex) => renderChoiceOptionEffectRow(effect, optionId, effectIndex)).join("")}
+          </div>` : ""}
+        </section>
+      </article>
+    `;
+  }
+
+  function isChoiceOptionExpanded(optionId, effectsCount) {
+    if (!optionId) return effectsCount > 0;
+    const set = state.choiceOptionExpandedIds;
+    if (set instanceof Set && set.has(optionId)) return true;
+    return effectsCount > 0 && !(set instanceof Set && set.has(`~${optionId}`));
+  }
+
+  function setChoiceOptionExpanded(optionId, open) {
+    if (!optionId) return;
+    if (!(state.choiceOptionExpandedIds instanceof Set)) state.choiceOptionExpandedIds = new Set();
+    const set = state.choiceOptionExpandedIds;
+    if (open) {
+      set.add(optionId);
+      set.delete(`~${optionId}`);
+    } else {
+      set.delete(optionId);
+      set.add(`~${optionId}`);
+    }
+  }
+
+  function toggleChoiceOptionExpanded(optionId) {
+    if (!optionId) return;
+    const node = getSelectedChoiceNode();
+    const effects = (node?.choiceOptions || []).find((opt) => opt?.id === optionId)?.effects;
+    const effectsCount = Array.isArray(effects) ? effects.length : 0;
+    const currentlyExpanded = isChoiceOptionExpanded(optionId, effectsCount);
+    setChoiceOptionExpanded(optionId, !currentlyExpanded);
+    if (node) renderNodePanel(node);
+  }
+
+  function renderChoiceOptionEffectRow(effect, optionId, effectIndex) {
+    return `
+      <div class="node-effect-row">
+        <select data-choice-option-id="${escapeAttr(optionId)}" data-choice-option-effect-index="${effectIndex}" data-choice-option-effect-field="op">
+          ${renderPlaybookOptionList(PLAYBOOK_ACTION_OPERATIONS, effect.op)}
+        </select>
+        <input data-choice-option-id="${escapeAttr(optionId)}" data-choice-option-effect-index="${effectIndex}" data-choice-option-effect-field="key" value="${escapeAttr(effect.key || "")}" placeholder="${escapeAttr(t("State key"))}" spellcheck="false">
+        <input data-choice-option-id="${escapeAttr(optionId)}" data-choice-option-effect-index="${effectIndex}" data-choice-option-effect-field="value" value="${escapeAttr(effect.value || "")}" placeholder="${escapeAttr(t("Value"))}" spellcheck="false">
+        <button class="icon-button danger-button" type="button" title="${escapeAttr(t("Delete effect"))}" data-action="delete-choice-option-effect" data-choice-option-id="${escapeAttr(optionId)}" data-choice-option-effect-index="${effectIndex}">x</button>
+      </div>
+    `;
   }
 
   function renderCustomFields(node) {
@@ -5633,6 +6639,7 @@ function installNarrativeCanvasApp() {
     const meta = getNodeMeta(node.type);
     const label = getNodeTypeLabel(node.type);
     const sequence = sequenceMap.get(node.id) || "";
+    const collapsed = isFrameCollapsed(node);
     const focusedCharacterId = getActiveCharacterFocusId();
     const characterFocusClass = focusedCharacterId
       ? (isNodeRelatedToCharacter(node, focusedCharacterId) ? "character-focus-match" : "character-focus-muted")
@@ -5654,6 +6661,7 @@ function installNarrativeCanvasApp() {
           <span class="story-item-title">${escapeHtml(formatStoryIndex(sequence))} ${escapeHtml(getNodeDisplayTitle(node, label))}</span>
           <span class="story-item-meta">${escapeHtml(label)} ${escapeHtml(getNodeDisplayId(node))}${entry.children.length ? ` - ${entry.children.length} inside` : ""}</span>
         </div>
+        ${isFrameNode(node) ? `<button class="story-collapse-button" data-action="toggle-frame-collapse" data-node-id="${escapeAttr(node.id)}">${collapsed ? "+" : "-"}</button>` : ""}
         <button class="story-focus-button" data-action="focus-canvas-node" data-node-id="${escapeAttr(node.id)}">Focus</button>
       </div>
     `;
@@ -5661,10 +6669,10 @@ function installNarrativeCanvasApp() {
     if (!isFrameNode(node)) return `<article class="story-entry" data-story-entry-id="${escapeAttr(node.id)}">${itemMarkup}</article>`;
 
     return `
-      <details class="story-frame" data-story-entry-id="${escapeAttr(node.id)}" open>
-        <summary>${itemMarkup}</summary>
-        ${renderStoryList(entry.children, node.id, depth + 1, sequenceMap)}
-      </details>
+      <article class="story-frame" data-story-entry-id="${escapeAttr(node.id)}">
+        ${itemMarkup}
+        ${collapsed ? "" : renderStoryList(entry.children, node.id, depth + 1, sequenceMap)}
+      </article>
     `;
   }
 
@@ -5709,30 +6717,34 @@ function installNarrativeCanvasApp() {
   // layers every pointer frame. A full resync runs once when the interaction ends.
 
   function getNodeElementById(id) {
-    if (!dom.nodeLayer || !id) return null;
-    return dom.nodeLayer.querySelector(`.node[data-node-id="${id}"]`);
+    if (!id) return null;
+    const safeId = CSS.escape(id);
+    return dom.nodeLayer?.querySelector(`.node[data-node-id="${safeId}"]`)
+      || dom.frameLayer?.querySelector(`.node[data-node-id="${safeId}"]`)
+      || null;
   }
 
   function getNodePortElementsById(id) {
-    if (!dom.nodeLayer || !id) return null;
+    if (!id) return null;
     const safeId = CSS.escape(id);
+    const scopeSelector = (selector) => dom.nodeLayer?.querySelector(selector) || dom.frameLayer?.querySelector(selector) || null;
     return {
-      input: dom.nodeLayer.querySelector(`.port.input[data-node-id="${safeId}"]`),
-      output: dom.nodeLayer.querySelector(`.port.output[data-node-id="${safeId}"]`)
+      input: scopeSelector(`.port.input[data-node-id="${safeId}"]`),
+      output: scopeSelector(`.port.output[data-node-id="${safeId}"]`)
     };
   }
 
   function patchNodePortGeometry(node, ports = getNodePortElementsById(node.id)) {
     if (!ports) return false;
-    const size = nodeLayoutSize(node);
-    const top = `${node.y + size.height / 2}px`;
+    const inputPoint = getInputPoint(node);
+    const outputPoint = getOutputPoint(node);
     if (ports.input) {
-      ports.input.style.left = `${node.x - 11}px`;
-      ports.input.style.top = top;
+      ports.input.style.left = `${inputPoint.x - node.x}px`;
+      ports.input.style.top = `${inputPoint.y - node.y}px`;
     }
     if (ports.output) {
-      ports.output.style.left = `${node.x + size.width - 11}px`;
-      ports.output.style.top = top;
+      ports.output.style.left = `${outputPoint.x - node.x}px`;
+      ports.output.style.top = `${outputPoint.y - node.y}px`;
     }
     return Boolean(ports.input || ports.output);
   }
@@ -5740,12 +6752,34 @@ function installNarrativeCanvasApp() {
   function patchNodeElementGeometry(node, element = getNodeElementById(node.id), ports = getNodePortElementsById(node.id)) {
     if (!element) return false;
     const size = nodeLayoutSize(node);
-    element.style.left = `${node.x}px`;
-    element.style.top = `${node.y}px`;
+    const stack = element.closest(".node-stack");
+    if (stack) {
+      stack.style.left = `${node.x}px`;
+      stack.style.top = `${node.y}px`;
+      stack.style.width = `${size.width}px`;
+      stack.style.height = `${size.height}px`;
+    }
+    element.style.left = "0px";
+    element.style.top = "0px";
     element.style.width = `${size.width}px`;
     element.style.height = `${size.height}px`;
     patchNodePortGeometry(node, ports);
     return true;
+  }
+
+  function patchNodeElementsGeometry(nodeIds) {
+    let patched = false;
+    for (const nodeId of nodeIds) {
+      const node = getNode(nodeId);
+      if (!node) continue;
+      const element = getNodeElementById(node.id);
+      const ports = getNodePortElementsById(node.id);
+      if (!element && !ports?.input && !ports?.output) return false;
+      if (element && !patchNodeElementGeometry(node, element, ports)) return false;
+      else patchNodePortGeometry(node, ports);
+      patched = true;
+    }
+    return patched;
   }
 
   function getIncidentLinks(nodeId) {
@@ -5758,7 +6792,7 @@ function installNarrativeCanvasApp() {
   function collectLinkElementRefs(links) {
     if (!dom.linkLayer) return [];
     return links
-      .map((link) => ({ link, els: [...dom.linkLayer.querySelectorAll(`[data-link-id="${link.id}"]`)] }))
+      .map((link) => ({ link, els: [...dom.linkLayer.querySelectorAll(`[data-link-id="${CSS.escape(link.id)}"]`)] }))
       .filter((ref) => ref.els.length);
   }
 
@@ -5766,9 +6800,9 @@ function installNarrativeCanvasApp() {
     if (!refs || !refs.length) return;
     const nodeMap = getNodeIndex();
     refs.forEach(({ link, els }) => {
-      const from = nodeMap.get(link.from);
-      const to = nodeMap.get(link.to);
-      if (!from || !to) return;
+      const endpoints = getRenderedLinkEndpoints(link, nodeMap);
+      if (!endpoints) return;
+      const { from, to } = endpoints;
       const a = getOutputPoint(from);
       const b = getInputPoint(to);
       const d = linkPath(a, b);
@@ -5786,7 +6820,7 @@ function installNarrativeCanvasApp() {
 
   function patchMinimapNode(node) {
     if (!node || !dom.minimap) return false;
-    const element = dom.minimap.querySelector(`[data-minimap-node-id="${node.id}"]`);
+    const element = dom.minimap.querySelector(`[data-minimap-node-id="${CSS.escape(node.id)}"]`);
     if (!element) return false;
     element.style.left = `${Math.max(2, Math.min(164, node.x / BOARD_WIDTH * 180))}px`;
     element.style.top = `${Math.max(2, Math.min(106, node.y / BOARD_HEIGHT * 118))}px`;
@@ -5828,9 +6862,10 @@ function installNarrativeCanvasApp() {
 
   function handleDocumentClickCapture(event) {
     if (event.__narrativeCanvasClickHandled) return;
-    if (!isNarrativeCanvasClickDelegateTarget(event.target)) return;
-    syncDomScopeForEventTarget(event.target);
-    if (handleDocumentClickEvent(event)) {
+    const target = getCanvasCoveredFrameTarget(event) || event.target;
+    if (!isNarrativeCanvasClickDelegateTarget(target)) return;
+    syncDomScopeForEventTarget(target);
+    if (handleDocumentClickEvent(event, target)) {
       event.__narrativeCanvasClickHandled = true;
       event.stopPropagation();
       if (typeof event.stopImmediatePropagation === "function") event.stopImmediatePropagation();
@@ -5842,10 +6877,11 @@ function installNarrativeCanvasApp() {
     handleDocumentClickEvent(event);
   }
 
-  function handleDocumentClickEvent(event) {
-    if (!isNarrativeCanvasTarget(event.target)) return;
+  function handleDocumentClickEvent(event, retarget = null) {
+    const target = retarget || getCanvasCoveredFrameTarget(event) || event.target;
+    if (!isNarrativeCanvasTarget(target)) return;
 
-    const mentionOption = event.target.closest("[data-mention-index]");
+    const mentionOption = target.closest("[data-mention-index]");
     if (mentionOption && state.mention) {
       const index = Number(mentionOption.dataset.mentionIndex);
       const character = state.mention.characters[index];
@@ -5855,22 +6891,22 @@ function installNarrativeCanvasApp() {
         return true;
       }
     }
-    if (state.mention && !dom.mentionPopover?.contains(event.target) && event.target !== state.mention.target) {
+    if (state.mention && !dom.mentionPopover?.contains(target) && target !== state.mention.target) {
       hideMentionPopover();
     }
-    if (getFormControlTarget(event.target)) return false;
+    if (getFormControlTarget(target)) return false;
 
-    const layerTarget = event.target.closest("[data-layer-action]");
-    const sidebarToggle = event.target.closest("[data-sidebar-toggle]");
-    const actionTarget = event.target.closest("[data-action]");
-    const fileTarget = event.target.closest("[data-file-id]");
-    const panelTarget = event.target.closest("[data-panel]");
-    const port = event.target.closest("[data-port]");
-    const link = event.target.closest("[data-link-id]");
-    const node = event.target.closest("[data-node-id]");
-    const canvasNode = event.target.closest(".node[data-node-id]");
+    const layerTarget = target.closest("[data-layer-action]");
+    const sidebarToggle = target.closest("[data-sidebar-toggle]");
+    const actionTarget = target.closest("[data-action]");
+    const fileTarget = target.closest("[data-file-id]");
+    const panelTarget = target.closest("[data-panel]");
+    const port = target.closest("[data-port]");
+    const link = target.closest("[data-link-id]");
+    const node = target.closest("[data-node-id]");
+    const canvasNode = target.closest(".node[data-node-id]");
 
-    if (shouldKeepInlineNodeEditForTarget(event.target)) {
+    if (shouldKeepInlineNodeEditForTarget(target)) {
       state.lastNodeClick = { id: null, time: 0 };
       event.preventDefault();
       requestAnimationFrame(() => focusInlineNodeEditor(state.inlineEditNodeId));
@@ -5891,7 +6927,7 @@ function installNarrativeCanvasApp() {
       return true;
     }
 
-    const insideContextMenu = Boolean(dom.nodeContextMenu?.contains(event.target));
+    const insideContextMenu = Boolean(dom.nodeContextMenu?.contains(target));
     if (!insideContextMenu) {
       hideNodeContextMenu();
     } else if (actionTarget) {
@@ -5902,6 +6938,10 @@ function installNarrativeCanvasApp() {
     }
 
     if (port) {
+      if (state.suppressPortClick) {
+        state.suppressPortClick = false;
+        return true;
+      }
       handlePortClick(port);
       event.stopPropagation();
       return true;
@@ -5935,13 +6975,17 @@ function installNarrativeCanvasApp() {
       return true;
     }
 
-    if (canvasNode && isCanvasNodeInlineEditClick(canvasNode.dataset.nodeId, event)) {
+    if (canvasNode && isCanvasNodeInlineEditClick(canvasNode.dataset.nodeId, event, target)) {
       focusCanvasNodeForInlineEdit(canvasNode.dataset.nodeId);
       event.preventDefault();
       return true;
     }
 
     if (node) {
+      if (event.shiftKey || event.ctrlKey || event.metaKey) {
+        toggleNodeSelection(node.dataset.nodeId);
+        return true;
+      }
       focusCanvasNode(node.dataset.nodeId);
       return true;
     } else {
@@ -5950,8 +6994,23 @@ function installNarrativeCanvasApp() {
     return false;
   }
 
-  function isCanvasNodeInlineEditClick(nodeId, event) {
-    if (!nodeId || isCanvasNodeInlineEditBlockedTarget(event.target)) return false;
+  function toggleNodeSelection(nodeId) {
+    if (!getNode(nodeId)) return;
+    const set = new Set(collectSelectedIds());
+    if (set.has(nodeId)) set.delete(nodeId);
+    else set.add(nodeId);
+    const ids = [...set];
+    state.selectedNodeId = ids.length === 1 ? ids[0] : null;
+    state.selectedNodeIds = ids.length === 1 ? [] : ids;
+    state.selectedLinkId = null;
+    state.panel = ids.length === 1 ? "node" : (ids.length ? state.panel : "project");
+    renderNodes();
+    renderLinks();
+    renderInspector();
+  }
+
+  function isCanvasNodeInlineEditClick(nodeId, event, target = event.target) {
+    if (!nodeId || isCanvasNodeInlineEditBlockedTarget(target)) return false;
     const now = event.timeStamp || performance.now();
     const last = state.lastNodeClick || { id: null, time: 0 };
     const isRepeatClick = last.id === nodeId && now - last.time <= NODE_INLINE_EDIT_CLICK_INTERVAL_MS;
@@ -6098,6 +7157,14 @@ function installNarrativeCanvasApp() {
 
   function handleContextMenu(event) {
     if (!isNarrativeCanvasTarget(event.target)) return;
+    if (!isCanvasFileActive()) {
+      hideNodeContextMenu();
+      return;
+    }
+    if (!dom.viewport?.contains(event.target)) {
+      hideNodeContextMenu();
+      return;
+    }
     const linkElement = event.target.closest("[data-link-id]");
     if (linkElement) {
       event.preventDefault();
@@ -6174,6 +7241,9 @@ function installNarrativeCanvasApp() {
     if (action === "reload-project-file") reloadProjectFileFromUi();
     if (action === "clear-browser-storage") clearBrowserStorageFromUi();
     if (action === "add-character") addCharacter();
+    if (action === "hide-character") hideCharacter(target.dataset.characterId);
+    if (action === "show-character") showCharacter(target.dataset.characterId);
+    if (action === "show-all-characters") showAllCharacters();
     if (action === "delete-character") deleteCharacter(target.dataset.characterId);
     if (action === "focus-character") focusCharacter(target.dataset.characterId);
     if (action === "clear-character-focus") clearCharacterFocus();
@@ -6182,13 +7252,30 @@ function installNarrativeCanvasApp() {
     if (action === "show-more-document") showMoreDocument(target.dataset.documentId);
     if (action === "add-node-cast") addNodeCast();
     if (action === "delete-node-cast") deleteNodeCast(Number(target.dataset.nodeCastIndex));
+    if (action === "add-node-effect") addNodeEffect();
+    if (action === "delete-node-effect") deleteNodeEffect(Number(target.dataset.nodeEffectIndex));
+    if (action === "add-choice-option") addChoiceOption();
+    if (action === "delete-choice-option") deleteChoiceOption(target.dataset.choiceOptionId);
+    if (action === "move-choice-option-up") moveChoiceOption(target.dataset.choiceOptionId, -1);
+    if (action === "move-choice-option-down") moveChoiceOption(target.dataset.choiceOptionId, 1);
+    if (action === "add-choice-option-effect") addChoiceOptionEffect(target.dataset.choiceOptionId);
+    if (action === "delete-choice-option-effect") deleteChoiceOptionEffect(target.dataset.choiceOptionId, Number(target.dataset.choiceOptionEffectIndex));
+    if (action === "toggle-choice-option-expanded") toggleChoiceOptionExpanded(target.dataset.choiceOptionId);
+    if (action === "add-dialog-turn") addDialogTurn();
+    if (action === "delete-dialog-turn") deleteDialogTurn(Number(target.dataset.dialogTurnIndex));
+    if (action === "copy-dialog-turn") copyDialogTurn(Number(target.dataset.dialogTurnIndex));
+    if (action === "move-dialog-turn-up") moveDialogTurn(Number(target.dataset.dialogTurnIndex), -1);
+    if (action === "move-dialog-turn-down") moveDialogTurn(Number(target.dataset.dialogTurnIndex), 1);
+    if (action === "convert-legacy-node") convertLegacyNode(state.selectedNodeId);
     if (action === "add-variable") addVariable();
     if (action === "add-playbook-action") addPlaybookAction();
     if (action === "add-play-rule") showPlayRuleDialog();
     if (action === "create-play-rule") addPlaybookRule(target.dataset.playbookRuleKind);
     if (action === "toggle-playbook-json") togglePlaybookJson();
+    if (action === "select-playbook-tab") selectPlaybookTab(target.dataset.playbookTab);
     if (action === "filter-playbook-category") filterPlaybookCategory(target.dataset.playbookCategory);
     if (action === "focus-playbook-json") showPlaybookJsonAtToken(target.dataset.playbookToken);
+    if (action === "delete-playbook-rule") deletePlaybookRule(target.dataset.playbookRuleTarget);
     if (action === "add-playbook-node-rule") addPlaybookNodeRule();
     if (action === "add-playbook-choice-rule") addPlaybookChoiceRule();
     if (action === "add-playbook-state-rules") addPlaybookStateRules();
@@ -6216,6 +7303,8 @@ function installNarrativeCanvasApp() {
     if (action === "delete-event-column") showEventColumnDeleteConfirm(target.dataset.eventColumnKey);
     if (action === "show-event-column") showEventColumn(target.dataset.eventColumnKey);
     if (action === "reset-event-columns") showResetEventColumnsConfirm();
+    if (action === "hide-event-frame-type") hideEventFrameType(target.dataset.eventFrameType);
+    if (action === "show-event-frame-type") showEventFrameType(target.dataset.eventFrameType);
     if (action === "reset-story-order") resetStoryOrderToGraph();
     if (action === "reset-event-row-order") resetEventRowOrderToGraph();
     if (action === "restore-default-node-types") restoreDefaultNodeTypes();
@@ -6225,6 +7314,7 @@ function installNarrativeCanvasApp() {
     if (action === "delete-node") deleteSelectedNode();
     if (action === "delete-selected-nodes") deleteSelectedNodes();
     if (action === "delete-context-link") deleteContextLink();
+    if (action === "toggle-frame-collapse") toggleFrameCollapse(target.dataset.nodeId);
     if (action === "reconnect-link-from") startLinkReconnect("from");
     if (action === "reconnect-link-to") startLinkReconnect("to");
     if (action === "assign-choice-link") assignChoiceLink(target.dataset.linkId, target.dataset.choiceIndex);
@@ -6233,7 +7323,9 @@ function installNarrativeCanvasApp() {
     if (action === "select-node") selectNode(target.dataset.nodeId);
     if (action === "focus-character-node") focusCharacterNode(target.dataset.nodeId);
     if (action === "focus-story-node") focusStoryNode(target.dataset.nodeId);
-    if (action === "play-next") advancePreview(target.dataset.nodeId);
+    if (action === "play-next") advancePreview(target.dataset.nodeId, { optionId: target.dataset.choiceOptionId || "" });
+    if (action === "play-dialog-next") advanceDialogTurn(1);
+    if (action === "play-dialog-prev") advanceDialogTurn(-1);
     if (action === "play-prev") previousPreview();
     if (action === "restart-play") openPreview();
     commitHistoryFromSnapshot(historyBefore);
@@ -6330,24 +7422,15 @@ function installNarrativeCanvasApp() {
       if (!dom.playbookHelpDialog.open) dom.playbookHelpDialog.showModal();
       return;
     }
-    window.alert?.(`${PLAYBOOK_FILE_NAME} stores variables, category-based script lines, and declarative Play rules. It can format Play text, make choice buttons from fields, write state on visit or choice, and read simple conditions. It does not run JavaScript or change the canvas schema.`);
+    window.alert?.(t(`${PLAYBOOK_FILE_NAME} stores variables, node logic, and demo runner rules. Variables define state. Script Builder batch-edits node Requirements, Effects, and Routing. Play Rules only control the sample runner: start node, choice display, end condition, visit tracking, and debug mode. It does not run JavaScript or replace a game engine.`));
   }
 
   function showPlayRuleDialog() {
-    const scripts = getScriptNodeTypes();
-    const defaultTarget = getDefaultPlaybookRuleTarget(scripts);
-    if (dom.playRuleTargetInput) {
-      dom.playRuleTargetInput.value = defaultTarget;
-    }
     if (dom.playRuleDialog?.showModal) {
       if (!dom.playRuleDialog.open) dom.playRuleDialog.showModal();
-      requestAnimationFrame(() => {
-        dom.playRuleTargetInput?.focus();
-        dom.playRuleTargetInput?.select();
-      });
       return;
     }
-    addPlaybookRule("text");
+    addPlaybookRule("endCondition");
   }
 
   function showNodeContextMenu(nodeId, clientX, clientY) {
@@ -6356,11 +7439,11 @@ function installNarrativeCanvasApp() {
     state.contextLinkId = null;
     state.contextGroup = false;
     dom.nodeContextMenu.innerHTML = `
-      <button data-layer-action="front">Bring to front</button>
-      <button data-layer-action="forward">Bring forward</button>
-      <button data-layer-action="backward">Send backward</button>
-      <button data-layer-action="back">Send to back</button>
-      <button class="context-menu-danger" data-action="delete-node">Delete node</button>
+      <button data-layer-action="front">${t("Bring to front")}</button>
+      <button data-layer-action="forward">${t("Bring forward")}</button>
+      <button data-layer-action="backward">${t("Send backward")}</button>
+      <button data-layer-action="back">${t("Send to back")}</button>
+      <button class="context-menu-danger" data-action="delete-node">${t("Delete node")}</button>
     `;
     positionContextMenu(clientX, clientY);
   }
@@ -6373,12 +7456,12 @@ function installNarrativeCanvasApp() {
     state.contextLinkId = null;
     state.contextGroup = true;
     dom.nodeContextMenu.innerHTML = `
-      <div class="context-menu-label">${count} selected</div>
-      <button data-layer-action="front">Bring to front</button>
-      <button data-layer-action="forward">Bring forward</button>
-      <button data-layer-action="backward">Send backward</button>
-      <button data-layer-action="back">Send to back</button>
-      <button class="context-menu-danger" data-action="delete-selected-nodes">Delete ${count} ${count === 1 ? "node" : "nodes"}</button>
+      <div class="context-menu-label">${t("{count} selected", { count })}</div>
+      <button data-layer-action="front">${t("Bring to front")}</button>
+      <button data-layer-action="forward">${t("Bring forward")}</button>
+      <button data-layer-action="backward">${t("Send backward")}</button>
+      <button data-layer-action="back">${t("Send to back")}</button>
+      <button class="context-menu-danger" data-action="delete-selected-nodes">${t("Delete selected nodes", { count })}</button>
     `;
     positionContextMenu(clientX, clientY);
   }
@@ -6390,9 +7473,9 @@ function installNarrativeCanvasApp() {
     state.contextLinkId = linkId;
     dom.nodeContextMenu.innerHTML = `
       ${renderChoiceLinkMenu(link)}
-      <button data-action="reconnect-link-from">Reconnect from output</button>
-      <button data-action="reconnect-link-to">Reconnect to input</button>
-      <button class="context-menu-danger" data-action="delete-context-link">Delete link</button>
+      <button data-action="reconnect-link-from">${t("Reconnect from output")}</button>
+      <button data-action="reconnect-link-to">${t("Reconnect to input")}</button>
+      <button class="context-menu-danger" data-action="delete-context-link">${t("Delete link")}</button>
     `;
     positionContextMenu(clientX, clientY);
   }
@@ -6404,14 +7487,14 @@ function installNarrativeCanvasApp() {
     const currentIndex = normalizeChoiceIndex(link.choiceIndex);
     const branchKind = getBranchKind(source);
     return `
-      <div class="context-menu-label">${branchKind === "condition" ? "Condition branch" : "Choice branch"}</div>
+      <div class="context-menu-label">${t(branchKind === "condition" ? "Condition branch" : "Choice branch")}</div>
       ${branchLabels.map((choice, index) => `
         <button data-action="assign-choice-link" data-link-id="${escapeAttr(link.id)}" data-choice-index="${index}" aria-current="${currentIndex === index ? "true" : "false"}">
           <span class="context-menu-check">${currentIndex === index ? "*" : ""}</span>
           <span>${escapeHtml(choice)}</span>
         </button>
       `).join("")}
-      <div class="context-menu-label">Link</div>
+      <div class="context-menu-label">${t("Link")}</div>
     `;
   }
 
@@ -6554,10 +7637,32 @@ function installNarrativeCanvasApp() {
       deleteSelectedNode();
       return;
     }
+    const targets = getDeletionReferenceTargets(ids);
+    const refs = collectNodeTargetReferences(targets);
+    if (refs.length) {
+      showGenericConfirm({
+        kicker: "References",
+        title: `Delete ${ids.length} nodes with references?`,
+        message: `${formatReferenceSummary(refs)} point to these nodes. Delete and clear those references, or keep the references as orphan warnings.`,
+        confirmLabel: "Delete and clear references",
+        secondaryLabel: "Keep orphan references",
+        danger: true,
+        recordHistory: true,
+        onConfirm: () => deleteSelectedNodesConfirmed(ids, { removeReferences: true }),
+        onSecondary: () => deleteSelectedNodesConfirmed(ids, { removeReferences: false })
+      });
+      return;
+    }
+    deleteSelectedNodesConfirmed(ids, { removeReferences: false });
+  }
+
+  function deleteSelectedNodesConfirmed(ids, options = {}) {
+    if (options.removeReferences) removeNodeTargetReferences(ids);
     ids.forEach((id) => archiveDeletedNode(id));
     const idSet = new Set(ids);
     state.project.nodes = state.project.nodes.filter((node) => !idSet.has(node.id));
     state.project.links = state.project.links.filter((link) => !idSet.has(link.from) && !idSet.has(link.to));
+    markProjectStructureChanged();
     invalidateCharacterRenderContext();
     clearStoryOrderOverrides();
     clearEventRowOrderOverrides();
@@ -6620,10 +7725,10 @@ function installNarrativeCanvasApp() {
     if (!target?.dataset) return "";
     if (target === dom.queryInput || target.hasAttribute?.("data-character-search") || target.hasAttribute?.("data-event-search")) return "";
     const parts = [];
-    ["projectField", "nodeField", "inlineNodeField", "nodeCustomField", "characterField", "variableField", "eventField", "nodeCastField", "playbookActionField"].forEach((name) => {
+    ["projectField", "nodeField", "inlineNodeField", "nodeCustomField", "characterField", "variableField", "eventField", "nodeCastField", "nodeLogicField", "nodeEffectField", "nodeRoutingField", "playbookActionField", "scriptNodeField", "runnerRuleField"].forEach((name) => {
       if (target.dataset[name]) parts.push(`${name}:${target.dataset[name]}`);
     });
-    ["nodeId", "characterId", "variableKey", "eventNodeId", "nodeCastIndex", "playbookActionId"].forEach((name) => {
+    ["nodeId", "characterId", "variableKey", "eventNodeId", "nodeCastIndex", "nodeEffectIndex", "playbookActionId", "scriptNodeId"].forEach((name) => {
       if (target.dataset[name]) parts.push(`${name}:${target.dataset[name]}`);
     });
     return parts.join("|");
@@ -6631,6 +7736,7 @@ function installNarrativeCanvasApp() {
 
   function handleEditFocusIn(event) {
     if (!isNarrativeCanvasTarget(event.target)) return;
+    beginNodeTitleReferenceEdit(event.target);
     const key = getEditableHistoryKey(event.target);
     if (!key) return;
     state.editHistoryTarget = {
@@ -6645,6 +7751,7 @@ function installNarrativeCanvasApp() {
       setProjectField("variables", target.value);
     }
     commitFocusedEdit(event.target);
+    finishNodeTitleReferenceEdit(target);
     if (target?.dataset?.inlineNodeField) {
       if (event.relatedTarget && dom.mentionPopover?.contains(event.relatedTarget)) return;
       if (shouldKeepInlineNodeEditOnFocusOut(target.dataset.nodeId, event.relatedTarget)) {
@@ -6671,6 +7778,7 @@ function installNarrativeCanvasApp() {
 
     if (target === dom.queryInput) {
       state.search = target.value;
+      state.searchIndex = -1;
       if (target.value.trim() && state.activeFileId !== "adventure") {
         state.activeFileId = "adventure";
         renderShellState();
@@ -6681,20 +7789,32 @@ function installNarrativeCanvasApp() {
       renderNodes(canvasRenderContext);
       renderLinks(canvasRenderContext);
       updateStatus();
+      refreshWorkspaceSearchCount();
       return;
     }
 
     if (target.hasAttribute && target.hasAttribute("data-character-search")) {
       state.characterSearch = target.value;
+      state.characterSearchIndex = -1;
       resetDocumentRenderLimit("characters");
       renderCharacterGridForSearch();
+      refreshWorkspaceSearchCount();
       return;
     }
 
     if (target.hasAttribute && target.hasAttribute("data-event-search")) {
       state.eventSearch = target.value;
+      state.eventSearchIndex = -1;
       resetDocumentRenderLimit("events");
       renderEventSheetGroupsForSearch();
+      refreshWorkspaceSearchCount();
+      return;
+    }
+
+    if (target.hasAttribute && target.hasAttribute("data-playbook-search")) {
+      state.playbookSearch = target.value;
+      state.playbookSearchIndex = -1;
+      refreshWorkspaceSearchCount();
       return;
     }
 
@@ -6722,6 +7842,38 @@ function installNarrativeCanvasApp() {
       setNodeCastField(Number(target.dataset.nodeCastIndex), target.dataset.nodeCastField, target.value, false);
       return;
     }
+    if (target.dataset.nodeLogicField) {
+      setNodeLogicField(target.dataset.nodeLogicField, target.value, false);
+      return;
+    }
+    if (target.dataset.nodeRoutingField) {
+      setNodeRoutingField(target.dataset.nodeRoutingField, target.value, false);
+      return;
+    }
+    if (target.dataset.nodeEffectField) {
+      setNodeEffectField(Number(target.dataset.nodeEffectIndex), target.dataset.nodeEffectField, target.value, false);
+      return;
+    }
+    if (target.dataset.choiceOptionField) {
+      setChoiceOptionField(target.dataset.choiceOptionId, target.dataset.choiceOptionField, target.value, false);
+      return;
+    }
+    if (target.dataset.choiceOptionEffectField) {
+      setChoiceOptionEffectField(target.dataset.choiceOptionId, Number(target.dataset.choiceOptionEffectIndex), target.dataset.choiceOptionEffectField, target.value, false);
+      return;
+    }
+    if (target.dataset.dialogTurnField) {
+      setDialogTurnField(Number(target.dataset.dialogTurnIndex), target.dataset.dialogTurnField, target.value, false);
+      return;
+    }
+    if (target.dataset.scriptNodeField) {
+      setScriptNodeField(target.dataset.scriptNodeId, target.dataset.scriptNodeField, target.value, false);
+      return;
+    }
+    if (target.dataset.runnerRuleField) {
+      setRunnerRuleField(target.dataset.runnerRuleField, getRunnerRuleInputValue(target), false);
+      return;
+    }
 
     if (target.dataset.nodeCustomField) {
       setNodeCustomField(target.dataset.nodeCustomField, target.value, false);
@@ -6729,6 +7881,7 @@ function installNarrativeCanvasApp() {
     }
 
     if (target.dataset.inlineNodeField) {
+      if (target.dataset.inlineNodeField === "title") beginNodeTitleReferenceEdit(target);
       setInlineNodeField(target.dataset.nodeId, target.dataset.inlineNodeField, target.value);
       return;
     }
@@ -6743,6 +7896,7 @@ function installNarrativeCanvasApp() {
     }
 
     if (target.dataset.nodeField) {
+      if (target.dataset.nodeField === "title") beginNodeTitleReferenceEdit(target);
       setNodeField(target.dataset.nodeField, target.value);
     }
   }
@@ -6755,10 +7909,15 @@ function installNarrativeCanvasApp() {
       setExportImageScale(target.value);
       return;
     }
+    if (target === dom.nodeTypeKindInput) {
+      syncNodeTypeEventSheetOption();
+      return;
+    }
 
     if (target.dataset.characterField) {
       setCharacterField(target.dataset.characterId, target.dataset.characterField, target.value, true);
       commitFocusedEdit(target);
+      finishNodeTitleReferenceEdit(target);
       return;
     }
     if (target.dataset.variableField) {
@@ -6781,6 +7940,47 @@ function installNarrativeCanvasApp() {
       commitFocusedEdit(target);
       return;
     }
+    if (target.dataset.nodeLogicField) {
+      setNodeLogicField(target.dataset.nodeLogicField, target.value, true);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.nodeRoutingField) {
+      setNodeRoutingField(target.dataset.nodeRoutingField, target.value, true);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.nodeEffectField) {
+      setNodeEffectField(Number(target.dataset.nodeEffectIndex), target.dataset.nodeEffectField, target.value, true);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.choiceOptionField) {
+      setChoiceOptionField(target.dataset.choiceOptionId, target.dataset.choiceOptionField, target.value, true);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.choiceOptionEffectField) {
+      const rerender = target.dataset.choiceOptionEffectField !== "op";
+      setChoiceOptionEffectField(target.dataset.choiceOptionId, Number(target.dataset.choiceOptionEffectIndex), target.dataset.choiceOptionEffectField, target.value, rerender);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.dialogTurnField) {
+      setDialogTurnField(Number(target.dataset.dialogTurnIndex), target.dataset.dialogTurnField, target.value, true);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.scriptNodeField) {
+      setScriptNodeField(target.dataset.scriptNodeId, target.dataset.scriptNodeField, target.value, true);
+      commitFocusedEdit(target);
+      return;
+    }
+    if (target.dataset.runnerRuleField) {
+      setRunnerRuleField(target.dataset.runnerRuleField, getRunnerRuleInputValue(target), true);
+      commitFocusedEdit(target);
+      return;
+    }
     if (target.dataset.nodeCustomField) {
       setNodeCustomField(target.dataset.nodeCustomField, target.value, true);
       commitFocusedEdit(target);
@@ -6789,6 +7989,7 @@ function installNarrativeCanvasApp() {
     if (target.dataset.inlineNodeField) {
       setInlineNodeField(target.dataset.nodeId, target.dataset.inlineNodeField, target.value);
       commitFocusedEdit(target);
+      finishNodeTitleReferenceEdit(target);
       return;
     }
     if (target.dataset.projectField) {
@@ -6800,7 +8001,28 @@ function installNarrativeCanvasApp() {
     if (target.dataset.nodeField) {
       setNodeField(target.dataset.nodeField, target.value);
       commitFocusedEdit(target);
+      finishNodeTitleReferenceEdit(target);
     }
+  }
+
+  function syncNodeTypeEventSheetOption() {
+    const label = dom.nodeTypeEventHiddenInput?.closest("label");
+    if (!label) return;
+    label.hidden = !isFrameKind(normalizeNodeTypeKind(dom.nodeTypeKindInput?.value));
+  }
+
+  function handleWorkspaceSearchKeyDown(event) {
+    if (event.defaultPrevented || event.key !== "Enter") return;
+    const target = event.target;
+    if (!target) return;
+    let scope = null;
+    if (target === dom.queryInput) scope = "adventure";
+    else if (target === dom.characterSearchInput) scope = "characters";
+    else if (target === dom.eventSearchInput) scope = "events";
+    else if (target === dom.playbookSearchInput) scope = "variables";
+    if (!scope) return;
+    event.preventDefault();
+    cycleSearchScope(scope);
   }
 
   function handleKeyDown(event) {
@@ -6809,6 +8031,7 @@ function installNarrativeCanvasApp() {
     if (!isNarrativeCanvasTarget(event.target)) return;
     if (handleMentionKeyDown(event)) return;
     const isField = isNativeEditingTarget(event.target);
+    if (isField && handleDialogTurnKeyDown(event)) return;
     if (event.target.dataset?.inlineNodeField && event.key === "Escape") {
       event.preventDefault();
       finishInlineNodeEdit(event.target.dataset.nodeId);
@@ -7286,6 +8509,15 @@ function installNarrativeCanvasApp() {
     return Boolean(actionable && getNarrativeCanvasScopeForTarget(target));
   }
 
+  function getCanvasCoveredFrameTarget(event) {
+    if (!event || event.target !== dom.linkLayer || typeof document.elementsFromPoint !== "function") return null;
+    const stack = document.elementsFromPoint(event.clientX, event.clientY);
+    return stack.find((element) => {
+      if (!dom.frameLayer?.contains(element)) return false;
+      return Boolean(element.closest?.("[data-action], [data-drag-handle], [data-resize-handle], [data-port], .node[data-node-id]"));
+    }) || null;
+  }
+
   function getNarrativeCanvasScopeForTarget(target) {
     if (!target?.closest) return null;
     const host = target.closest(".narrative-canvas-plugin-host");
@@ -7308,18 +8540,43 @@ function installNarrativeCanvasApp() {
   }
 
   function handleViewportPointerDown(event) {
-    rememberInlineEditPointerTarget(event.target);
-    if (shouldKeepInlineNodeEditForTarget(event.target)) {
+    const target = getCanvasCoveredFrameTarget(event) || event.target;
+    rememberInlineEditPointerTarget(target);
+    if (shouldKeepInlineNodeEditForTarget(target)) {
       event.preventDefault();
       requestAnimationFrame(() => focusInlineNodeEditor(state.inlineEditNodeId));
       return;
     }
-    if (state.inlineEditNodeId && !isActiveInlineEditNodeTarget(event.target)) {
+    if (state.inlineEditNodeId && !isActiveInlineEditNodeTarget(target)) {
       finishInlineNodeEdit(state.inlineEditNodeId);
     }
-    if (event.target.closest("[data-no-drag]")) return;
 
-    const resizeHandle = event.target.closest("[data-resize-handle]");
+    const portHandle = target.closest("[data-port][data-node-id]");
+    if (portHandle && event.button === 0) {
+      const node = getNode(portHandle.dataset.nodeId);
+      if (!node) return;
+      // Always start each port interaction with a clean slate; a stale flag from a previous
+      // jittered click would otherwise eat the click event that follows pointerup.
+      state.suppressPortClick = false;
+      state.draggingPort = {
+        nodeId: node.id,
+        kind: portHandle.dataset.port,
+        startX: event.clientX,
+        startY: event.clientY,
+        active: false,
+        pointerId: event.pointerId,
+        historyBefore: getHistorySnapshot(),
+        linkRefs: collectLinkElementRefs(getPortDragLinks(node))
+      };
+      // Do NOT capture the pointer yet — capturing on viewport redirects pointer events away
+      // from the port button and can also blackhole the implicit click event. We only need
+      // capture once an actual drag starts (see handleViewportPointerMove).
+      return;
+    }
+
+    if (target.closest("[data-no-drag]")) return;
+
+    const resizeHandle = target.closest("[data-resize-handle]");
     if (resizeHandle) {
       const node = getNode(resizeHandle.dataset.nodeId);
       if (!node) return;
@@ -7339,32 +8596,41 @@ function installNarrativeCanvasApp() {
         ports: getNodePortElementsById(node.id),
         linkRefs: collectLinkElementRefs(getIncidentLinks(node.id))
       };
-      dom.viewport.setPointerCapture(event.pointerId);
+      safeSetPointerCapture(dom.viewport, event.pointerId);
       event.preventDefault();
       return;
     }
 
-    const handle = event.target.closest("[data-drag-handle]");
+    const handle = target.closest("[data-drag-handle]");
     if (handle) {
       const node = getNode(handle.dataset.nodeId);
       if (!node) return;
-      beginGeometryHistoryCapture(node);
-      selectNode(node.id, false);
+      const selected = collectSelectedIds();
+      const baseNodeIds = selected.includes(node.id) && selected.length > 1 ? selected : [node.id];
+      const dragNodeIds = getDragNodeIdsForDrag(node);
+      const dragNodes = dragNodeIds.map(getNode).filter(Boolean);
+      beginGeometryHistoryCapture(dragNodes);
+      if (!collectSelectedIds().includes(node.id)) {
+        selectNode(node.id, false);
+      }
       state.draggingNode = {
         id: node.id,
+        baseNodeIds,
+        nodeIds: dragNodeIds,
+        nodePositions: dragNodes.map((item) => ({ id: item.id, x: item.x, y: item.y })),
         startX: event.clientX,
         startY: event.clientY,
         nodeX: node.x,
         nodeY: node.y,
-        element: getNodeElementById(node.id),
-        ports: getNodePortElementsById(node.id),
-        linkRefs: collectLinkElementRefs(getIncidentLinks(node.id))
+        element: dragNodeIds.length === 1 ? getNodeElementById(node.id) : null,
+        ports: dragNodeIds.length === 1 ? getNodePortElementsById(node.id) : null,
+        linkRefs: collectLinkElementRefs(getIncidentLinksForNodes(dragNodeIds))
       };
-      dom.viewport.setPointerCapture(event.pointerId);
+      safeSetPointerCapture(dom.viewport, event.pointerId);
       return;
     }
 
-    if (event.target === dom.viewport || event.target === dom.content || event.target === dom.nodeLayer || event.target === dom.linkLayer) {
+    if (target === dom.viewport || target === dom.content || target === dom.frameLayer || target === dom.nodeLayer || target === dom.linkLayer) {
       if (state.connectingFrom || state.reconnectingLinkId) {
         event.preventDefault();
         return;
@@ -7388,11 +8654,7 @@ function installNarrativeCanvasApp() {
       scrollLeft: dom.viewport.scrollLeft,
       scrollTop: dom.viewport.scrollTop
     };
-    try {
-      dom.viewport.setPointerCapture(event.pointerId);
-    } catch (error) {
-      // Pointer capture is unavailable.
-    }
+    safeSetPointerCapture(dom.viewport, event.pointerId);
     event.preventDefault();
   }
 
@@ -7400,6 +8662,128 @@ function installNarrativeCanvasApp() {
     const set = new Set(state.selectedNodeIds);
     if (state.selectedNodeId) set.add(state.selectedNodeId);
     return [...set];
+  }
+
+  function getDragNodeIdsForDrag(node) {
+    const selected = collectSelectedIds();
+    const baseIds = selected.includes(node.id) && selected.length > 1 ? selected : [node.id];
+    return expandFrameDragNodeIds(baseIds);
+  }
+
+  function expandFrameDragNodeIds(baseIds) {
+    const selectedFrames = baseIds.map(getNode).filter((node) => node && isFrameNode(node));
+    const ids = new Set(baseIds);
+    selectedFrames.forEach((frame) => {
+      getFrameContainedNodeIds(frame).forEach((id) => ids.add(id));
+    });
+    return [...ids].filter((id) => getNode(id));
+  }
+
+  function getFrameContainedNodeIds(frame) {
+    if (!frame || !isFrameNode(frame)) return [];
+    const ids = [];
+    const walk = (parentId) => {
+      state.project.nodes.forEach((node) => {
+        if (node.id === frame.id || normalizeOptionalString(node.frameId).trim() !== parentId) return;
+        ids.push(node.id);
+        if (isFrameNode(node)) walk(node.id);
+      });
+    };
+    walk(frame.id);
+    return ids;
+  }
+
+  function syncFrameMembershipAfterCanvasDrag(drag) {
+    const movedIds = new Set(drag?.nodeIds || []);
+    if (!movedIds.size) return;
+    const baseIds = new Set(drag?.baseNodeIds || drag?.nodeIds || []);
+    const movedFrames = [...movedIds].map(getNode).filter((node) => node && isFrameNode(node));
+    const explicitChildrenMovedWithFrame = (node) => movedFrames.some((frame) => frame.id !== node.id && isFrameDescendantOf(node, frame.id));
+    movedIds.forEach((id) => {
+      const node = getNode(id);
+      if (!node) return;
+      if (!baseIds.has(node.id) && explicitChildrenMovedWithFrame(node)) return;
+      const parent = getCanvasDropFrameForNode(node);
+      const nextFrameId = parent?.id || "";
+      if (normalizeOptionalString(node.frameId).trim() !== nextFrameId) {
+        node.frameId = nextFrameId;
+      }
+    });
+    sanitizeFrameMembership(state.project);
+  }
+
+  function getFrameCaptureCandidates(frame) {
+    if (!frame || !isFrameNode(frame)) return [];
+    return state.project.nodes.filter((node) => {
+      if (!node || node.id === frame.id) return false;
+      if (normalizeOptionalString(node.frameId).trim() === frame.id) return false;
+      if (isFrameDescendantOf(node, frame.id)) return false;
+      if (isFrameNode(node) && wouldCreateFrameCycle(node.id, frame.id)) return false;
+      return frameContainsNodeCenter(frame, node);
+    });
+  }
+
+  function maybePromptFrameCapture(frameId) {
+    const frame = getNode(frameId);
+    if (!frame || !isFrameNode(frame)) return;
+    const candidates = getFrameCaptureCandidates(frame);
+    if (!candidates.length) return;
+    const names = candidates.slice(0, 5).map((node) => node.title || getNodeDisplayId(node)).join(", ");
+    const more = candidates.length > 5 ? `, +${candidates.length - 5} more` : "";
+    showGenericConfirm({
+      kicker: "Frame membership",
+      title: `Capture ${candidates.length} overlapping node${candidates.length === 1 ? "" : "s"}?`,
+      message: `"${frame.title || getNodeDisplayId(frame)}" now covers ${names}${more}. Capture them into this frame? Cancel leaves their frameId unchanged.`,
+      confirmLabel: "Capture nodes",
+      danger: false,
+      recordHistory: true,
+      onConfirm: () => {
+        candidates.forEach((node) => {
+          node.frameId = frame.id;
+        });
+        sanitizeFrameMembership(state.project);
+        markProjectStructureChanged();
+        renderAll();
+        setStatus(`${candidates.length} node${candidates.length === 1 ? "" : "s"} captured into frame.`);
+      }
+    });
+  }
+
+  function isFrameDescendantOf(node, frameId) {
+    let current = normalizeOptionalString(node?.frameId).trim();
+    const seen = new Set();
+    while (current) {
+      if (current === frameId) return true;
+      if (seen.has(current)) return false;
+      seen.add(current);
+      current = normalizeOptionalString(getNode(current)?.frameId).trim();
+    }
+    return false;
+  }
+
+  function getCanvasDropFrameForNode(node) {
+    if (!node) return null;
+    const descendants = isFrameNode(node) ? new Set(getFrameContainedNodeIds(node)) : new Set();
+    const frames = state.project.nodes.filter((frame) => (
+      isFrameNode(frame)
+      && frame.id !== node.id
+      && !descendants.has(frame.id)
+    ));
+    return getSmallestContainingFrameForNode(node, frames);
+  }
+
+  function getIncidentLinksForNodes(nodeIds) {
+    const ids = new Set(nodeIds);
+    return state.project.links.filter((link) => ids.has(link.from) || ids.has(link.to));
+  }
+
+  function getPortDragLinks(node) {
+    if (!node || !isFrameCollapsed(node)) return getIncidentLinks(node.id);
+    const nodeMap = getNodeIndex();
+    return state.project.links.filter((link) => {
+      const endpoints = getRenderedLinkEndpoints(link, nodeMap);
+      return endpoints && (endpoints.from.id === node.id || endpoints.to.id === node.id);
+    });
   }
 
   function startMarquee(event) {
@@ -7421,11 +8805,7 @@ function installNarrativeCanvasApp() {
       baseIds,
       moved: false
     };
-    try {
-      dom.viewport.setPointerCapture(event.pointerId);
-    } catch (error) {
-      // Pointer capture is unavailable.
-    }
+    safeSetPointerCapture(dom.viewport, event.pointerId);
     renderNodes();
     renderInspector();
     renderMarquee();
@@ -7477,11 +8857,7 @@ function installNarrativeCanvasApp() {
   function finishMarquee(event) {
     const marquee = state.marquee;
     state.marquee = null;
-    try {
-      dom.viewport.releasePointerCapture(event.pointerId);
-    } catch (error) {
-      // Pointer capture is already gone.
-    }
+    safeReleasePointerCapture(dom.viewport, event.pointerId);
     if (dom.marqueeRect) dom.marqueeRect.hidden = true;
     state.selectedNodeIds = state.selectedNodeIds.filter((id) => getNode(id));
     renderNodes();
@@ -7506,7 +8882,7 @@ function installNarrativeCanvasApp() {
       event.stopPropagation();
       return;
     }
-    if (event.target !== dom.viewport && event.target !== dom.content && event.target !== dom.nodeLayer && event.target !== dom.linkLayer) return;
+    if (event.target !== dom.viewport && event.target !== dom.content && event.target !== dom.frameLayer && event.target !== dom.nodeLayer && event.target !== dom.linkLayer) return;
     if (cancelPendingConnection()) {
       event.preventDefault();
     }
@@ -7527,6 +8903,26 @@ function installNarrativeCanvasApp() {
   }
 
   function handleViewportPointerMove(event) {
+    if (state.draggingPort) {
+      const drag = state.draggingPort;
+      const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+      // Need a clear drag intent before swallowing the follow-up click. Otherwise small mouse
+      // jitter on a port click sets suppressPortClick=true and connections can't start.
+      if (!drag.active && distance < 8) return;
+      if (!drag.active) {
+        // First crossing of the threshold — take the pointer capture now so the pointermoves
+        // keep flowing to the viewport even if the cursor leaves the small port button.
+        safeSetPointerCapture(dom.viewport, drag.pointerId ?? event.pointerId);
+      }
+      drag.active = true;
+      const node = getNode(drag.nodeId);
+      if (!node) return;
+      setNodePortFromBoardPoint(node, drag.kind, screenToBoard(event.clientX, event.clientY));
+      patchNodePortGeometry(node);
+      patchLinkElementRefs(drag.linkRefs);
+      event.preventDefault();
+      return;
+    }
     if (state.marquee) {
       const board = screenToBoard(event.clientX, event.clientY);
       state.marquee.curX = board.x;
@@ -7568,11 +8964,20 @@ function installNarrativeCanvasApp() {
         renderLinks(context);
       }
     } else if (state.draggingNode) {
+      const deltaX = (event.clientX - state.draggingNode.startX) / state.view.scale;
+      const deltaY = (event.clientY - state.draggingNode.startY) / state.view.scale;
+      const positions = state.draggingNode.nodePositions || [];
+      positions.forEach((position) => {
+        const item = getNode(position.id);
+        if (!item) return;
+        item.x = Math.round(position.x + deltaX);
+        item.y = Math.round(position.y + deltaY);
+      });
       const node = getNode(state.draggingNode.id);
       if (!node) return;
-      node.x = Math.round(state.draggingNode.nodeX + (event.clientX - state.draggingNode.startX) / state.view.scale);
-      node.y = Math.round(state.draggingNode.nodeY + (event.clientY - state.draggingNode.startY) / state.view.scale);
-      if (patchNodeElementGeometry(node, state.draggingNode.element, state.draggingNode.ports)) {
+      if (positions.length <= 1 && patchNodeElementGeometry(node, state.draggingNode.element, state.draggingNode.ports)) {
+        patchLinkElementRefs(state.draggingNode.linkRefs);
+      } else if (positions.length > 1 && patchNodeElementsGeometry(positions.map((position) => position.id))) {
         patchLinkElementRefs(state.draggingNode.linkRefs);
       } else {
         const context = getCanvasRenderContext();
@@ -7590,20 +8995,54 @@ function installNarrativeCanvasApp() {
     }
   }
 
+  function setNodePortFromBoardPoint(node, kind, point) {
+    const size = nodeLayoutSize(node);
+    const relX = clamp((point.x - node.x) / Math.max(1, size.width), 0, 1);
+    const relY = clamp((point.y - node.y) / Math.max(1, size.height), 0, 1);
+    const distances = [
+      { side: "top", value: Math.abs(point.y - node.y), t: relX },
+      { side: "right", value: Math.abs(point.x - (node.x + size.width)), t: relY },
+      { side: "bottom", value: Math.abs(point.y - (node.y + size.height)), t: relX },
+      { side: "left", value: Math.abs(point.x - node.x), t: relY }
+    ];
+    const next = distances.sort((a, b) => a.value - b.value)[0];
+    node.ports = normalizeNodePorts(node.ports, node);
+    node.ports[kind] = { side: next.side, t: clamp(next.t, 0, 1) };
+    setProjectDirty(true);
+  }
+
   function endPointerActions(event) {
+    if (state.draggingPort) {
+      const drag = state.draggingPort;
+      state.draggingPort = null;
+      if (drag.active) {
+        // Capture was only taken once the drag crossed the threshold; release it here so
+        // future clicks land on the right elements again.
+        safeReleasePointerCapture(dom.viewport, drag.pointerId ?? event.pointerId);
+        state.suppressPortClick = true;
+        commitHistoryFromSnapshot(drag.historyBefore);
+        renderLinks();
+        updateStatus();
+      }
+      return;
+    }
     if (state.marquee) {
       finishMarquee(event);
       return;
     }
     const shouldCommitHistory = Boolean(state.draggingNode || state.resizingNode);
-    const interactionNodeId = state.draggingNode?.id || state.resizingNode?.id || null;
+    const interactionNodeId = state.draggingNode?.nodeIds?.length > 1 ? null : (state.draggingNode?.id || state.resizingNode?.id || null);
+    const captureFrameId = (() => {
+      const candidateId = state.draggingNode?.baseNodeIds?.length === 1
+        ? state.draggingNode.baseNodeIds[0]
+        : interactionNodeId;
+      const candidate = getNode(candidateId);
+      return candidate && isFrameNode(candidate) ? candidate.id : null;
+    })();
     if (state.draggingNode || state.resizingNode || state.panning) {
-      try {
-        dom.viewport.releasePointerCapture(event.pointerId);
-      } catch (error) {
-        // Pointer capture is already gone.
-      }
+      safeReleasePointerCapture(dom.viewport, event.pointerId);
     }
+    if (state.draggingNode) syncFrameMembershipAfterCanvasDrag(state.draggingNode);
     state.draggingNode = null;
     state.resizingNode = null;
     state.panning = null;
@@ -7612,6 +9051,9 @@ function installNarrativeCanvasApp() {
       // The interaction patched the canvas in place; refresh visible DOM once and
       // update only the affected minimap marker/geometry fields.
       resyncCanvasAfterInteraction(interactionNodeId);
+      if (captureFrameId) {
+        requestAnimationFrame(() => maybePromptFrameCapture(captureFrameId));
+      }
     }
   }
 
@@ -7739,6 +9181,7 @@ function installNarrativeCanvasApp() {
     if (type === "Condition") node.condition = "flag == true";
     applyNodeTypeDefaults(node);
     node.x = Math.round(center.x - nodeLayoutSize(node).width / 2);
+    node.frameId = getCanvasDropFrameForNode(node)?.id || "";
     assignDefaultLayerOrderForNewNode(node);
     state.project.nodes.push(normalizeNode(node));
     markProjectStructureChanged();
@@ -7793,6 +9236,10 @@ function installNarrativeCanvasApp() {
     if (!type) return;
     const typeDef = getProjectNodeTypes().find((item) => item.type === type);
     if (!typeDef) return;
+    if (typeDef.system) {
+      setStatus(`${typeDef.label || type} is a system type and cannot be deleted.`);
+      return;
+    }
     const label = typeDef.label || type;
     const hasNodes = state.project.nodes.some((node) => node.type === type);
     const isDefault = Boolean(nodeTypes[type]);
@@ -7813,6 +9260,10 @@ function installNarrativeCanvasApp() {
   function deleteCustomNodeTypeConfirmed(type) {
     const typeDef = getProjectNodeTypes().find((item) => item.type === type);
     if (!typeDef) return;
+    if (typeDef.system) {
+      setStatus(`${typeDef.label || type} is a system type and cannot be deleted.`);
+      return;
+    }
     const label = typeDef.label || type;
     state.project.nodeTypes = getProjectNodeTypes().filter((item) => item.type !== type);
     markProjectStructureChanged({ nodeTypes: true });
@@ -7878,13 +9329,12 @@ function installNarrativeCanvasApp() {
       Choice: "Offer player choices.",
       Condition: "Check a variable before branching.",
       Set: "Set a variable.",
-      Jump: "Jump to another scene.",
       Marker: "Planning marker.",
-      Event: "Group related beats into one event-sheet row."
+      Event: "Group related beats into one frame row."
     };
     if (defaults[type]) return defaults[type];
     const kind = getNodeMeta(type).kind;
-    if (isEventFrameKind(kind)) return "Group related beats into one event-sheet row.";
+    if (isFrameKind(kind)) return "Group related nodes into one frame row.";
     return isFrameKind(kind) ? "Group related nodes." : "Write custom node content here.";
   }
 
@@ -7932,16 +9382,62 @@ function installNarrativeCanvasApp() {
     setStatus(character ? `${character.name} deleted.` : "Character deleted.");
   }
 
+  function hideCharacter(id) {
+    const character = getCharacters().find((item) => item.id === id);
+    if (!character) return;
+    character.hidden = true;
+    if (state.characterFocusId === id) state.characterFocusId = null;
+    invalidateCharacterRenderContext();
+    state.activeFileId = "characters";
+    setProjectDirty(true);
+    renderCharacterListSurfaces();
+    setStatus(t("{name} hidden.", { name: character.name }));
+  }
+
+  function showCharacter(id) {
+    const character = getCharacters().find((item) => item.id === id);
+    if (!character) return;
+    character.hidden = false;
+    invalidateCharacterRenderContext();
+    state.activeFileId = "characters";
+    setProjectDirty(true);
+    renderCharacterListSurfaces();
+    setStatus(t("{name} shown.", { name: character.name }));
+  }
+
+  function showAllCharacters() {
+    const characters = getCharacters();
+    let changed = false;
+    characters.forEach((character) => {
+      if (character.hidden) {
+        character.hidden = false;
+        changed = true;
+      }
+    });
+    if (!changed) return;
+    invalidateCharacterRenderContext();
+    state.activeFileId = "characters";
+    setProjectDirty(true);
+    renderCharacterListSurfaces();
+    setStatus("All characters visible.");
+  }
+
   function setCharacterField(id, field, value, rerender) {
     const character = getCharacters().find((item) => item.id === id);
     if (!character) return;
     invalidateCharacterRenderContext();
     if (field === "name") {
       const previousName = character.name;
-      character.name = value;
+      const nextName = normalizeOptionalString(value).trim();
+      if (!nextName) {
+        setStatus("Character name is required.");
+        if (rerender) renderCharacterListSurfaces();
+        return;
+      }
+      character.name = nextName;
       state.project.nodes.forEach((node) => {
         if (node.type === "Dialog" && node.title === previousName) {
-          node.title = value;
+          node.title = nextName;
         }
       });
       if (rerender) {
@@ -8061,6 +9557,628 @@ function installNarrativeCanvasApp() {
     if (nodeForPanel) renderNodePanel(nodeForPanel);
   }
 
+  function beginNodeTitleReferenceEdit(target) {
+    const dataset = target?.dataset || {};
+    const isNodeTitle = dataset.nodeField === "title";
+    const isInlineTitle = dataset.inlineNodeField === "title";
+    if (!isNodeTitle && !isInlineTitle) return;
+    const nodeId = isInlineTitle ? dataset.nodeId : state.selectedNodeId;
+    const node = getNode(nodeId);
+    if (!node) return;
+    if (state.pendingNodeTitleEdit?.nodeId === node.id) return;
+    state.pendingNodeTitleEdit = {
+      nodeId: node.id,
+      previousTitle: normalizeOptionalString(node.title).trim()
+    };
+  }
+
+  function finishNodeTitleReferenceEdit(target) {
+    const pending = state.pendingNodeTitleEdit;
+    if (!pending) return;
+    const dataset = target?.dataset || {};
+    const isNodeTitle = dataset.nodeField === "title" && state.selectedNodeId === pending.nodeId;
+    const isInlineTitle = dataset.inlineNodeField === "title" && dataset.nodeId === pending.nodeId;
+    if (!isNodeTitle && !isInlineTitle) return;
+    state.pendingNodeTitleEdit = null;
+    const node = getNode(pending.nodeId);
+    if (!node) return;
+    const previousTitle = normalizeOptionalString(pending.previousTitle).trim();
+    const nextTitle = normalizeOptionalString(node.title).trim();
+    if (!previousTitle || !nextTitle || previousTitle === nextTitle) return;
+    const refs = collectNodeTargetReferences({ titles: [previousTitle], includeIds: false });
+    if (!refs.length) return;
+    showGenericConfirm({
+      kicker: "References",
+      title: `Update references to "${nextTitle}"?`,
+      message: `${formatReferenceSummary(refs)} currently target "${previousTitle}". Update them to "${nextTitle}"? Cancel keeps the old target text.`,
+      confirmLabel: "Update references",
+      danger: false,
+      recordHistory: true,
+      onConfirm: () => {
+        updateNodeTargetReferences({ titles: [previousTitle], replacement: nextTitle });
+        renderAll();
+        setStatus(`Updated ${refs.length} reference${refs.length === 1 ? "" : "s"}.`);
+      }
+    });
+  }
+
+  function collectNodeTargetReferences({ ids = [], titles = [], includeIds = true } = {}) {
+    const targets = new Set([
+      ...(includeIds ? ids : []),
+      ...titles
+    ].map((value) => normalizeOptionalString(value).trim()).filter(Boolean));
+    if (!targets.size) return [];
+    const refs = [];
+    getPlaybookActions().forEach((action) => {
+      const value = normalizeOptionalString(action.target).trim();
+      if (targets.has(value)) refs.push({ kind: "playbookAction", actionId: action.id, label: `Script action ${action.id || ""}`.trim(), value });
+    });
+    state.project.nodes.forEach((node) => {
+      const routing = normalizeNodeRouting(node.routing);
+      const value = normalizeOptionalString(routing.target).trim();
+      if (routing.mode === "goTo" && targets.has(value)) {
+        refs.push({ kind: "nodeRouting", nodeId: node.id, label: `${node.title || getNodeDisplayId(node)} routing`, value });
+      }
+    });
+    const rules = getRunnerRules();
+    const startValue = normalizeOptionalString(rules.startNode?.value).trim();
+    if (targets.has(startValue)) refs.push({ kind: "runnerStart", label: "Play Rule start node", value: startValue });
+    return refs;
+  }
+
+  function updateNodeTargetReferences({ ids = [], titles = [], replacement = "" } = {}) {
+    const targets = new Set([...ids, ...titles].map((value) => normalizeOptionalString(value).trim()).filter(Boolean));
+    if (!targets.size) return 0;
+    const nextValue = normalizeOptionalString(replacement).trim();
+    let changed = 0;
+    const actions = getPlaybookActions();
+    actions.forEach((action) => {
+      if (targets.has(normalizeOptionalString(action.target).trim())) {
+        action.target = nextValue;
+        changed += 1;
+      }
+    });
+    state.project.nodes.forEach((node) => {
+      const routing = normalizeNodeRouting(node.routing);
+      if (routing.mode === "goTo" && targets.has(normalizeOptionalString(routing.target).trim())) {
+        if (nextValue) node.routing = { ...routing, target: nextValue };
+        else delete node.routing;
+        changed += 1;
+      }
+    });
+    const rules = getRunnerRules();
+    if (rules.startNode && targets.has(normalizeOptionalString(rules.startNode.value).trim())) {
+      rules.startNode = { ...rules.startNode, value: nextValue || getDefaultStartNodeTarget() };
+      changed += 1;
+    }
+    state.project.script = normalizeScriptConfig({ ...state.project.script, actions, playRules: rules });
+    if (changed) setProjectDirty(true);
+    return changed;
+  }
+
+  function removeNodeTargetReferences(nodeIds) {
+    return updateNodeTargetReferences({ ...getDeletionReferenceTargets(nodeIds), replacement: "" });
+  }
+
+  function getDefaultStartNodeTarget() {
+    const entry = state.project.nodes.find((node) => node.type === "Entry") || state.project.nodes[0];
+    return entry?.title || entry?.id || "";
+  }
+
+  function getDeletionReferenceTargets(nodeIds) {
+    const idSet = new Set((nodeIds || []).map((id) => normalizeOptionalString(id).trim()).filter(Boolean));
+    const nodes = [...idSet].map(getNode).filter(Boolean);
+    const remainingTitles = new Set(state.project.nodes
+      .filter((node) => !idSet.has(node.id))
+      .map((node) => normalizeOptionalString(node.title).trim())
+      .filter(Boolean));
+    const titles = nodes
+      .map((node) => normalizeOptionalString(node.title).trim())
+      .filter((title) => title && !remainingTitles.has(title));
+    return {
+      ids: nodes.map((node) => node.id),
+      titles
+    };
+  }
+
+  function formatReferenceSummary(refs) {
+    const total = refs.length;
+    const byKind = refs.reduce((map, ref) => {
+      map[ref.kind] = (map[ref.kind] || 0) + 1;
+      return map;
+    }, {});
+    const parts = [
+      byKind.playbookAction ? `${byKind.playbookAction} Script Builder action${byKind.playbookAction === 1 ? "" : "s"}` : "",
+      byKind.nodeRouting ? `${byKind.nodeRouting} node routing target${byKind.nodeRouting === 1 ? "" : "s"}` : "",
+      byKind.runnerStart ? "1 Play Rule start node" : ""
+    ].filter(Boolean);
+    return `${total} reference${total === 1 ? "" : "s"}${parts.length ? ` (${parts.join(", ")})` : ""}`;
+  }
+
+  function getEditableNodeStateLogic(node = getNode(state.selectedNodeId)) {
+    if (!node) return null;
+    node.stateLogic = normalizeNodeStateLogic(node.stateLogic);
+    return node.stateLogic;
+  }
+
+  function setNodeLogicField(field, value, rerender) {
+    const node = getNode(state.selectedNodeId);
+    const logic = getEditableNodeStateLogic(node);
+    if (!node || !logic || isFrameNode(node)) return;
+    if (field === "requirements") logic.requirements = normalizeOptionalString(value).trim();
+    cleanupNodeStateLogic(node);
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender) renderNodePanel(node);
+  }
+
+  function setNodeRoutingField(field, value, rerender, nodeId = state.selectedNodeId) {
+    const node = getNode(nodeId);
+    if (!node || isFrameNode(node)) return;
+    const routing = normalizeNodeRouting(node.routing);
+    const previousMode = routing.mode;
+    if (field === "mode") routing.mode = ["continue", "end", "goTo"].includes(value) ? value : "continue";
+    if (field === "target") routing.target = normalizeOptionalString(value).trim();
+    if (routing.mode !== "goTo") routing.target = "";
+    const modeChanged = field === "mode" && previousMode !== routing.mode;
+    if (routing.mode === "continue" && !routing.target) delete node.routing;
+    else node.routing = routing;
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender || modeChanged) {
+      if (state.selectedNodeId === node.id) renderNodePanel(node);
+      renderPlaybookSurfaces();
+    }
+  }
+
+  function setNodeEffectField(index, field, value, rerender) {
+    const node = getNode(state.selectedNodeId);
+    const logic = getEditableNodeStateLogic(node);
+    if (!node || !logic || isFrameNode(node)) return;
+    const effect = logic.effects[index];
+    if (!effect) return;
+    if (field === "trigger") effect.trigger = normalizePlaybookActionTrigger(value);
+    if (field === "op") effect.op = normalizePlaybookActionOperation(value);
+    if (field === "key") effect.key = normalizeOptionalString(value).trim();
+    if (field === "value") effect.value = normalizeOptionalString(value);
+    cleanupNodeStateLogic(node);
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender) renderNodePanel(node);
+  }
+
+  function addNodeEffect() {
+    const node = getNode(state.selectedNodeId);
+    const logic = getEditableNodeStateLogic(node);
+    if (!node || !logic || isFrameNode(node)) return;
+    logic.effects.push({ trigger: "onVisit", op: "set", key: uniqueVariableKey("new_state"), value: "true" });
+    node.stateLogic = logic;
+    setProjectDirty(true);
+    renderNodePanel(node);
+    updateStatus();
+    setStatus("Effect added.");
+  }
+
+  function deleteNodeEffect(index) {
+    const node = getNode(state.selectedNodeId);
+    const logic = getEditableNodeStateLogic(node);
+    if (!node || !logic || !Number.isInteger(index)) return;
+    logic.effects.splice(index, 1);
+    cleanupNodeStateLogic(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    updateStatus();
+    setStatus("Effect deleted.");
+  }
+
+  function cleanupNodeStateLogic(node) {
+    const logic = normalizeNodeStateLogic(node.stateLogic);
+    logic.effects = logic.effects.filter((effect) => effect.key || effect.op === "clear");
+    if (logic.requirements || logic.effects.length) node.stateLogic = logic;
+    else delete node.stateLogic;
+  }
+
+  // --- Choice options editor (Phase 3) -----------------------------------------------------------
+
+  function getSelectedChoiceNode() {
+    const node = getNode(state.selectedNodeId);
+    return node && node.type === "Choice" ? node : null;
+  }
+
+  function ensureChoiceOptionsArray(node) {
+    if (!Array.isArray(node.choiceOptions)) {
+      node.choiceOptions = normalizeChoiceOptions(node);
+    }
+    return node.choiceOptions;
+  }
+
+  function syncChoicesFromOptions(node) {
+    if (Array.isArray(node.choiceOptions)) {
+      node.choices = node.choiceOptions.map((opt) => opt.label);
+    }
+    // Drop stale link.choiceOptionId bindings that no longer exist on this node.
+    if (Array.isArray(state.project.links)) {
+      const idSet = new Set((node.choiceOptions || []).map((opt) => opt.id));
+      state.project.links.forEach((link) => {
+        if (link.from === node.id && link.choiceOptionId && !idSet.has(link.choiceOptionId)) {
+          delete link.choiceOptionId;
+        }
+      });
+    }
+  }
+
+  function setChoiceOptionField(optionId, field, value, rerender) {
+    const node = getSelectedChoiceNode();
+    if (!node || !optionId) return;
+    const options = ensureChoiceOptionsArray(node);
+    const option = options.find((opt) => opt.id === optionId);
+    if (!option) return;
+    if (field === "label") option.label = normalizeOptionalString(value);
+    else if (field === "requires") option.requires = normalizeOptionalString(value).trim();
+    else return;
+    syncChoicesFromOptions(node);
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender) renderNodePanel(node);
+  }
+
+  function addChoiceOption() {
+    const node = getSelectedChoiceNode();
+    if (!node) return;
+    const options = ensureChoiceOptionsArray(node);
+    const used = new Set(options.map((opt) => opt.id));
+    const id = generateChoiceOptionId(used);
+    const newOption = { id, label: t("New choice"), requires: "", effects: [] };
+    options.push(newOption);
+    syncChoicesFromOptions(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    renderLinks();
+    updateStatus();
+    setStatus("Choice option added.");
+    focusInspectorTarget(`[data-choice-option-id="${id}"][data-choice-option-focus-target="label"]`);
+  }
+
+  function deleteChoiceOption(optionId) {
+    const node = getSelectedChoiceNode();
+    if (!node || !optionId) return;
+    const options = ensureChoiceOptionsArray(node);
+    const index = options.findIndex((opt) => opt.id === optionId);
+    if (index < 0) return;
+    options.splice(index, 1);
+    syncChoicesFromOptions(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    renderLinks();
+    updateStatus();
+    setStatus("Choice option deleted.");
+  }
+
+  function moveChoiceOption(optionId, delta) {
+    const node = getSelectedChoiceNode();
+    if (!node || !optionId || !Number.isFinite(delta)) return;
+    const options = ensureChoiceOptionsArray(node);
+    const index = options.findIndex((opt) => opt.id === optionId);
+    if (index < 0) return;
+    const target = index + delta;
+    if (target < 0 || target >= options.length) return;
+    const [moved] = options.splice(index, 1);
+    options.splice(target, 0, moved);
+    syncChoicesFromOptions(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    renderLinks();
+  }
+
+  function addChoiceOptionEffect(optionId) {
+    const node = getSelectedChoiceNode();
+    if (!node || !optionId) return;
+    const option = ensureChoiceOptionsArray(node).find((opt) => opt.id === optionId);
+    if (!option) return;
+    if (!Array.isArray(option.effects)) option.effects = [];
+    option.effects.push({ trigger: "onChoose", op: "set", key: uniqueVariableKey("new_state"), value: "true" });
+    setChoiceOptionExpanded(optionId, true);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    updateStatus();
+    setStatus("Effect added.");
+  }
+
+  function deleteChoiceOptionEffect(optionId, effectIndex) {
+    const node = getSelectedChoiceNode();
+    if (!node || !optionId || !Number.isInteger(effectIndex)) return;
+    const option = ensureChoiceOptionsArray(node).find((opt) => opt.id === optionId);
+    if (!option || !Array.isArray(option.effects)) return;
+    option.effects.splice(effectIndex, 1);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    updateStatus();
+    setStatus("Effect deleted.");
+  }
+
+  function setChoiceOptionEffectField(optionId, effectIndex, field, value, rerender) {
+    const node = getSelectedChoiceNode();
+    if (!node || !optionId || !Number.isInteger(effectIndex)) return;
+    const option = ensureChoiceOptionsArray(node).find((opt) => opt.id === optionId);
+    if (!option || !Array.isArray(option.effects)) return;
+    const effect = option.effects[effectIndex];
+    if (!effect) return;
+    if (field === "op") effect.op = normalizePlaybookActionOperation(value);
+    else if (field === "key") effect.key = normalizeOptionalString(value).trim();
+    else if (field === "value") effect.value = normalizeOptionalString(value);
+    else return;
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender) renderNodePanel(node);
+  }
+
+  // --- Dialog turns editor (Phase 3) -------------------------------------------------------------
+
+  function getSelectedDialogNode() {
+    const node = getNode(state.selectedNodeId);
+    return node && node.type === "Dialog" ? node : null;
+  }
+
+  function ensureDialogTurns(node) {
+    if (!Array.isArray(node.turns)) node.turns = [];
+    return node.turns;
+  }
+
+  function syncDialogBodyFromTurns(node) {
+    if (!Array.isArray(node.turns) || !node.turns.length) return;
+    // Mirror turns into body so legacy renderers that only read `body` see something coherent.
+    node.body = node.turns.map((turn) => {
+      const speaker = String(turn.speaker || "").trim();
+      const line = String(turn.line || "").trim();
+      return speaker ? `${speaker}: ${line}` : line;
+    }).join("\n");
+    // Auto-fill cast Speaker chips from the unique speakers in turns.
+    syncDialogCastFromTurns(node);
+  }
+
+  function addDialogTurn() {
+    const node = getSelectedDialogNode();
+    if (!node) return;
+    const turns = ensureDialogTurns(node);
+    turns.push({ speaker: "", line: "" });
+    syncDialogBodyFromTurns(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    updateStatus();
+    setStatus("Turn added.");
+    focusInspectorTarget(`[data-dialog-turn-index="${turns.length - 1}"][data-dialog-turn-focus-target="speaker"]`);
+  }
+
+  function insertDialogTurnAfter(index) {
+    const node = getSelectedDialogNode();
+    if (!node || !Number.isInteger(index)) return;
+    const turns = ensureDialogTurns(node);
+    const nextIndex = clamp(index + 1, 0, turns.length);
+    turns.splice(nextIndex, 0, { speaker: "", line: "" });
+    syncDialogBodyFromTurns(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    updateStatus();
+    setStatus("Turn added.");
+    focusInspectorTarget(`[data-dialog-turn-index="${nextIndex}"][data-dialog-turn-focus-target="speaker"]`);
+  }
+
+  function copyDialogTurn(index) {
+    const node = getSelectedDialogNode();
+    if (!node || !Number.isInteger(index)) return;
+    const turns = ensureDialogTurns(node);
+    const source = turns[index];
+    if (!source) return;
+    turns.splice(index + 1, 0, {
+      speaker: normalizeOptionalString(source.speaker),
+      line: normalizeOptionalString(source.line)
+    });
+    syncDialogBodyFromTurns(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    updateStatus();
+    setStatus("Turn copied.");
+    focusInspectorTarget(`[data-dialog-turn-index="${index + 1}"][data-dialog-turn-field="line"]`);
+  }
+
+  function moveDialogTurn(index, delta) {
+    const node = getSelectedDialogNode();
+    if (!node || !Number.isInteger(index)) return;
+    const turns = ensureDialogTurns(node);
+    const nextIndex = index + delta;
+    if (!turns[index] || nextIndex < 0 || nextIndex >= turns.length) return;
+    const [turn] = turns.splice(index, 1);
+    turns.splice(nextIndex, 0, turn);
+    syncDialogBodyFromTurns(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    updateStatus();
+    setStatus("Turn moved.");
+    focusInspectorTarget(`[data-dialog-turn-index="${nextIndex}"][data-dialog-turn-field="line"]`);
+  }
+
+  function deleteDialogTurn(index) {
+    const node = getSelectedDialogNode();
+    if (!node || !Number.isInteger(index)) return;
+    const turns = ensureDialogTurns(node);
+    turns.splice(index, 1);
+    if (!turns.length) {
+      delete node.turns;
+      node.body = "";
+    }
+    else syncDialogBodyFromTurns(node);
+    setProjectDirty(true);
+    renderNodePanel(node);
+    renderNodes();
+    updateStatus();
+    setStatus("Turn deleted.");
+  }
+
+  function handleDialogTurnKeyDown(event) {
+    const field = event.target?.dataset?.dialogTurnField;
+    if (!field || event.key !== "Enter" || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return false;
+    const index = Number(event.target.dataset.dialogTurnIndex);
+    if (!Number.isInteger(index)) return false;
+    event.preventDefault();
+    insertDialogTurnAfter(index);
+    return true;
+  }
+
+  function setDialogTurnField(index, field, value, rerender) {
+    const node = getSelectedDialogNode();
+    if (!node || !Number.isInteger(index)) return;
+    const turns = ensureDialogTurns(node);
+    const turn = turns[index];
+    if (!turn) return;
+    if (field === "speaker") turn.speaker = normalizeOptionalString(value).trim();
+    else if (field === "line") turn.line = normalizeOptionalString(value);
+    else return;
+    syncDialogBodyFromTurns(node);
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender) {
+      renderNodePanel(node);
+      renderNodes();
+    }
+  }
+
+  // --- Legacy convert hook (Phase 3 stub; Phase 5 will offer bulk migration) ----------------------
+
+  function convertLegacyNode(nodeId) {
+    const node = getNode(nodeId);
+    if (!node) return;
+    const meta = getNodeMeta(node.type);
+    if (!meta.legacy) {
+      setStatus("This node is not a legacy type.");
+      return;
+    }
+    // Per-node conversion:
+    //  - Set node: 1 in / 1 out -> push onVisit effect onto next node; remove Set and bridge edges.
+    //  - Condition node: 1 in / 2 out -> replace with two requirement-gated links.
+    const outgoing = (state.project.links || []).filter((l) => l.from === node.id);
+    const incoming = (state.project.links || []).filter((l) => l.to === node.id);
+    if (node.type === "Set" && outgoing.length === 1 && incoming.length === 1) {
+      const nextNode = getNode(outgoing[0].to);
+      if (nextNode) {
+        const logic = normalizeNodeStateLogic(nextNode.stateLogic);
+        logic.effects.push({
+          trigger: "onVisit",
+          op: "set",
+          key: normalizeOptionalString(node.variable).trim() || "var",
+          value: normalizeOptionalString(node.value)
+        });
+        nextNode.stateLogic = logic;
+        // Bridge the single incoming link to the next node.
+        incoming[0].to = nextNode.id;
+        // Remove the Set node and its outgoing link.
+        state.project.nodes = state.project.nodes.filter((n) => n.id !== node.id);
+        state.project.links = state.project.links.filter((l) => l.id !== outgoing[0].id);
+        setProjectDirty(true);
+        renderAll();
+        setStatus(`Converted Set "${node.title || node.id}" into onVisit effect on "${nextNode.title || nextNode.id}".`);
+        return;
+      }
+    }
+    if (node.type === "Condition" && outgoing.length === 2 && incoming.length === 1) {
+      const condition = normalizeOptionalString(node.condition || node.body).trim();
+      if (!condition) {
+        setStatus("Condition has no expression to convert.");
+        return;
+      }
+      const ordered = getChoiceOrderedLinks(outgoing);
+      const trueLink = ordered[0];
+      const falseLink = ordered[1];
+      trueLink.from = incoming[0].from;
+      trueLink.label = "true";
+      trueLink.requirements = condition;
+      delete trueLink.choiceIndex;
+      delete trueLink.choiceOptionId;
+      falseLink.from = incoming[0].from;
+      falseLink.label = "false";
+      falseLink.requirements = `!(${condition})`;
+      delete falseLink.choiceIndex;
+      delete falseLink.choiceOptionId;
+      state.project.nodes = state.project.nodes.filter((n) => n.id !== node.id);
+      state.project.links = state.project.links.filter((l) => l.id !== incoming[0].id);
+      setProjectDirty(true);
+      renderAll();
+      setStatus(`Converted Condition "${node.title || node.id}" into two gated links.`);
+      return;
+    }
+    setStatus("This node cannot auto-convert: it needs exactly 1 incoming and the expected outgoing shape.");
+  }
+
+  function focusInspectorTarget(selector) {
+    if (typeof document === "undefined") return;
+    requestAnimationFrame(() => {
+      const el = dom.nodePanel?.querySelector(selector);
+      if (el && typeof el.focus === "function") {
+        el.focus();
+        if (typeof el.select === "function") el.select();
+      }
+    });
+  }
+
+  function setScriptNodeField(nodeId, field, value, rerender) {
+    const node = getNode(nodeId);
+    if (!node || isFrameNode(node)) return;
+    if (field === "requirements") {
+      node.stateLogic = normalizeNodeStateLogic(node.stateLogic);
+      node.stateLogic.requirements = normalizeOptionalString(value).trim();
+      cleanupNodeStateLogic(node);
+    } else if (field === "effects") {
+      node.stateLogic = normalizeNodeStateLogic(node.stateLogic);
+      node.stateLogic.effects = parseNodeEffectsText(value);
+      cleanupNodeStateLogic(node);
+    } else if (field === "routingMode") {
+      setNodeRoutingField("mode", value, false, nodeId);
+    } else if (field === "routingTarget") {
+      setNodeRoutingField("target", value, false, nodeId);
+    }
+    setProjectDirty(true);
+    updateStatus();
+    if (state.selectedNodeId === node.id && state.panel === "node") renderNodePanel(node);
+  }
+
+  function parseNodeEffectsText(value) {
+    return String(value || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const triggerMatch = line.match(/^\[(onVisit|onChoose)\]\s*(.+)$/i);
+        const trigger = triggerMatch ? normalizePlaybookActionTrigger(triggerMatch[1]) : "onVisit";
+        const body = triggerMatch ? triggerMatch[2].trim() : line;
+        const match = body.match(/^(set|add|subtract|append|remove|toggle|clear)\s+([A-Za-z0-9_.-]+)(?:\s*=\s*(.*)|\s+(.+))?$/i);
+        if (!match) return { trigger, op: "set", key: body, value: "true" };
+        return {
+          trigger,
+          op: normalizePlaybookActionOperation(match[1]),
+          key: normalizeOptionalString(match[2]).trim(),
+          value: normalizeOptionalString(match[3] ?? match[4] ?? "")
+        };
+      })
+      .filter((effect) => effect.key || effect.op === "clear");
+  }
+
+  function formatNodeEffectsText(node) {
+    return normalizeNodeStateLogic(node?.stateLogic).effects
+      .map((effect) => {
+        const prefix = effect.trigger && effect.trigger !== "onVisit" ? `[${effect.trigger}] ` : "";
+        const key = effect.key || "";
+        const value = effect.value ? ` = ${effect.value}` : "";
+        return `${prefix}${effect.op || "set"} ${key}${value}`.trim();
+      })
+      .join("\n");
+  }
+
   function renderCharacterListSurfaces() {
     hideNodeContextMenu();
     renderShellState();
@@ -8080,6 +10198,8 @@ function installNarrativeCanvasApp() {
     variables[key] = "";
     state.project.variables = variables;
     state.activeFileId = "variables";
+    state.playbookTab = "variables";
+    state.playbookFocusTarget = { kind: "variable", id: key, field: "key" };
     setProjectDirty(true);
     renderPlaybookSurfaces();
     setStatus("Variable added.");
@@ -8100,6 +10220,8 @@ function installNarrativeCanvasApp() {
     });
     state.project.script = normalizeScriptConfig({ ...state.project.script, actions });
     state.activeFileId = "variables";
+    state.playbookTab = "script";
+    state.playbookFocusTarget = { kind: "action", id, field: "target" };
     setProjectDirty(true);
     renderPlaybookSurfaces();
     updateStatus();
@@ -8111,6 +10233,12 @@ function installNarrativeCanvasApp() {
     state.activeFileId = "variables";
     renderPlaybookSurfaces();
     setStatus(state.playbookJsonOpen ? "Advanced JSON shown." : "Advanced JSON hidden.");
+  }
+
+  function selectPlaybookTab(tab) {
+    state.playbookTab = getValidPlaybookTab(tab);
+    state.activeFileId = "variables";
+    renderPlaybookSurfaces();
   }
 
   function filterPlaybookCategory(category) {
@@ -8140,36 +10268,23 @@ function installNarrativeCanvasApp() {
 
   function addPlaybookRule(kind) {
     const ruleKind = normalizePlaybookRuleKind(kind);
-    if (ruleKind === "selected") {
-      if (dom.playRuleDialog?.open) dom.playRuleDialog.close();
-      addSelectedNodePlaybookRule();
-      return;
-    }
-    if (ruleKind === "state") {
-      if (dom.playRuleDialog?.open) dom.playRuleDialog.close();
-      addPlaybookStateRulesPair();
-      return;
-    }
-
-    const scripts = getScriptNodeTypes();
-    const defaultTarget = getDefaultPlaybookRuleTargetForKind(ruleKind, scripts);
-    const dialogTarget = dom.playRuleDialog?.open
-      ? String(dom.playRuleTargetInput?.value || "").trim()
-      : "";
     if (dom.playRuleDialog?.open) dom.playRuleDialog.close();
-    let target = dialogTarget;
-    if (!target && !dom.playRuleTargetInput) {
-      setStatus("Play rule dialog is unavailable.");
-      return;
-    }
-    if (!target) target = defaultTarget;
-    if (!target) return;
-    scripts[target] = applyPlaybookRulePreset(ruleKind, scripts[target]);
-    state.project.script = normalizeScriptConfig({ nodeTypes: scripts });
+    const rules = getRunnerRules();
+    rules[ruleKind] = {
+      ...(rules[ruleKind] || getDefaultRunnerRules()[ruleKind]),
+      enabled: true
+    };
+    state.project.script = normalizeScriptConfig({ ...state.project.script, playRules: rules });
     state.activeFileId = "variables";
+    // Switch to Rules tab so the user sees what they just added. The Script Builder data is preserved —
+    // earlier confusion came from the tab switch making writers think their rows had vanished. Keep the
+    // switch but add a focus hint so the new rule visually stands out.
+    state.playbookTab = "rules";
+    state.playbookFocusTarget = { kind: "runnerRule", id: ruleKind, field: "value" };
+    setProjectDirty(true);
     renderPlaybookSurfaces();
     updateStatus();
-    setStatus(`${target} ${getPlaybookRuleKindLabel(ruleKind)} added.`);
+    setStatus(`${getRunnerRuleTitle(ruleKind)} enabled.`);
   }
 
   function addPlaybookStateRulesPair() {
@@ -8184,8 +10299,9 @@ function installNarrativeCanvasApp() {
       body: scripts.Condition?.body || "{condition}",
       condition: scripts.Condition?.condition || "condition"
     };
-    state.project.script = normalizeScriptConfig({ nodeTypes: scripts });
+    state.project.script = normalizeScriptConfig({ ...state.project.script, nodeTypes: scripts });
     state.activeFileId = "variables";
+    state.playbookTab = "rules";
     renderPlaybookSurfaces();
     updateStatus();
     setStatus("Set and Condition Play rules added.");
@@ -8201,15 +10317,27 @@ function installNarrativeCanvasApp() {
     const target = node.type || node.id;
     const scripts = getScriptNodeTypes();
     scripts[target] = applyPlaybookRulePreset(ruleKind, scripts[target]);
-    state.project.script = normalizeScriptConfig({ nodeTypes: scripts });
+    state.project.script = normalizeScriptConfig({ ...state.project.script, nodeTypes: scripts });
     state.activeFileId = "variables";
+    state.playbookTab = "rules";
     renderPlaybookSurfaces();
     updateStatus();
     setStatus(`${target} rule added from selected node.`);
   }
 
   function normalizePlaybookRuleKind(kind) {
-    return ["text", "choices", "set", "condition", "state", "selected"].includes(kind) ? kind : "text";
+    return ["startNode", "choiceDisplay", "endCondition", "visitTracking", "debugMode"].includes(kind) ? kind : "endCondition";
+  }
+
+  function getRunnerRuleTitle(kind) {
+    const labels = {
+      startNode: "Start Node",
+      choiceDisplay: "Choice Display",
+      endCondition: "End Condition",
+      visitTracking: "Visit Tracking",
+      debugMode: "Debug Mode"
+    };
+    return labels[kind] || "Play rule";
   }
 
   function getPlaybookRuleKindLabel(kind) {
@@ -8288,6 +10416,38 @@ function installNarrativeCanvasApp() {
     setStatus("Script line deleted.");
   }
 
+  function deletePlaybookRule(target) {
+    const key = String(target || "").trim();
+    if (!key) return;
+    const rules = getRunnerRules();
+    if (!Object.prototype.hasOwnProperty.call(rules, key)) return;
+    if (key === "startNode" || key === "choiceDisplay") {
+      setStatus(`${getRunnerRuleTitle(key)} is a system rule.`);
+      return;
+    }
+    rules[key] = { ...rules[key], enabled: false };
+    state.project.script = normalizeScriptConfig({ ...state.project.script, playRules: rules });
+    state.activeFileId = "variables";
+    setProjectDirty(true);
+    renderPlaybookSurfaces();
+    updateStatus();
+    setStatus(`${getRunnerRuleTitle(key)} disabled.`);
+  }
+
+  function toggleFrameCollapse(nodeId) {
+    const node = getNode(nodeId);
+    if (!node || !isFrameNode(node)) return;
+    node.collapsed = !isFrameCollapsed(node);
+    nodeLayoutSizeCache.delete(node);
+    state.activeFileId = "adventure";
+    setProjectDirty(true);
+    renderNodes();
+    renderLinks();
+    renderStoryPanel();
+    updateStatus();
+    setStatus(node.collapsed ? "Frame collapsed." : "Frame expanded.");
+  }
+
   function setPlaybookActionField(id, field, value, rerender) {
     const actions = getPlaybookActions();
     const action = actions.find((item) => item.id === id);
@@ -8301,6 +10461,25 @@ function installNarrativeCanvasApp() {
     setProjectDirty(true);
     updateStatus();
     if (rerender) renderPlaybookSurfaces();
+  }
+
+  function setRunnerRuleField(field, value, rerender) {
+    const rules = getRunnerRules();
+    if (!rules[field]) return;
+    rules[field] = {
+      ...rules[field],
+      enabled: true,
+      value: normalizeRunnerRuleValue(field, value)
+    };
+    state.project.script = normalizeScriptConfig({ ...state.project.script, playRules: rules });
+    setProjectDirty(true);
+    updateStatus();
+    if (rerender) renderPlaybookSurfaces();
+  }
+
+  function getRunnerRuleInputValue(target) {
+    if (target?.type === "checkbox") return Boolean(target.checked);
+    return target?.value ?? "";
   }
 
   function getPlaybookActionInputValue(target) {
@@ -8369,6 +10548,141 @@ function installNarrativeCanvasApp() {
       setStatus(found
         ? `${label} shown in Story.`
         : `${label} is not in Story because it is not on the Entry path.`);
+    });
+  }
+
+  function getCanvasSearchMatchIds(query = state.search.trim().toLowerCase()) {
+    if (!query) return [];
+    return state.project.nodes.filter((node) => nodeMatches(node, query)).map((node) => node.id);
+  }
+
+  function getCharacterSearchMatchIds(query = (state.characterSearch || "").trim().toLowerCase()) {
+    if (!query) return [];
+    return getCharacters()
+      .filter((character) => characterMatchesSearch(character, query))
+      .map((character) => character.id);
+  }
+
+  function getEventSearchMatchIds(query = (state.eventSearch || "").trim().toLowerCase()) {
+    if (!query) return [];
+    return getEventSheetMatchRowIds(query);
+  }
+
+  function getEventSheetMatchRowIds(query) {
+    const ids = [];
+    state.project.nodes.forEach((node) => {
+      if (!isEventSheetNode(node)) return;
+      const haystack = buildEventNodeSearchText(node);
+      if (haystack.includes(query)) ids.push(node.id);
+    });
+    return ids;
+  }
+
+  function buildEventNodeSearchText(node) {
+    const columns = getEventSheetColumns(node.type) || [];
+    const parts = [node.title, getNodeDisplayId(node), getNodeTypeLabel(node.type)];
+    columns.forEach((column) => parts.push(String(getNodeEventValue(node, column.key) || "")));
+    return parts.filter(Boolean).join("\n").toLowerCase();
+  }
+
+  function getPlaybookSearchMatchOffsets(query = (state.playbookSearch || "").trim().toLowerCase()) {
+    if (!query) return [];
+    const text = (buildVariablesJson() || "").toLowerCase();
+    const offsets = [];
+    let from = 0;
+    while (from <= text.length - query.length) {
+      const idx = text.indexOf(query, from);
+      if (idx < 0) break;
+      offsets.push(idx);
+      from = idx + Math.max(1, query.length);
+    }
+    return offsets;
+  }
+
+  function getSearchScopeInfo(scope = state.activeFileId) {
+    switch (scope) {
+      case "adventure": {
+        const matches = getCanvasSearchMatchIds();
+        return { scope, matches, indexKey: "searchIndex" };
+      }
+      case "characters": {
+        const matches = getCharacterSearchMatchIds();
+        return { scope, matches, indexKey: "characterSearchIndex" };
+      }
+      case "events": {
+        const matches = getEventSearchMatchIds();
+        return { scope, matches, indexKey: "eventSearchIndex" };
+      }
+      case "variables": {
+        const matches = getPlaybookSearchMatchOffsets();
+        return { scope, matches, indexKey: "playbookSearchIndex" };
+      }
+      default:
+        return { scope, matches: [], indexKey: null };
+    }
+  }
+
+  function refreshWorkspaceSearchCount() {
+    if (!dom.matchCount) return;
+    const info = getSearchScopeInfo();
+    const total = info.matches.length;
+    const rawIndex = info.indexKey ? state[info.indexKey] : -1;
+    const oneBased = rawIndex >= 0 && rawIndex < total ? rawIndex + 1 : 0;
+    dom.matchCount.textContent = `${oneBased} / ${total}`;
+  }
+
+  function cycleSearchScope(scope) {
+    const info = getSearchScopeInfo(scope);
+    if (!info.matches.length || !info.indexKey) {
+      refreshWorkspaceSearchCount();
+      return;
+    }
+    const current = state[info.indexKey];
+    const nextIndex = current >= 0 ? (current + 1) % info.matches.length : 0;
+    state[info.indexKey] = nextIndex;
+    focusSearchMatch(scope, info.matches[nextIndex]);
+    refreshWorkspaceSearchCount();
+  }
+
+  function focusSearchMatch(scope, match) {
+    if (scope === "adventure") {
+      focusCanvasNode(match);
+      return;
+    }
+    if (scope === "characters") {
+      focusCharacter(match);
+      requestAnimationFrame(() => {
+        const card = dom.charactersPanel?.querySelector(`[data-character-card-id="${CSS.escape(match)}"]`);
+        if (card?.scrollIntoView) card.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      return;
+    }
+    if (scope === "events") {
+      requestAnimationFrame(() => {
+        const row = dom.eventsPanel?.querySelector(`[data-event-row-id="${CSS.escape(match)}"]`);
+        if (row?.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      return;
+    }
+    if (scope === "variables") {
+      focusPlaybookJsonAtOffset(match);
+    }
+  }
+
+  function focusPlaybookJsonAtOffset(offset) {
+    state.playbookJsonOpen = true;
+    renderVariablesPage();
+    requestAnimationFrame(() => {
+      const textarea = dom.variablesPanel?.querySelector('textarea[data-project-field="variables"]');
+      if (!textarea) return;
+      const length = (state.playbookSearch || "").length;
+      const end = offset + Math.max(0, length);
+      textarea.focus();
+      try { textarea.setSelectionRange(offset, end); } catch (_error) { /* no-op */ }
+      const before = textarea.value.slice(0, offset);
+      const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 18;
+      const lineIndex = (before.match(/\n/g) || []).length;
+      textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
     });
   }
 
@@ -8448,6 +10762,10 @@ function installNarrativeCanvasApp() {
       dom.nodeTypeFieldsInput.value = formatNodeTypeFields(typeDef.fields);
       dom.nodeTypeColorInput.value = normalizeCustomColor(typeDef.color);
       dom.nodeTypeHiddenInput.checked = Boolean(typeDef.hidden);
+      if (dom.nodeTypeEventHiddenInput) {
+        dom.nodeTypeEventHiddenInput.checked = Boolean(typeDef.eventSheetHidden);
+        dom.nodeTypeEventHiddenInput.closest("label").hidden = !isFrameKind(typeDef.kind);
+      }
       dom.nodeTypeDialog.showModal();
       requestAnimationFrame(() => {
         dom.nodeTypeNameInput.focus();
@@ -8470,7 +10788,8 @@ function installNarrativeCanvasApp() {
           kind: typeDef.kind,
           fields: typeDef.fields,
           color: typeDef.color,
-          hidden: typeDef.hidden
+          hidden: typeDef.hidden,
+          eventSheetHidden: typeDef.eventSheetHidden
         });
         return true;
       }
@@ -8483,7 +10802,8 @@ function installNarrativeCanvasApp() {
       kind: dom.nodeTypeKindInput.value,
       fields: parseCustomNodeFields(dom.nodeTypeFieldsInput.value, getNodeTypeDef(state.typeDialogType)?.fields || []),
       color: dom.nodeTypeColorInput.value,
-      hidden: dom.nodeTypeHiddenInput.checked
+      hidden: dom.nodeTypeHiddenInput.checked,
+      eventSheetHidden: Boolean(dom.nodeTypeEventHiddenInput?.checked)
     });
   }
 
@@ -8507,6 +10827,7 @@ function installNarrativeCanvasApp() {
     typeDef.fields = nextFields;
     typeDef.color = normalizeNodeTypeColor(typeDef.type, typeDef.kind, values.color);
     typeDef.hidden = Boolean(values.hidden);
+    typeDef.eventSheetHidden = isFrameKind(typeDef.kind) ? Boolean(values.eventSheetHidden) : false;
     typeDef.width = clamp(typeDef.width || (isFrameKind(typeDef.kind) ? 420 : 230), 160, isFrameKind(typeDef.kind) ? 860 : 420);
 
     state.project.nodes
@@ -8516,7 +10837,7 @@ function installNarrativeCanvasApp() {
         applyNodeTypeDefaults(node);
       });
 
-    if (removedFieldKeys.length && isEventFrameKind(typeDef.kind)) {
+    if (removedFieldKeys.length && isEventSheetTypeDef(typeDef)) {
       const removed = new Set(removedFieldKeys);
       const eventSheet = getProjectEventSheet();
       eventSheet.columns = eventSheet.columns.filter((column) => !column.custom || !removed.has(column.key));
@@ -8747,9 +11068,33 @@ function installNarrativeCanvasApp() {
   function deleteSelectedNode() {
     if (!state.selectedNodeId) return;
     const id = state.selectedNodeId;
+    const node = getNode(id);
+    if (!node) return;
+    const targets = getDeletionReferenceTargets([id]);
+    const refs = collectNodeTargetReferences(targets);
+    if (refs.length) {
+      showGenericConfirm({
+        kicker: "References",
+        title: `Delete "${node.title || getNodeDisplayId(node)}"?`,
+        message: `${formatReferenceSummary(refs)} point to this node. Delete and clear those references, or keep the references as orphan warnings.`,
+        confirmLabel: "Delete and clear references",
+        secondaryLabel: "Keep orphan references",
+        danger: true,
+        recordHistory: true,
+        onConfirm: () => deleteSelectedNodeConfirmed(id, { removeReferences: true }),
+        onSecondary: () => deleteSelectedNodeConfirmed(id, { removeReferences: false })
+      });
+      return;
+    }
+    deleteSelectedNodeConfirmed(id, { removeReferences: false });
+  }
+
+  function deleteSelectedNodeConfirmed(id, options = {}) {
+    if (options.removeReferences) removeNodeTargetReferences([id]);
     archiveDeletedNode(id);
     state.project.nodes = state.project.nodes.filter((node) => node.id !== id);
     state.project.links = state.project.links.filter((link) => link.from !== id && link.to !== id);
+    markProjectStructureChanged();
     invalidateCharacterRenderContext();
     clearStoryOrderOverrides();
     clearEventRowOrderOverrides();
@@ -8970,8 +11315,8 @@ function installNarrativeCanvasApp() {
     const frames = state.project.nodes.filter((node) => isFrameNode(node));
     const frameChildren = new Map(frames.map((frame) => [frame.id, []]));
     state.project.nodes.forEach((node) => {
-      const parent = getSmallestContainingFrame(node, frames);
-      if (parent) frameChildren.get(parent.id)?.push(node.id);
+      const parentId = normalizeOptionalString(node.frameId).trim();
+      if (parentId && frameChildren.has(parentId)) frameChildren.get(parentId)?.push(node.id);
     });
     return frameChildren;
   }
@@ -9479,7 +11824,9 @@ function installNarrativeCanvasApp() {
       search: state.search,
       characterSearch: state.characterSearch,
       eventSearch: state.eventSearch,
-      playbookJsonOpen: state.playbookJsonOpen
+      playbookSearch: state.playbookSearch,
+      playbookJsonOpen: state.playbookJsonOpen,
+      playbookTab: state.playbookTab
     });
   }
 
@@ -9500,6 +11847,7 @@ function installNarrativeCanvasApp() {
         search: "",
         characterSearch: "",
         eventSearch: "",
+        playbookSearch: "",
         playbookJsonOpen: false,
         ...uiOverrides
       }
@@ -9525,8 +11873,18 @@ function installNarrativeCanvasApp() {
     state.search = typeof ui.search === "string" ? ui.search : "";
     state.characterSearch = typeof ui.characterSearch === "string" ? ui.characterSearch : "";
     state.eventSearch = typeof ui.eventSearch === "string" ? ui.eventSearch : "";
+    state.playbookSearch = typeof ui.playbookSearch === "string" ? ui.playbookSearch : "";
+    state.searchIndex = -1;
+    state.characterSearchIndex = -1;
+    state.eventSearchIndex = -1;
+    state.playbookSearchIndex = -1;
     state.playbookJsonOpen = Boolean(ui.playbookJsonOpen);
+    state.playbookTab = getValidPlaybookTab(ui.playbookTab);
     return applySavedView(ui.view);
+  }
+
+  function getValidPlaybookTab(value) {
+    return ["variables", "script", "rules"].includes(value) ? value : "variables";
   }
 
   function parseSavedPayload(saved) {
@@ -9590,12 +11948,8 @@ function installNarrativeCanvasApp() {
   }
 
   function getWebProjectStorage() {
-    if (window.NarrativeCanvasHost) return null;
-    try {
-      return window["local" + "Storage"] || null;
-    } catch (_error) {
-      return null;
-    }
+    // Obsidian-plugin bundle: persistence runs through NarrativeCanvasHost, no browser storage.
+    return null;
   }
 
   async function loadFromVault(announce = true) {
@@ -9785,7 +12139,8 @@ function installNarrativeCanvasApp() {
     return {
       variables: state.project.variables,
       nodeTypes: getScriptNodeTypes(),
-      actions: getPlaybookActions()
+      actions: getPlaybookActions(),
+      playRules: getRunnerRules()
     };
   }
 
@@ -9813,7 +12168,8 @@ function installNarrativeCanvasApp() {
       && !Array.isArray(value)
       && (Object.prototype.hasOwnProperty.call(value, "variables")
         || Object.prototype.hasOwnProperty.call(value, "nodeTypes")
-        || Object.prototype.hasOwnProperty.call(value, "actions"));
+        || Object.prototype.hasOwnProperty.call(value, "actions")
+        || Object.prototype.hasOwnProperty.call(value, "playRules"));
   }
 
   function normalizeVariablesObject(value) {
@@ -9824,8 +12180,45 @@ function installNarrativeCanvasApp() {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
     return {
       nodeTypes: normalizeNodeTypeScripts(source.nodeTypes),
-      actions: normalizePlaybookActions(source.actions)
+      actions: normalizePlaybookActions(source.actions),
+      playRules: normalizeRunnerRules(source.playRules || source.rules)
     };
+  }
+
+  function normalizeRunnerRules(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const defaults = getDefaultRunnerRules();
+    const normalized = {};
+    Object.entries(defaults).forEach(([key, fallback]) => {
+      const item = source[key];
+      if (item && typeof item === "object" && !Array.isArray(item)) {
+        normalized[key] = {
+          enabled: item.enabled == null ? fallback.enabled : Boolean(item.enabled),
+          value: normalizeRunnerRuleValue(key, item.value)
+        };
+      } else {
+        normalized[key] = { ...fallback };
+      }
+    });
+    return normalized;
+  }
+
+  function getDefaultRunnerRules() {
+    return {
+      startNode: { enabled: true, value: "Start" },
+      choiceDisplay: { enabled: true, value: "hideUnavailable" },
+      endCondition: { enabled: false, value: "" },
+      visitTracking: { enabled: false, value: true },
+      debugMode: { enabled: false, value: false }
+    };
+  }
+
+  function normalizeRunnerRuleValue(key, value) {
+    if (key === "visitTracking" || key === "debugMode") return Boolean(value);
+    if (key === "choiceDisplay") {
+      return PLAYBOOK_CHOICE_DISPLAY_OPTIONS.some((option) => option.value === value) ? value : "hideUnavailable";
+    }
+    return normalizeOptionalString(value).trim();
   }
 
   function normalizeNodeTypeScripts(value) {
@@ -9914,6 +12307,12 @@ function installNarrativeCanvasApp() {
     if (!state.project.script) state.project.script = normalizeScriptConfig(null);
     state.project.script = normalizeScriptConfig(state.project.script);
     return state.project.script.actions;
+  }
+
+  function getRunnerRules() {
+    if (!state.project.script) state.project.script = normalizeScriptConfig(null);
+    state.project.script = normalizeScriptConfig(state.project.script);
+    return state.project.script.playRules;
   }
 
   function buildEventSheetCsv() {
@@ -10154,7 +12553,7 @@ function installNarrativeCanvasApp() {
 
   function normalizeProject(project) {
     const nodeTypesList = normalizeProjectNodeTypes(project.nodeTypes, project.customNodeTypes);
-    const eventFrameTypes = new Set(nodeTypesList.filter((typeDef) => isEventFrameKind(typeDef.kind)).map((typeDef) => typeDef.type));
+    const eventFrameTypes = new Set(nodeTypesList.filter(isEventSheetTypeDef).map((typeDef) => typeDef.type));
     const eventSheet = normalizeEventSheetConfig(project.eventSheet, project.eventSheetHiddenColumns);
     const normalized = {
       title: project.title || "Sample",
@@ -10170,8 +12569,162 @@ function installNarrativeCanvasApp() {
       nodes: Array.isArray(project.nodes) ? project.nodes.map((node) => normalizeNode(node, eventFrameTypes, eventSheet.columns)) : [],
       links: normalizeLinks(project.links)
     };
+    inferLegacyDialogTurns(normalized);
+    inferLegacyFrameMembership(normalized);
+    syncProjectChoiceOptionLinks(normalized);
     syncProjectChoiceBranchLinks(normalized);
     return normalized;
+  }
+
+  function inferLegacyDialogTurns(project) {
+    if (!project || !Array.isArray(project.nodes)) return;
+    const characterNames = new Set((project.characters || []).map((character) => String(character.name || "").trim()).filter(Boolean));
+    project.nodes.forEach((node) => {
+      if (node.type !== "Dialog" || Array.isArray(node.turns)) return;
+      const line = normalizeOptionalString(node.body).trim();
+      if (!line) return;
+      const title = normalizeOptionalString(node.title).trim();
+      const speaker = characterNames.has(title) ? title : "";
+      node.turns = [{ speaker, line }];
+      if (speaker) node.title = `${speaker} scene`;
+      syncDialogCastFromTurns(node, project.characters || []);
+    });
+  }
+
+  function syncDialogCastFromTurns(node, characters = getCharacters()) {
+    if (!node || !Array.isArray(node.turns) || !Array.isArray(characters) || !characters.length) return;
+    const cast = Array.isArray(node.cast) ? node.cast : [];
+    const existingSpeakerCharIds = new Set(cast.filter((c) => c.role === "Speaker").map((c) => c.characterId));
+    const speakerNames = new Set(node.turns.map((t) => String(t.speaker || "").trim()).filter(Boolean));
+    speakerNames.forEach((name) => {
+      const character = characters.find((c) => c.name === name);
+      if (character && !existingSpeakerCharIds.has(character.id)) {
+        cast.push({ characterId: character.id, role: "Speaker" });
+        existingSpeakerCharIds.add(character.id);
+      }
+    });
+    if (cast.length) node.cast = cast;
+  }
+
+  // One-time geometric -> explicit migration: only nodes that do not carry a
+  // frameId field are inferred from geometry. Nodes with frameId: "" intentionally
+  // live at the root and must not be recaptured on later loads.
+  function inferLegacyFrameMembership(project) {
+    if (!project || !Array.isArray(project.nodes)) return;
+    const frames = project.nodes.filter((node) => isFrameNode(node));
+    project.nodes.forEach((node) => {
+      if (Object.prototype.hasOwnProperty.call(node, "frameId")) return;
+      const winner = getSmallestContainingFrameForNode(node, frames);
+      node.frameId = winner ? winner.id : "";
+    });
+    sanitizeFrameMembership(project);
+  }
+
+  function sanitizeFrameMembership(project) {
+    if (!project || !Array.isArray(project.nodes)) return;
+    const nodeMap = new Map(project.nodes.map((node) => [node.id, node]));
+    project.nodes.forEach((node) => {
+      const parentId = normalizeOptionalString(node.frameId).trim();
+      const parent = parentId ? nodeMap.get(parentId) : null;
+      if (!parentId || !parent || !isFrameNode(parent) || parent.id === node.id || wouldCreateFrameCycle(node.id, parent.id, nodeMap)) {
+        node.frameId = "";
+      } else {
+        node.frameId = parent.id;
+      }
+    });
+  }
+
+  function wouldCreateFrameCycle(nodeId, parentId, nodeMap = getNodeIndex()) {
+    let current = parentId;
+    const seen = new Set();
+    while (current) {
+      if (current === nodeId) return true;
+      if (seen.has(current)) return true;
+      seen.add(current);
+      const parent = nodeMap.get(current);
+      current = normalizeOptionalString(parent?.frameId).trim();
+    }
+    return false;
+  }
+
+  function getSmallestContainingFrameForNode(node, frames = state.project.nodes.filter((item) => isFrameNode(item))) {
+    if (!node) return null;
+    const candidates = frames
+      .filter((frame) => frame.id !== node.id && isFrameNode(frame) && frameContainsNodeCenter(frame, node))
+      .filter((frame) => !isFrameNode(node) || frameArea(frame) > frameArea(node))
+      .sort((a, b) => frameArea(a) - frameArea(b));
+    return candidates[0] || null;
+  }
+
+  function frameArea(frame) {
+    const width = Number(frame?.width) || 0;
+    const height = Number(frame?.height) || 0;
+    return Math.max(0, width) * Math.max(0, height);
+  }
+
+  function frameContainsNodeCenter(frame, node) {
+    const fx = Number(frame?.x);
+    const fy = Number(frame?.y);
+    const frameSize = nodeLayoutSize(frame);
+    const fw = frameSize.width;
+    const fh = frameSize.height;
+    if (!Number.isFinite(fx) || !Number.isFinite(fy) || !Number.isFinite(fw) || !Number.isFinite(fh)) return false;
+    const nx = Number(node?.x);
+    const ny = Number(node?.y);
+    if (!Number.isFinite(nx) || !Number.isFinite(ny)) return false;
+    const nodeSize = nodeLayoutSize(node);
+    const nw = nodeSize.width;
+    const nh = nodeSize.height;
+    const cx = nx + nw / 2;
+    const cy = ny + nh / 2;
+    return cx >= fx && cx <= fx + fw && cy >= fy && cy <= fy + fh;
+  }
+
+  // Map link.choiceIndex (legacy index-bound) → link.choiceOptionId (stable id-bound) for Choice sources.
+  // Index is preserved as a fallback so older runtimes still resolve; new code prefers choiceOptionId.
+  function syncProjectChoiceOptionLinks(project) {
+    if (!project || !Array.isArray(project.nodes) || !Array.isArray(project.links)) return;
+    const nodeMap = new Map(project.nodes.map((node) => [node.id, node]));
+    project.links.forEach((link) => {
+      const source = nodeMap.get(link.from);
+      if (!source || !Array.isArray(source.choiceOptions) || !source.choiceOptions.length) return;
+      if (link.choiceOptionId) {
+        // Validate it still exists on the source; drop stale ids.
+        const exists = source.choiceOptions.some((opt) => opt.id === link.choiceOptionId);
+        if (!exists) delete link.choiceOptionId;
+        else return;
+      }
+      const idx = normalizeChoiceIndex(link.choiceIndex);
+      if (idx == null) return;
+      const option = source.choiceOptions[idx];
+      if (option) link.choiceOptionId = option.id;
+    });
+  }
+
+  // Resolve a free-text target (node id, exact title, or node type) to matching nodes.
+  // Used by Playbook actions and rule inspectors to give writers real-time match feedback.
+  function resolveTarget(target, project = state.project) {
+    const result = { input: String(target || "").trim(), kind: "none", matches: [] };
+    if (!result.input || !project || !Array.isArray(project.nodes)) return result;
+    const byId = project.nodes.find((node) => node.id === result.input);
+    if (byId) {
+      result.kind = "id";
+      result.matches = [byId];
+      return result;
+    }
+    const titleMatches = project.nodes.filter((node) => String(node.title || "").trim() === result.input);
+    if (titleMatches.length) {
+      result.kind = "title";
+      result.matches = titleMatches;
+      return result;
+    }
+    const typeMatches = project.nodes.filter((node) => node.type === result.input);
+    if (typeMatches.length) {
+      result.kind = "type";
+      result.matches = typeMatches;
+      return result;
+    }
+    return result;
   }
 
   function normalizeLinks(links) {
@@ -10193,6 +12746,12 @@ function installNarrativeCanvasApp() {
     const choiceIndex = normalizeChoiceIndex(link.choiceIndex);
     if (choiceIndex == null) delete normalized.choiceIndex;
     else normalized.choiceIndex = choiceIndex;
+    const choiceOptionId = normalizeOptionalString(link.choiceOptionId).trim();
+    if (choiceOptionId) normalized.choiceOptionId = choiceOptionId;
+    else delete normalized.choiceOptionId;
+    const requirements = normalizeOptionalString(link.requirements || link.requires).trim();
+    if (requirements) normalized.requirements = requirements;
+    else delete normalized.requirements;
     return normalized;
   }
 
@@ -10254,7 +12813,8 @@ function installNarrativeCanvasApp() {
     const label = String(typeDef?.label || typeDef?.type || "").trim().slice(0, 40);
     if (!label) return null;
     const type = String(typeDef?.type || customNodeTypeId(label)).trim() || customNodeTypeId(label);
-    const kind = type === "Event" ? "eventFrame" : normalizeNodeTypeKind(typeDef?.kind || "node");
+    const kind = type === "Event" ? "frame" : normalizeNodeTypeKind(typeDef?.kind || "node");
+    const builtIn = nodeTypes[type];
     return {
       type,
       label,
@@ -10265,7 +12825,10 @@ function installNarrativeCanvasApp() {
       badgeCustom: Boolean(typeDef?.badgeCustom),
       kind,
       fields: normalizeNodeTypeFields(typeDef?.fields),
-      hidden: Boolean(typeDef?.hidden)
+      hidden: Boolean(typeDef?.hidden),
+      eventSheetHidden: isFrameKind(kind) ? Boolean(typeDef?.eventSheetHidden) : false,
+      system: Boolean(typeDef?.system) || Boolean(builtIn?.system),
+      legacy: Boolean(typeDef?.legacy) || Boolean(builtIn?.legacy)
     };
   }
 
@@ -10280,7 +12843,7 @@ function installNarrativeCanvasApp() {
   }
 
   function normalizeNodeTypeKind(value) {
-    if (value === "eventFrame") return "eventFrame";
+    if (value === "eventFrame") return "frame";
     return value === "frame" ? "frame" : "node";
   }
 
@@ -10380,13 +12943,13 @@ function installNarrativeCanvasApp() {
   }
 
   function getDefaultNodeTypeColor(kind) {
-    if (kind === "eventFrame") return DEFAULT_EVENT_FRAME_COLOR;
     if (kind === "frame") return DEFAULT_VISUAL_FRAME_COLOR;
     return DEFAULT_CUSTOM_NODE_COLOR;
   }
 
   function normalizeNode(node, eventFrameTypes = null, eventColumns = null) {
     const normalized = { ...node };
+    const hasExplicitFrameId = Object.prototype.hasOwnProperty.call(normalized, "frameId");
     delete normalized.icon;
     if (Number.isFinite(Number(normalized.storyOrder))) {
       normalized.storyOrder = Number(normalized.storyOrder);
@@ -10402,9 +12965,160 @@ function installNarrativeCanvasApp() {
       normalized.type = "Event";
       if (normalized.eventType === "Frame" || normalized.eventType === "Event") normalized.eventType = "";
     }
+    // Jump legacy: collapse to Content; routing.goTo carries the destination so flow is preserved.
+    if (normalized.type === "Jump") {
+      if (!normalized.routing && normalized.body) {
+        normalized.routing = { mode: "goTo", target: String(normalized.body).trim() };
+      }
+      normalized.type = "Content";
+    }
     const isEventType = eventFrameTypes ? eventFrameTypes.has(normalized.type) : isEventSheetNode(normalized);
     if (isEventType) ensureEventDefaults(normalized, eventColumns);
+    normalized.ports = normalizeNodePorts(normalized.ports, normalized);
+    normalized.stateLogic = normalizeNodeStateLogic(normalized.stateLogic);
+    if (!normalized.stateLogic.requirements && !normalized.stateLogic.effects.length) delete normalized.stateLogic;
+    normalized.routing = normalizeNodeRouting(normalized.routing || normalized.route);
+    if (normalized.routing.mode === "continue" && !normalized.routing.target) delete normalized.routing;
+    // Explicit frame membership; "" means root level. Missing frameId means legacy
+    // data and is inferred once in normalizeProject.
+    if (hasExplicitFrameId) normalized.frameId = normalizeOptionalString(normalized.frameId).trim();
+    else delete normalized.frameId;
+    if (isFrameNode(normalized)) {
+      normalized.collapsed = Boolean(normalized.collapsed);
+      normalized.layout = normalizeFrameLayout(normalized.layout);
+    } else {
+      delete normalized.collapsed;
+      delete normalized.layout;
+    }
+    if (normalized.type === "Dialog") {
+      normalized.turns = normalizeDialogTurns(normalized);
+      if (!normalized.turns.length) delete normalized.turns;
+    } else {
+      delete normalized.turns;
+    }
+    if (normalized.type === "Choice") {
+      normalized.choiceRevealMode = normalizeChoiceRevealMode(normalized.choiceRevealMode || normalized.revealMode);
+    } else {
+      delete normalized.choiceRevealMode;
+    }
+    delete normalized.revealMode;
+    normalized.choiceOptions = normalizeChoiceOptions(normalized);
+    if (normalized.choiceOptions.length) {
+      // Mirror option labels into the legacy choices[] field so existing runtime paths and
+      // story/preview UI that read `node.choices` see the same list as `choiceOptions`.
+      normalized.choices = normalized.choiceOptions.map((opt) => opt.label);
+    } else {
+      delete normalized.choiceOptions;
+    }
     return normalized;
+  }
+
+  function normalizeChoiceRevealMode(value) {
+    return value === "disabled" || value === "disableUnavailable" ? "disabled" : "hide";
+  }
+
+  function normalizeFrameLayout(value) {
+    return value === "stack" ? "stack" : "free";
+  }
+
+  function normalizeDialogTurns(node) {
+    const raw = Array.isArray(node?.turns) ? node.turns : null;
+    if (raw) {
+      return raw
+        .map((turn) => {
+          if (!turn || typeof turn !== "object" || Array.isArray(turn)) return null;
+          const speaker = normalizeOptionalString(turn.speaker || turn.who || turn.name).trim();
+          const line = normalizeOptionalString(turn.line || turn.body || turn.text).trim();
+          if (!speaker && !line) return null;
+          return { speaker, line };
+        })
+        .filter(Boolean);
+    }
+    return [];
+  }
+
+  function normalizeChoiceOptions(node) {
+    const raw = Array.isArray(node?.choiceOptions) ? node.choiceOptions : null;
+    const labels = Array.isArray(node?.choices) ? node.choices : [];
+    if (raw && raw.length) {
+      const used = new Set();
+      return raw
+        .map((opt, index) => {
+          if (!opt || typeof opt !== "object" || Array.isArray(opt)) return null;
+          const label = normalizeOptionalString(opt.label || opt.text || labels[index]).trim();
+          if (!label) return null;
+          let id = normalizeOptionalString(opt.id).trim();
+          if (!id || used.has(id)) id = generateChoiceOptionId(used);
+          used.add(id);
+          const requires = normalizeOptionalString(opt.requires || opt.requirement || opt.gate).trim();
+          const effects = normalizeNodeEffects(opt.effects || opt.effect);
+          return { id, label, requires, effects };
+        })
+        .filter(Boolean);
+    }
+    // Derive from legacy choices[] so per-option requires/effects can attach later without breaking existing links.
+    if (!labels.length) return [];
+    const used = new Set();
+    return labels.map((label) => {
+      const id = generateChoiceOptionId(used);
+      used.add(id);
+      return { id, label: String(label).trim(), requires: "", effects: [] };
+    });
+  }
+
+  function generateChoiceOptionId(used) {
+    for (let i = 0; i < 999; i += 1) {
+      const id = `opt_${Math.random().toString(36).slice(2, 8)}`;
+      if (!used.has(id)) return id;
+    }
+    return `opt_${Date.now().toString(36)}`;
+  }
+
+  function normalizeNodeStateLogic(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    return {
+      requirements: normalizeOptionalString(source.requirements || source.requirement || source.gate).trim(),
+      effects: normalizeNodeEffects(source.effects || source.effect)
+    };
+  }
+
+  function normalizeNodeEffects(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((effect) => {
+        if (!effect || typeof effect !== "object" || Array.isArray(effect)) return null;
+        return {
+          trigger: normalizePlaybookActionTrigger(effect.trigger || "onVisit"),
+          op: normalizePlaybookActionOperation(effect.op || "set"),
+          key: normalizeOptionalString(effect.key || effect.variable || effect.name).trim(),
+          value: normalizeOptionalString(effect.value)
+        };
+      })
+      .filter((effect) => effect && (effect.key || effect.op === "clear"));
+  }
+
+  function normalizeNodeRouting(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const legacyTarget = typeof value === "string" ? value : "";
+    const mode = ["continue", "end", "goTo"].includes(source.mode) ? source.mode : (source.target || legacyTarget ? "goTo" : "continue");
+    return {
+      mode,
+      target: normalizeOptionalString(source.target || source.title || legacyTarget).trim()
+    };
+  }
+
+  function normalizeNodePorts(value, node) {
+    const frame = isFrameNode(node);
+    return {
+      input: normalizePort(value?.input, frame ? "left" : "top"),
+      output: normalizePort(value?.output, frame ? "right" : "bottom")
+    };
+  }
+
+  function normalizePort(value, defaultSide) {
+    const side = ["top", "right", "bottom", "left"].includes(value?.side) ? value.side : defaultSide;
+    const t = Number(value?.t);
+    return { side, t: Number.isFinite(t) ? clamp(t, 0, 1) : 0.5 };
   }
 
   function normalizeNodeCustomFields(customFields) {
@@ -10468,22 +13182,35 @@ function installNarrativeCanvasApp() {
 
   function openPreview() {
     const previewPath = getPreviewPath();
-    const entry = previewPath[0];
+    const entry = getPreviewStartNode(previewPath);
     if (!entry) {
       setStatus("No nodes to play.");
       return;
     }
     state.playPath = [entry.id];
     state.playNodeId = entry.id;
+    state.playTurnIndex = 0;
     renderPreviewNode(entry.id);
     dom.playDialog.showModal();
   }
 
-  function advancePreview(nodeId) {
+  function advancePreview(nodeId, opts = {}) {
     const currentIndex = state.playPath.indexOf(state.playNodeId);
     const targetIndex = state.playPath.indexOf(nodeId);
     const currentNode = getNode(state.playNodeId);
-    if (currentNode) applyPlaybookActionsForNode(currentNode, "onChoose");
+    if (currentNode) {
+      applyNodeEffectsForNode(currentNode, "onChoose");
+      applyPlaybookActionsForNode(currentNode, "onChoose");
+      // Per-option effects: when the user picked a specific choice option, run that option's effects
+      // (these are independent from the node-level onChoose effects above).
+      const optionId = opts && opts.optionId ? String(opts.optionId) : "";
+      if (optionId && Array.isArray(currentNode.choiceOptions)) {
+        const option = currentNode.choiceOptions.find((o) => o.id === optionId);
+        if (option && Array.isArray(option.effects)) {
+          option.effects.forEach((effect) => applyNodeEffect(effect, currentNode));
+        }
+      }
+    }
     if (currentIndex >= 0) {
       if (targetIndex !== currentIndex + 1) {
         state.playPath = state.playPath.slice(0, currentIndex + 1);
@@ -10493,7 +13220,16 @@ function installNarrativeCanvasApp() {
       state.playPath.push(nodeId);
     }
     state.playNodeId = nodeId;
+    state.playTurnIndex = 0;
     renderPreviewNode(nodeId);
+  }
+
+  function advanceDialogTurn(delta) {
+    const node = getNode(state.playNodeId);
+    const turns = getRuntimeDialogTurns(node);
+    if (!turns.length) return;
+    state.playTurnIndex = clamp((state.playTurnIndex || 0) + delta, 0, turns.length - 1);
+    renderPreviewNode(node.id, { skipVisit: true });
   }
 
   function previousPreview() {
@@ -10502,19 +13238,24 @@ function installNarrativeCanvasApp() {
     const previousId = state.playPath[index - 1];
     if (previousId) {
       state.playNodeId = previousId;
+      state.playTurnIndex = 0;
       renderPreviewNode(previousId);
     }
   }
 
-  function renderPreviewNode(nodeId) {
+  function renderPreviewNode(nodeId, options = {}) {
     const node = getNode(nodeId);
     if (!node) return;
     const runtimeScript = getNodeRuntimeScript(node);
-    const assignment = getRuntimeAssignment(node, runtimeScript);
-    if (assignment.key) {
-      state.project.variables[assignment.key] = coerceValue(assignment.value);
+    if (!options.skipVisit) {
+      const assignment = getRuntimeAssignment(node, runtimeScript);
+      if (assignment.key) {
+        state.project.variables[assignment.key] = coerceValue(assignment.value);
+      }
+      applyNodeEffectsForNode(node, "onVisit");
+      applyPlaybookActionsForNode(node, "onVisit");
+      applyVisitTrackingRule(node);
     }
-    applyPlaybookActionsForNode(node, "onVisit");
 
     const outgoing = getOutgoing(node.id);
     let nextLinks = outgoing;
@@ -10524,6 +13265,7 @@ function installNarrativeCanvasApp() {
       const conditionLinks = getChoiceOrderedLinks(outgoing);
       nextLinks = result ? conditionLinks.slice(0, 1) : conditionLinks.slice(1, 2);
     }
+    nextLinks = filterRuntimeLinksByRequirements(nextLinks, node);
 
     if (!state.playPath.includes(node.id)) state.playPath.push(node.id);
     const runtimeChoices = getRuntimeChoices(node, runtimeScript);
@@ -10533,12 +13275,18 @@ function installNarrativeCanvasApp() {
     const progress = getPreviewProgress(node, nextLinks, runtimeChoices);
     const { pageNumber, pageTotal, nextPathId } = progress;
     const previousButton = pageNumber > 1
-      ? `<button class="play-action" type="button" data-action="play-prev">Previous</button>`
+      ? `<button class="play-action" type="button" data-action="play-prev">${escapeHtml(t("Previous"))}</button>`
       : "";
     const runtimeTitle = renderRuntimeTemplate(runtimeScript.title, node, getNodeDisplayTitle(node, node.type));
-    const runtimeBody = renderRuntimeTemplate(runtimeScript.body, node, displayBody(node));
+    const dialogTurns = getRuntimeDialogTurns(node);
+    const dialogTurnIndex = dialogTurns.length ? clamp(state.playTurnIndex || 0, 0, dialogTurns.length - 1) : 0;
+    state.playTurnIndex = dialogTurnIndex;
+    const runtimeBody = dialogTurns.length
+      ? formatRuntimeDialogTurn(dialogTurns[dialogTurnIndex])
+      : renderRuntimeTemplate(runtimeScript.body, node, displayBody(node));
     dom.playTitle.textContent = runtimeTitle;
     const customFields = renderPreviewCustomFields(node);
+    const debugDetails = renderPreviewDebugDetails(node, conditionSource);
     dom.playBody.innerHTML = `
       <div class="play-meta">
         <span>${escapeHtml(getNodeTypeLabel(node.type))} ${escapeHtml(getNodeDisplayId(node))}</span>
@@ -10546,21 +13294,48 @@ function installNarrativeCanvasApp() {
       </div>
       <h3>${escapeHtml(runtimeTitle)}</h3>
       <p>${escapeHtml(interpolate(runtimeBody))}</p>
+      ${dialogTurns.length ? `<div class="play-meta"><span>${escapeHtml(t("Line"))} ${dialogTurnIndex + 1} / ${dialogTurns.length}</span></div>` : ""}
       ${customFields}
+      ${debugDetails}
     `;
 
+    if (dialogTurns.length && dialogTurnIndex < dialogTurns.length - 1) {
+      const linePrevButton = dialogTurnIndex > 0
+        ? `<button class="play-action" type="button" data-action="play-dialog-prev">${escapeHtml(t("Previous line"))}</button>`
+        : "";
+      dom.playActions.innerHTML = previousButton + linePrevButton + `<button class="play-action primary" type="button" data-action="play-dialog-next">${escapeHtml(t("Continue"))}</button>`;
+      return;
+    }
+
+    if (isPreviewEndConditionMet() || normalizeNodeRouting(node.routing).mode === "end") {
+      dom.playActions.innerHTML = previousButton + `<button class="play-action" type="button" data-action="restart-play">${escapeHtml(t("Restart"))}</button>`;
+      return;
+    }
+
     if (runtimeChoices.length && nextLinks.length) {
-      dom.playActions.innerHTML = previousButton + nextLinks.map((link, index) => {
-        const label = getChoiceBranchButtonLabel(link, runtimeChoices, index);
-        return `<button class="play-action" type="button" data-action="play-next" data-node-id="${link.to}">${escapeHtml(label)}</button>`;
+      const entries = getRuntimeChoiceEntries(node, runtimeScript);
+      const revealMode = getChoiceRevealMode(node);
+      const availability = new Map(entries.map((entry, index) => [entry.optionId || `index:${index}`, isChoiceOptionAvailable(entry, node)]));
+      const visibleLinks = nextLinks.filter((link) => {
+        if (revealMode !== "hide") return true;
+        if (!link.choiceOptionId) return true;  // legacy links with no option id stay visible
+        return availability.get(link.choiceOptionId) !== false;
+      });
+      dom.playActions.innerHTML = previousButton + visibleLinks.map((link, index) => {
+        const label = getChoiceBranchButtonLabel(link, runtimeChoices, index, entries);
+        const optionAttr = link.choiceOptionId ? ` data-choice-option-id="${escapeAttr(link.choiceOptionId)}"` : "";
+        const available = link.choiceOptionId ? availability.get(link.choiceOptionId) !== false : true;
+        const disabledAttr = revealMode === "disabled" && !available ? ` disabled aria-disabled="true" title="${escapeAttr(t("Requirements not met"))}"` : "";
+        return `<button class="play-action" type="button" data-action="play-next" data-node-id="${escapeAttr(link.to)}"${optionAttr}${disabledAttr}>${escapeHtml(label)}</button>`;
       }).join("");
       return;
     }
 
-    const nextId = nextLinks[0]?.to || nextPathId;
+    const routingNextId = getRoutingNextNodeId(node);
+    const nextId = routingNextId || nextLinks[0]?.to || nextPathId;
     dom.playActions.innerHTML = previousButton + (nextId
-      ? `<button class="play-action primary" type="button" data-action="play-next" data-node-id="${nextId}">Next page</button>`
-      : `<button class="play-action" type="button" data-action="restart-play">Restart</button>`);
+      ? `<button class="play-action primary" type="button" data-action="play-next" data-node-id="${escapeAttr(nextId)}">${escapeHtml(t("Next page"))}</button>`
+      : `<button class="play-action" type="button" data-action="restart-play">${escapeHtml(t("Restart"))}</button>`);
   }
 
   function getPreviewProgress(node, nextLinks, runtimeChoices) {
@@ -10597,6 +13372,7 @@ function installNarrativeCanvasApp() {
         const conditionLinks = getChoiceOrderedLinks(outgoing);
         nextLinks = result ? conditionLinks.slice(0, 1) : conditionLinks.slice(1, 2);
       }
+      nextLinks = filterRuntimeLinksByRequirements(nextLinks, node);
       nextId = nextLinks[0]?.to || "";
     }
     return count;
@@ -10604,6 +13380,65 @@ function installNarrativeCanvasApp() {
 
   function getPreviewPath() {
     return getReachableStory().filter((node) => !isFrameNode(node));
+  }
+
+  function getPreviewStartNode(previewPath = getPreviewPath()) {
+    const startTitle = getRunnerRuleValue("startNode");
+    if (startTitle) {
+      const found = findNodeByTitleOrId(startTitle, { includeFrames: false });
+      if (found) return found;
+    }
+    return previewPath[0];
+  }
+
+  function getRoutingNextNodeId(node) {
+    const routing = normalizeNodeRouting(node?.routing);
+    if (routing.mode !== "goTo" || !routing.target) return "";
+    return findNodeByTitleOrId(routing.target, { includeFrames: false })?.id || "";
+  }
+
+  function findNodeByTitleOrId(value, options = {}) {
+    const target = normalizeOptionalString(value).trim();
+    if (!target) return null;
+    const includeFrames = Boolean(options.includeFrames);
+    return state.project.nodes.find((node) => (includeFrames || !isFrameNode(node)) && node.id === target)
+      || state.project.nodes.find((node) => (includeFrames || !isFrameNode(node)) && normalizeOptionalString(node.title).trim() === target)
+      || null;
+  }
+
+  function applyVisitTrackingRule(node) {
+    const rule = getRunnerRules().visitTracking;
+    if (!rule?.enabled || !rule.value || !node) return;
+    const key = `visited.${slugPlaybookCategory(node.title || node.id || "node")}`;
+    state.project.variables[key] = true;
+  }
+
+  function isPreviewEndConditionMet() {
+    const rule = getRunnerRules().endCondition;
+    return Boolean(rule?.enabled && rule.value && evaluateCondition(rule.value));
+  }
+
+  function getRunnerRuleValue(key) {
+    const rule = getRunnerRules()[key];
+    return rule?.enabled ? rule.value : "";
+  }
+
+  function renderPreviewDebugDetails(node, conditionSource) {
+    const rule = getRunnerRules().debugMode;
+    if (!rule?.enabled || !rule.value) return "";
+    const variables = Object.entries(normalizeVariablesObject(state.project.variables))
+      .slice(0, 8)
+      .map(([key, value]) => `${key}: ${JSON.stringify(value)}`)
+      .join("\n");
+    const gate = conditionSource ? `${conditionSource} => ${evaluateCondition(conditionSource)}` : "No gate";
+    const routing = normalizeNodeRouting(node.routing);
+    const routingText = routing.mode === "goTo" ? `Go to ${routing.target}` : routing.mode;
+    return `
+      <details class="play-debug" open>
+        <summary>${escapeHtml(t("Debug"))}</summary>
+        <pre>${escapeHtml(`Gate: ${gate}\nRouting: ${routingText}\nVariables:\n${variables}`)}</pre>
+      </details>
+    `;
   }
 
   function renderPreviewCustomFields(node) {
@@ -10648,6 +13483,8 @@ function installNarrativeCanvasApp() {
   }
 
   function getRuntimeConditionSource(node, script) {
+    const requirements = normalizeNodeStateLogic(node?.stateLogic).requirements;
+    if (requirements) return requirements;
     const gateAction = getPlaybookGateAction(node);
     if (gateAction) return `${getPlaybookActionStateKey(gateAction)} ${renderRuntimeTemplate(gateAction.value, node, gateAction.value)}`.trim();
     if (script?.condition) {
@@ -10655,6 +13492,25 @@ function installNarrativeCanvasApp() {
       return fieldValue !== "" ? fieldValue : script.condition;
     }
     return hasNodeCondition(node) ? (node.condition || node.body) : "";
+  }
+
+  function applyNodeEffectsForNode(node, trigger) {
+    normalizeNodeStateLogic(node?.stateLogic).effects
+      .filter((effect) => effect.trigger === trigger)
+      .forEach((effect) => applyNodeEffect(effect, node));
+  }
+
+  function applyNodeEffect(effect, node) {
+    return applyPlaybookAction({
+      id: "",
+      trigger: effect.trigger || "onVisit",
+      target: "",
+      op: effect.op || "set",
+      category: "Variable",
+      key: effect.key || "",
+      value: effect.value || "",
+      append: false
+    }, node);
   }
 
   function getRuntimeChoices(node, script) {
@@ -10665,6 +13521,74 @@ function installNarrativeCanvasApp() {
       return parseChoiceLines(resolveScriptReference(node, script.choices));
     }
     return hasNodeChoices(node) ? node.choices : [];
+  }
+
+  function getRuntimeDialogTurns(node) {
+    if (!node || node.type !== "Dialog" || !Array.isArray(node.turns)) return [];
+    return node.turns
+      .map((turn) => ({
+        speaker: renderRuntimeTemplate(turn.speaker, node, turn.speaker).trim(),
+        line: renderRuntimeTemplate(turn.line, node, turn.line).trim()
+      }))
+      .filter((turn) => turn.speaker || turn.line);
+  }
+
+  function formatRuntimeDialogTurn(turn) {
+    if (!turn) return "";
+    return turn.speaker ? `${turn.speaker}: ${turn.line}` : turn.line;
+  }
+
+  // Full option records (label + optionId + requires + effects). Returns the same number of items as getRuntimeChoices.
+  // Used by Play to gate options on `requires` and apply per-option `effects` when selected.
+  function getRuntimeChoiceEntries(node, script) {
+    const labels = getRuntimeChoices(node, script);
+    const options = Array.isArray(node?.choiceOptions) ? node.choiceOptions : [];
+    return labels.map((label, index) => {
+      const option = options[index];
+      const renderedLabel = renderRuntimeTemplate(label, node, label);
+      if (!option) return { label: renderedLabel, optionId: "", requires: "", effects: [] };
+      return {
+        label: renderedLabel || option.label,
+        optionId: option.id || "",
+        requires: option.requires || "",
+        effects: Array.isArray(option.effects) ? option.effects : []
+      };
+    });
+  }
+
+  // True iff the option's `requires` expression evaluates true. Empty `requires` means always available.
+  function isChoiceOptionAvailable(entry, node) {
+    if (!entry?.requires) return true;
+    const expr = renderRuntimeTemplate(entry.requires, node, entry.requires);
+    return evaluateCondition(expr);
+  }
+
+  function getChoiceRevealMode(node) {
+    if (node?.choiceRevealMode) return normalizeChoiceRevealMode(node.choiceRevealMode);
+    const globalMode = getRunnerRuleValue("choiceDisplay");
+    if (globalMode === "disableUnavailable") return "disabled";
+    if (globalMode === "showAll") return "show";
+    return "hide";
+  }
+
+  function filterRuntimeLinksByRequirements(links, node) {
+    return (links || []).filter((link) => isLinkRequirementMet(link, node));
+  }
+
+  function isLinkRequirementMet(link, node) {
+    const source = normalizeOptionalString(link?.requirements || link?.requires).trim();
+    if (!source) return true;
+    return evaluateRequirementExpression(renderRuntimeTemplate(source, node, source));
+  }
+
+  function evaluateRequirementExpression(source) {
+    const text = String(source || "").trim();
+    if (!text) return true;
+    const notWrapped = text.match(/^!\((.*)\)$/);
+    if (notWrapped) return !evaluateCondition(notWrapped[1]);
+    const notPrefix = text.match(/^not\s+(.+)$/i);
+    if (notPrefix) return !evaluateCondition(notPrefix[1]);
+    return evaluateCondition(text);
   }
 
   function renderRuntimeTemplate(template, node, fallback) {
@@ -10983,7 +13907,12 @@ function installNarrativeCanvasApp() {
       .map((entry) => entry.link);
   }
 
-  function getChoiceBranchButtonLabel(link, runtimeChoices, fallbackIndex) {
+  function getChoiceBranchButtonLabel(link, runtimeChoices, fallbackIndex, entries) {
+    // Prefer stable choiceOptionId binding (survives reordering); fall back to legacy choiceIndex.
+    if (link.choiceOptionId && Array.isArray(entries)) {
+      const entry = entries.find((e) => e.optionId === link.choiceOptionId);
+      if (entry?.label) return entry.label;
+    }
     const choiceIndex = normalizeChoiceIndex(link.choiceIndex);
     if (choiceIndex != null && runtimeChoices[choiceIndex]) return runtimeChoices[choiceIndex];
     return link.label || runtimeChoices[fallbackIndex] || getNode(link.to)?.title || "Continue";
@@ -11064,7 +13993,8 @@ function installNarrativeCanvasApp() {
       name,
       role: String(character.role || ""),
       voice: String(character.voice || ""),
-      notes: String(character.notes || "")
+      notes: String(character.notes || ""),
+      hidden: Boolean(character.hidden)
     };
   }
 
@@ -11400,18 +14330,20 @@ function installNarrativeCanvasApp() {
 
   function getStoryStructure() {
     const entries = new Map(state.project.nodes.map((node) => [node.id, { node, children: [] }]));
-    const frames = state.project.nodes.filter((node) => isFrameNode(node));
-    const frameChildren = new Map(frames.map((frame) => [frame.id, []]));
-    const parentFrameByNodeId = new Map();
+    const frameIds = new Set(state.project.nodes.filter((node) => isFrameNode(node)).map((node) => node.id));
+    const frameChildren = new Map([...frameIds].map((frameId) => [frameId, []]));
+    const parentFrameByNodeId = new Map(state.project.nodes.map((node) => {
+      const parentId = normalizeOptionalString(node.frameId).trim();
+      return [node.id, parentId && frameIds.has(parentId) && parentId !== node.id ? parentId : ""];
+    }));
     const reachable = new Set(getReachableStory().map((node) => node.id));
     const includeMemo = new Map();
     const roots = [];
 
     state.project.nodes.forEach((node) => {
-      const parent = getSmallestContainingFrame(node, frames);
-      parentFrameByNodeId.set(node.id, parent);
-      if (parent && entries.has(parent.id)) {
-        frameChildren.get(parent.id)?.push(node.id);
+      const parentId = parentFrameByNodeId.get(node.id);
+      if (parentId && entries.has(parentId)) {
+        frameChildren.get(parentId)?.push(node.id);
       }
     });
 
@@ -11428,7 +14360,8 @@ function installNarrativeCanvasApp() {
     state.project.nodes.forEach((node) => {
       if (!shouldInclude(node)) return;
       const entry = entries.get(node.id);
-      const parent = parentFrameByNodeId.get(node.id);
+      const parentId = parentFrameByNodeId.get(node.id);
+      const parent = parentId ? getNode(parentId) : null;
       if (parent && entries.has(parent.id) && shouldInclude(parent)) {
         entries.get(parent.id).children.push(entry);
       } else {
@@ -11527,7 +14460,7 @@ function installNarrativeCanvasApp() {
     let smallestArea = Number.POSITIVE_INFINITY;
     frames.forEach((frame) => {
       if (frame.id === node.id) return;
-      const frameBounds = getNodeBounds(frame);
+      const frameBounds = getExpandedFrameBounds(frame);
       if (!boundsContainPoint(frameBounds, nodeCenter)) return;
       const area = boundsArea(frameBounds);
       if (isFrameNode(node) && area <= nodeArea) return;
@@ -11537,6 +14470,18 @@ function installNarrativeCanvasApp() {
       }
     });
     return smallest;
+  }
+
+  function getExpandedFrameBounds(frame) {
+    if (!isFrameNode(frame)) return getNodeBounds(frame);
+    const width = getManualNodeWidth(frame) || defaultNodeWidth(frame);
+    const height = getManualNodeHeight(frame) || defaultNodeHeight(frame, width);
+    return {
+      left: frame.x,
+      top: frame.y,
+      right: frame.x + width,
+      bottom: frame.y + height
+    };
   }
 
   function getNodeBounds(node) {
@@ -11571,6 +14516,11 @@ function installNarrativeCanvasApp() {
     const cached = nodeLayoutSizeCache.get(node);
     if (cached && cached.signature === signature) return cached.size;
     const width = manualWidth || defaultNodeWidth(node);
+    if (isFrameCollapsed(node)) {
+      const size = { width, height: 46 };
+      nodeLayoutSizeCache.set(node, { signature, size });
+      return size;
+    }
     const baseHeight = manualHeight || defaultNodeHeight(node, width);
     const inlineEditField = getActiveInlineEditField(node);
     const height = inlineEditField ? Math.max(baseHeight, minInlineNodeEditHeight(inlineEditField)) : baseHeight;
@@ -11642,11 +14592,13 @@ function installNarrativeCanvasApp() {
   }
 
   function moveStoryNodeForParentChange(node, parent, ordered, placement) {
+    node.frameId = parent?.id || "";
     const position = parent
       ? getStoryPositionInsideFrame(node, parent, ordered, placement)
       : getStoryPositionAtRoot(node, placement);
     moveNodeWithStoryChildren(node, position.x, position.y);
     if (parent) ensureFrameContainsNodes(parent, [node]);
+    sanitizeFrameMembership(state.project);
   }
 
   function getStoryPositionInsideFrame(node, parent, ordered, placement) {
@@ -11985,10 +14937,9 @@ function installNarrativeCanvasApp() {
 
   function getEventContainedNodes(eventNode) {
     if (!isEventSheetNode(eventNode)) return [];
-    const bounds = getEventBounds(eventNode);
     return state.project.nodes
       .filter((node) => node.id !== eventNode.id && !isFrameNode(node))
-      .filter((node) => isNodeInsideBounds(node, bounds))
+      .filter((node) => isFrameDescendantOf(node, eventNode.id))
       .sort((a, b) => a.y - b.y || a.x - b.x);
   }
 
@@ -12303,10 +15254,11 @@ function installNarrativeCanvasApp() {
     const point = screenToBoard(clientX, clientY);
     const threshold = 18 / Math.max(0.01, state.view.scale);
     let best = null;
+    const nodeMap = getNodeIndex();
     state.project.links.forEach((link) => {
-      const from = getNode(link.from);
-      const to = getNode(link.to);
-      if (!from || !to) return;
+      const endpoints = getRenderedLinkEndpoints(link, nodeMap);
+      if (!endpoints) return;
+      const { from, to } = endpoints;
       const distance = distancePointToLink(point, getOutputPoint(from), getInputPoint(to));
       if (!best || distance < best.distance) best = { link, distance };
     });
@@ -12369,13 +15321,29 @@ function installNarrativeCanvasApp() {
   }
 
   function getInputPoint(node) {
-    const size = nodeLayoutSize(node);
-    return { x: node.x - LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
+    return getNodePortPoint(node, "input");
   }
 
   function getOutputPoint(node) {
+    return getNodePortPoint(node, "output");
+  }
+
+  function getNodePortPoint(node, kind) {
     const size = nodeLayoutSize(node);
-    return { x: node.x + size.width + LINK_PORT_ANCHOR_OFFSET, y: node.y + size.height / 2 };
+    const frame = isFrameNode(node);
+    const defaults = {
+      input: frame ? "left" : "top",
+      output: frame ? "right" : "bottom"
+    };
+    const port = normalizePort(node?.ports?.[kind], defaults[kind] || "top");
+    const left = node.x;
+    const top = node.y;
+    const right = node.x + size.width;
+    const bottom = node.y + size.height;
+    if (port.side === "top") return { x: left + size.width * port.t, y: top - LINK_PORT_ANCHOR_OFFSET };
+    if (port.side === "right") return { x: right + LINK_PORT_ANCHOR_OFFSET, y: top + size.height * port.t };
+    if (port.side === "bottom") return { x: left + size.width * port.t, y: bottom + LINK_PORT_ANCHOR_OFFSET };
+    return { x: left - LINK_PORT_ANCHOR_OFFSET, y: top + size.height * port.t };
   }
 
   function nodeHeight(node) {
@@ -12421,6 +15389,7 @@ function installNarrativeCanvasApp() {
       state.structureVersion,
       manualWidth || "",
       manualHeight || "",
+      isFrameCollapsed(node) ? "collapsed" : "",
       getActiveInlineEditField(node) || "",
       node?.type || "",
       getNodeTypeLabel(node?.type),
@@ -12509,7 +15478,7 @@ function installNarrativeCanvasApp() {
   // DOM-measuring size, for the few callers that want the actual rendered box
   // (resize start, auto-layout, center view). Not used on the per-render cull path.
   function nodeSize(node) {
-    const element = dom.nodeLayer?.querySelector(`.node[data-node-id="${node.id}"]`);
+    const element = getNodeElementById(node.id);
     if (element && element.offsetWidth > 0 && element.offsetHeight > 0) {
       return { width: element.offsetWidth, height: element.offsetHeight };
     }
@@ -12628,15 +15597,19 @@ function installNarrativeCanvasApp() {
   }
 
   function isFrameKind(kind) {
-    return kind === "frame" || kind === "eventFrame";
+    return kind === "frame";
   }
 
   function isEventSheetNode(node) {
-    return isEventFrameKind(getNodeMeta(node?.type).kind);
+    return isEventSheetTypeDef(getNodeMeta(node?.type));
   }
 
   function isEventFrameKind(kind) {
-    return kind === "eventFrame";
+    return isFrameKind(normalizeNodeTypeKind(kind));
+  }
+
+  function isEventSheetTypeDef(typeDef) {
+    return Boolean(typeDef && isFrameKind(typeDef.kind) && !typeDef.eventSheetHidden);
   }
 
   function getNodeDisplayId(node) {
@@ -12649,8 +15622,8 @@ function installNarrativeCanvasApp() {
     if (derivedStructureUnchanged(cached)) return cached.map;
     const flowOrderMap = getNodeFlowOrderMap();
     const indexedNodes = state.project.nodes.map((node, index) => ({ node, index }));
-    const counters = { node: 0, frame: 0, eventFrame: 0 };
-    const prefixes = { node: "n", frame: "f", eventFrame: "e" };
+    const counters = { node: 0, frame: 0 };
+    const prefixes = { node: "n", frame: "f" };
     const displayMap = new Map();
 
     indexedNodes
@@ -12666,7 +15639,6 @@ function installNarrativeCanvasApp() {
   }
 
   function getNodeDisplayCategory(node) {
-    if (isEventSheetNode(node)) return "eventFrame";
     if (isFrameNode(node)) return "frame";
     return "node";
   }
@@ -12755,15 +15727,15 @@ function installNarrativeCanvasApp() {
     if (!dom.statusText) return;
     if (!state.statusOverride) {
       if (state.activeFileId === "characters") {
-        dom.statusText.textContent = `${fileViews.characters} - ${t("{characters} characters, {links} character links", { characters: getCharacters().length, links: getTotalCharacterLinkCount() })}`;
+        dom.statusText.textContent = `${getFileViewLabel("characters")} - ${t("{characters} characters, {links} character links", { characters: getCharacters().length, links: getTotalCharacterLinkCount() })}`;
         return;
       }
       if (state.activeFileId === "variables") {
-        dom.statusText.textContent = `${fileViews.variables} - ${t("{count} variables", { count: Object.keys(state.project.variables || {}).length })}`;
+        dom.statusText.textContent = `${getFileViewLabel("variables")} - ${t("{count} variables", { count: Object.keys(state.project.variables || {}).length })}`;
         return;
       }
       if (state.activeFileId === "events") {
-        dom.statusText.textContent = `${fileViews.events} - ${t("{count} event rows", { count: getEventRows().length })}`;
+        dom.statusText.textContent = `${getFileViewLabel("events")} - ${t("{count} event rows", { count: getEventRows().length })}`;
         return;
       }
       const nodeCount = state.project.nodes.length;

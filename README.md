@@ -2,18 +2,23 @@
 
 Changelog and release notes: [GitHub Releases](https://github.com/ringeringeraja33/NarrativeCanvas/releases)
 
+中文版：[README-zh.md](README-zh.md)
+
+![Narrative Canvas main canvas](assets/videos/runtime.mov)
 ## English
 
-Narrative Canvas is a node-based workspace for writing and designing complex stories. It can organize story beats, character dialog, choice branches, conditions, variables, jumps, characters, and notes into a connected, previewable interactive flow. It is suitable for games, interactive fiction, branching scripts, questlines, and other nonlinear narrative structures.
+Narrative Canvas is a node-based workspace for writing and designing complex stories. It can organize story beats, character dialog, choice branches, conditions, variables, routing, characters, and notes into a connected, previewable interactive flow. It is suitable for games, interactive fiction, branching scripts, questlines, and other nonlinear narrative structures.
 
 It is best used for organizing ideas, checking branching logic, preparing pitches, and demonstrating how a story or questline works. It is not meant to replace prose drafting tools. Write the actual manuscript, script, or dialogue polish in your usual editor; use Narrative Canvas to keep the structure understandable.
+
+The interface is available in English and 中文. The web app shows a floating `EN / 中` toggle in the lower-right corner; the Obsidian plugin exposes a `Language` setting that can follow the Obsidian interface language automatically.
 
 ![Narrative Canvas main canvas](assets/screenshots/main-canvas.png)
 
 ### Safety Notes
 
 - `Playbook.json` is declarative. It can format Play output, define choice buttons, read simple conditions, and write variables. It does not run arbitrary JavaScript.
-- Hide keeps Events Sheet data. Delete removes a column from the schema and clears matching values from Event Frame nodes.
+- Hide keeps Events Sheet data. Delete removes a column from the schema and clears matching values from frame nodes shown in Events Sheet.
 - Deleted nodes are archived outside the runtime path so accidental deletion is less destructive, but you should still save versions of important work.
 - Browser Save writes to browser local storage. Obsidian Save writes the current `.ncanvas` project file in your vault.
 - `Save`: saves the current project. In the web app, it writes to browser `localStorage`. In Obsidian, it writes the current `.ncanvas` project file in your vault.
@@ -30,6 +35,8 @@ Open `index.html` directly or use:
 
 When the project file card says `Browser storage`, the web app is reading and writing `localStorage`, not the browser HTTP cache. Clearing cached files may leave the saved project intact. Use `Clear storage` in the Project File controls to delete the browser-saved project and load a blank one.
 
+The lower-right floating `EN / 中` button switches the interface language. The web app remembers the last choice in `localStorage`; the first load picks a language from the document and browser locale.
+
 ### Obsidian Plugin
 
 For manual installation, copy the latest released plugin files into:
@@ -40,46 +47,79 @@ For manual installation, copy the latest released plugin files into:
 
 Then reload Obsidian and enable `Narrative Canvas` in Community plugins.
 
+Plugin settings: 
+- `Language` chooses between `Follow Obsidian`, `中文`, and `English`. 
+- `Sample project` opens the bundled sample. 
+- `Project save folder` and `New project file name` control where new `.ncanvas` files are written. 
+- `Auto-save interval` (in seconds) controls how often Narrative Canvas writes to the active project file; leave it empty to inherit Obsidian's autosave cadence. 
+- `Current project` shows and clears the path that the ribbon button will open next.
+
 ### Main Workflow
 
 1. Open `Narrative.canvas`.
 2. Add nodes from the Node Library.
 3. Connect an output port to an input port.
-4. Use frames to group related nodes. Use Event Frames when the group should appear in Events Sheet.
+4. Use frames to group related nodes. Frames appear in Events Sheet by default; a frame type can be hidden from the sheet when it is only a canvas grouping aid.
 5. Select a node and edit it in the Inspector.
 6. Use Story to inspect the reachable flow from Entry.
 7. Click Play to run the current narrative route.
-8. Save or export when the structure is ready to share.
+8. Save or export when the structure is ready to share. The PNG resolution selector in the toolbar is sized by output pixels (`4096 x 4096`, `6144 x 6144`, `8192 x 8192`, `12000 x 12000`); the exported file name records the actual rendered pixel size, and large canvases are scaled down automatically to stay inside browser raster limits.
 
-### Node Types
+### Default Node Types
 
 - **Entry** starts the playable path.
 - **Content** holds narration or scene text.
-- **Dialog** is a character line. A Dialog title matching a character name is treated as Speaker.
-- **Choice** shows one Play button per choice line.
-- **Condition** reads a variable condition such as `trust == high`.
-- **Set** writes a variable value.
-- **Jump** marks a route transition or named destination. It does not teleport on its own; connect it to the next node you want the graph to visit.
+- **Dialog** can hold one line or multiple turns. Each turn has a free-text speaker and line; speakers can match Characters and auto-fill Speaker cast chips.
+- **Choice** shows one Play button per option. Each option can have Requirements and on-choose Effects, with stable option IDs so links survive option reordering.
+- **Condition** is a legacy flow node for old projects. New gates should usually use node Requirements or Choice option Requirements. Condition nodes emit two ordered outgoing links labelled `true` and `false`; the runtime walks the first link when the condition passes and the second when it fails, and the right-click branch menu names the slots explicitly. Compound expressions such as `trust_level >= 2 && lantern_lit == true` are supported (operators: `==`, `!=`, `>=`, `<=`, `>`, `<`, joined by `&&` or `||`).
+- **Set** is a legacy flow node for old projects. New state changes should usually use node Effects or Choice option Effects.
 - **Marker** is a planning note.
-- **Frame** groups nodes visually.
-- **Event Frame** groups story beats and becomes a row in Events Sheet.
+- **Frame** groups nodes and can become a row in Events Sheet. Frame presets such as Location Frame or Conversation Frame are ordinary frames with custom fields and an Events Sheet visibility setting.
 
-All default node types are editable templates. You can rename, hide, delete, restore, recolor, and change their fields.
+Default node types are editable templates. Entry is a system type and cannot be deleted; other types can be renamed, hidden, deleted, restored, recolored, and given fields. Set and Condition are hidden as legacy types by default.
+
+Non-frame nodes also have **State Logic** in the Inspector. Requirements gate whether the node can pass in Play, Effects can set, add, append, toggle, or clear variables when the node is visited or chosen, and Routing can continue by link, end the route, or go to a node title. Existing projects that contain Jump nodes still load, but Jump is no longer a default node type.
 
 ### Canvas Operations
 
 - Drag nodes by their header.
+- Drag a frame by its header to move the nodes currently inside it.
+- Use Shift/Cmd/Ctrl click or rectangle select to select multiple nodes and frames, then drag any selected header to move the group.
 - Click an output port, then an input port, to connect nodes.
 - Double-click blank canvas to cancel a pending connection.
 - Right-click a link to reconnect or delete it.
+- Collapse a frame from Canvas or Story. The same collapsed state is shared by both views. When a frame is collapsed on Canvas, links to nodes inside it are drawn through the frame ports without changing the saved links.
+- Frames and event frames default to a layer below regular nodes, and a new frame is placed above existing default-order frames so it doesn't bury older grouping frames. The layer can still be adjusted from the node context menu.
+
+#### Connection Ports
+
+Every node carries two ports painted in the node's own color:
+
+- **Input port** accepts the *end* of a link. The arrowhead points into it.
+- **Output port** emits the *start* of a link.
+
+Default placement differs by node kind:
+
+- Regular nodes (Content / Dialog / Choice / Marker / etc.) — input on the **top** edge, output on the **bottom** edge.
+- Frame nodes (visual or Events Sheet) — input on the **left** edge, output on the **right** edge.
+
+Links always flow output → input. The two ports cannot be swapped; clicking an input first and then an output is rejected. The active output port pulses while a connection is pending so you can see which node you started from. Connection rules:
+
+- Click an output port, then an input port on a different node, to create a link.
+- Double-click blank canvas, press `Esc`, or click the pulsing output again to cancel a pending connection.
+- Right-click a link to reconnect either end, swap to a different choice branch, or delete the link.
+
+**Sliding along the edge:** drag a port to relocate it. It can slide along its current edge or jump to a different edge of the same node, so you can move the input from `top` to `left` if a particular layout reads better that way. The link recalculates its path live. This helps when a node has multiple incoming or outgoing lines that would otherwise overlap. The port position is persisted with the node so complex routes stay readable across sessions.
 
 ### Story
 
 Story shows the reachable structure from the Entry node. Non-frame nodes appear when they are reachable from Entry. Frame nodes appear when the frame is reachable itself, or when it contains an included child node.
 
-Story containment comes from canvas geometry. A node belongs to a frame when the node center point is inside that frame. The whole node box does not need to be inside the frame. If more than one frame contains the center point, Story folds the node into the smallest containing frame. A frame node can fold into another frame only when the containing frame is larger, which prevents nested-frame cycles.
+Story containment is stored as explicit `frameId` membership on each node. Older projects are inferred once from canvas geometry by assigning each unparented node to the smallest frame that contains its center point; after that, moving nodes, Story rows, or frames updates the explicit membership instead of recalculating containment from overlap alone.
 
-Story display is read from the current canvas graph and geometry. Story operations write back to the canvas. Dragging a Story row into a frame moves that node into the frame area; when the dragged row is a frame, its Story descendants move with it. The target frame can expand to contain the moved content. Dragging a row to the root level moves it outside frames and avoids placing it inside another frame.
+Story display is read from the current canvas graph and frame membership. Story operations write back to the canvas. Dragging a Story row into a frame moves that node into the frame area and assigns its `frameId`; when the dragged row is a frame, its Story descendants move with it. The target frame can expand to contain the moved content. Dragging a row to the root level clears `frameId` and moves the node outside frames.
+
+Frame collapse is shared between Story and Canvas. Collapsing a frame hides its children in both places; expanding it restores the child rows and the original node-to-node link display.
 
 Manual Story row ordering is stored as `storyOrder`. `Re-sort by graph` clears those manual order values and returns Story ordering to the current graph order.
 
@@ -89,9 +129,9 @@ Story `Focus` selects the node, opens the Node inspector, centers it on canvas, 
 
 ![Events Sheet](assets/screenshots/events-sheet.png)
 
-Only Event Frame nodes appear in Events Sheet. Different Event Frame types are grouped into separate tables.
+Frame nodes appear in Events Sheet by default. Different frame types are grouped into separate tables. In the node type editor, enable `Hide frame rows from Events Sheet` for frame types that should stay purely organizational on the canvas.
 
-You can rename, hide, or delete columns. Hidden columns appear in the rightmost `Hidden` column of each table so they can be restored. Deleted schema fields are removed from Event Frame type definitions and matching values are cleared from existing Event Frame nodes.
+You can rename, hide, or delete columns. Hidden columns appear in the rightmost `Hidden` column of each table so they can be restored. Deleted schema fields are removed from frame type definitions and matching values are cleared from existing frame nodes.
 
 `Re-sort by graph` clears manual row ordering and sorts event rows by the current canvas graph.
 
@@ -108,20 +148,35 @@ Characters can be linked to nodes with Cast chips:
 - `Target`
 - `Owner`
 
-You can also type `@Character Name` inside node text to create a natural reference. Character pages list backlinks by story order, including speaker scenes, present scenes, mentions, owned nodes, and event frames.
+You can also type `@Character Name` inside node text to create a natural reference. Character pages list backlinks by story order, including speaker scenes, present scenes, mentions, owned nodes, and frames.
 
 Use Character focus to highlight related nodes.
 
-
 ### Playbook
 
-![Playbook editor](assets/screenshots/playbook.png)
+![Playbook editor1](assets/screenshots/playbook1.png)
+![Playbook editor2](assets/screenshots/playbook2.png)
 
 Think of `Playbook.json` this way:
 
 **Node Library decides which fields a node type has. Node Inspector fills those fields. Playbook decides how Play reads those fields.**
 
 It is not a prose editor or a JavaScript runner. It is a rule table for Play preview.
+
+The Playbook page has three tabs:
+
+- **Variables** lists every project variable and its current type and value. New variables are focused automatically.
+- **Script Builder** is a batch editor for each non-frame node's Requirements, Effects, and Routing; it edits the same logic shown in the node Inspector State Logic section.
+- **Play rules** is limited to demo runner settings: Start Node, Choice Display, End Condition, Visit Tracking, and Debug Mode.
+
+Use `Advanced JSON` to open the underlying `Playbook.json` editor for exact edits. The JSON structure is `{ "variables": { ... }, "nodeTypes": { ... }, "actions": [ ... ] }`. The `actions` array records declarative state changes the runtime applies during Play:
+
+- `trigger` is one of `onVisit`, `onChoose`, `gate`, or `manual`.
+- `op` is one of `set`, `add`, `subtract`, `append`, `remove`, `toggle`, `clear`, `if`, `goTo`, `show`, `hide`, `lockChoice`, `unlockChoice`.
+- `category` is one of `Quest`, `Quest Entry`, `Variable`, `Actor`, `Item`, `Location`, `Sim Status`, `Alert`, `Misc`, `Custom`, `Manual Enter`. Non-variable categories are stored under `category.key` (for example `actor.Mara.trust`).
+- `target` matches a node by id, type, type label, or title. Blank means any node.
+- `key` is the state slot; `value` is the literal or `{token}` template.
+- `gate` + `op: "if"` lets the Playbook drive a Condition node's branch from outside the node itself.
 
 #### An example
 
@@ -132,219 +187,43 @@ Playbook:
 ```json
 {
   "variables": {
-    "trust": "unknown",
-    "watch": "Reyes's pocketwatch"
+    "trust_level": 1,
+    "watch": "Reyes's pocketwatch",
+    "lantern_lit": false
   },
-  "nodeTypes": {
-    "Choice": {
-      "title": "{title}",
-      "body": "{body}",
-      "choices": "choices"
-    },
-    "Set": {
-      "body": "{variable} = {value}",
-      "set": {
-        "key": "variable",
-        "value": "value"
-      }
-    },
-    "Condition": {
-      "body": "{condition}",
-      "condition": "condition"
-    }
-  }
+  "playRules": {
+    "startNode": { "enabled": true, "value": "Start" },
+    "choiceDisplay": { "enabled": true, "value": "hideUnavailable" },
+    "debugMode": { "enabled": false, "value": false }
+  },
+  "actions": [
+    { "id": "a0", "trigger": "gate", "target": "Enough trust and lantern?", "op": "if", "category": "Variable", "key": "trust_level", "value": ">= 2 && lantern_lit == true" },
+    { "id": "a1", "trigger": "onVisit", "target": "Offer the watch", "op": "set", "category": "Variable", "key": "watch_owner", "value": "Reyes" },
+    { "id": "a2", "trigger": "onChoose", "target": "The Conductor", "op": "add", "category": "Actor", "key": "Mara.trust", "value": "1" }
+  ]
 }
 ```
 
 Fill the nodes this way:
 
-Choice node `choices`:
-
-```text
-Hand over {watch}
-Keep {watch} hidden
-```
-
-Set node:
-
-```text
-variable: trust
-value: high
-```
-
-Condition node:
-
-```text
-condition: trust == high
-```
-
-Result: Play shows buttons with variable replacement, Set changes the variable, and Condition follows different links based on that variable.
-
-## 中文
-
-Narrative Canvas 是一个用于复杂叙事写作与设计的节点式工作区。它可以把剧情段落、角色对白、选择分支、条件判断、变量变化、跳转、角色和笔记整理成可连接、可预览的互动流程。它适用于游戏、互动小说、分支剧本、任务链和其他非线性叙事结构。
-
-更推荐把它用于整理思路、检查分支、准备展示和说明复杂叙事结构。正文、对白润色、剧本定稿仍建议放在你常用的写作工具里完成。
-
-### 安全提醒
-
-- `Playbook.json` 是声明式配置。它可以控制 Play 的标题、正文、选项按钮、简单条件和变量写入；它不会执行任意 JavaScript。
-- Hide 只隐藏 Events Sheet 的列，保留数据。Delete 会从 schema 移除列，并清掉 Event Frame 节点里对应字段的值。
-- 删除节点后，相关内容会被放到运行路径之外的归档数据里，误删风险会低一些。重要项目仍建议保留版本。
-- 网页端 Save 存到浏览器本地缓存。Obsidian 端 Save 写入当前 vault 里的 `.ncanvas` 项目文件。
-- `Save`：保存当前项目。网页端写入浏览器 `localStorage`；Obsidian 端写入当前 vault 里的 `.ncanvas` 项目文件。
-- `New`：新建空项目。网页端使用浏览器保存；Obsidian 端会按插件设置里的文件名模板创建新的 `.ncanvas` 文件。
-- `Open`：网页端从本地磁盘选择并导入项目文件；Obsidian 端从 vault 里选择项目文件打开。
-- `Reload`：放弃未保存修改，重新加载当前保存来源。网页端读取浏览器保存内容；Obsidian 端重新读取当前 `.ncanvas` 文件。
-- `Clear storage`：仅网页端可用。删除浏览器保存的项目，并加载一个空项目。
-
-### 网页
-
-可以直接打开 `index.html`，也可以访问：
-
-<https://ringeringeraja33.github.io/NarrativeCanvas/>
-
-Project File 显示 `Browser storage` 时，网页端读写的是 `localStorage`，不是浏览器的普通缓存。清 cache 不一定会清掉上次保存的项目。需要清空网页端保存内容时，用 Project File 里的 `Clear storage`。
-
-### Obsidian 插件
-
-手动安装时，把最新发布的插件文件复制到：
-
-```text
-.obsidian/plugins/narrative-canvas/
-```
-
-然后重新加载 Obsidian，在 Community plugins 里启用 `Narrative Canvas`。
-
-### 基本流程
-
-1. 打开 `Narrative.canvas`。
-2. 从 Node Library 添加节点。
-3. 从一个节点的输出端口连到另一个节点的输入端口。
-4. 用 Frame 归组节点。需要进入 Events Sheet 的内容使用 Event Frame。
-5. 选中节点，在右侧 Inspector 编辑。
-6. 在 Story 里查看从 Entry 可到达的故事顺序。
-7. 点击 Play 预览当前叙事路线。
-8. 结构整理好后保存或导出。
-
-### 节点类型
-
-- **Entry** 是：Play 的起点。
-- **Content**：叙述或场景文字。
-- **Dialog**：角色对话。Dialog 标题和角色名一致时，会被识别为 Speaker。
-- **Choice**：将每一行 choice 作为Play 里的一个按钮。
-- **Condition**：读取简单条件，例如 `trust == high`。
-- **Set**：写入变量值。
-- **Jump**：标记路线转场或目标位置。它不会自动传送流程，需要把它连到下一个要访问的节点。
-- **Marker**：规划备注。
-- **Frame**：视觉分组。
-- **Event Frame**：故事节拍分组，并在 Events Sheet 里生成一行。
-
-所有 node type 默认模板可以重命名、隐藏、删除、恢复、改颜色，也可以调整字段。
-
-### Canvas 操作
-
-- 拖动节点头部可以移动节点。
-- 点击输出端口，再点击输入端口，可以建立连线。
-- 连线过程中双击空白画布，可以取消待建立的连线。
-- 右键点击已有的连线，可以选择重连或删除。
-
-### Story
-
-Story 显示从 Entry 节点可到达的结构。非 frame 节点只有从 Entry 可到达时才显示。Frame 节点本身可到达，或者包含了需要显示的子节点时，会显示在 Story 里。
-
-Story 里的包含关系来自 canvas 上的几何位置。判断一个节点是否在某个 frame 内，只看节点中心点：中心点在 frame 内，就算属于这个 frame；节点整个外框不必完全落在 frame 内。如果多个 frame 同时包含这个中心点，Story 会把节点折进面积最小的那个 frame。Frame 节点也可以折进另一个 frame，但只会折进面积更大的 frame，避免 frame 之间形成嵌套循环。
-
-Story 的显示读取当前 canvas 的连线和几何位置；Story 里的操作会反写到 canvas。把 Story 条目拖进 frame，会把该节点移动到 frame 内；如果拖动的是 frame，也会带着它在 Story 里的后代一起移动。必要时，目标 frame 会扩展以包住被拖入的内容。把条目拖到根层级，会把节点移到 frame 外，并避开其他 frame。
-
-手动拖动产生的 Story 顺序会写入 `storyOrder`。`Re-sort by graph` 会清掉这些手动顺序，回到当前连线顺序。
-
-Story 里的 `Focus` 会选中节点，打开 Node inspector，把节点以 100% 缩放居中到 canvas。
-
-### Events Sheet
-
-只有 Event Frame 节点会进入 Events Sheet。用户自定义出多种 Event Frame 类型时，不同类型会分成不同表格。
-
-列可以重命名、隐藏或删除。隐藏的列会集中显示在每张表最右侧的 `Hidden` 列里，方便恢复。删除 schema 字段时，会从 Event Frame 类型定义里移除该字段，并清掉已有 Event Frame 节点上的对应值。
-
-`Re-sort by graph` 会清掉手动行顺序，按当前 canvas 连线关系重新排序。
-
-### Characters
-
-角色可以通过 Cast chips 关联到节点：
-
-- `POV`
-- `Speaker`
-- `Present`
-- `Mentioned`
-- `Target`
-- `Owner`
-
-也可以在节点正文里输入 `@角色名` 创建自然引用。Characters 页面会按 Story 顺序列出角色相关节点，包括说话场景、在场场景、被提到的位置、拥有关系和事件框。
-
-Character focus 会高亮相关节点。
-
-### Playbook
-
-可以这样理解 `Playbook.json`：
-
-**Node Library 决定节点有哪些字段，Node Inspector 填这些字段，Playbook 决定 Play 预览时怎么读取这些字段。**
-
-它不是正文编辑器，也不是 JavaScript 运行器。它是一张给 Play 预览使用的规则表。
-
-#### 一个示例
-
-你想做一个选择：交出怀表后信任变高，否则走另一条路。
-
-Playbook：
+Choice option:
 
 ```json
 {
-  "variables": {
-    "trust": "unknown",
-    "watch": "Reyes's pocketwatch"
-  },
-  "nodeTypes": {
-    "Choice": {
-      "title": "{title}",
-      "body": "{body}",
-      "choices": "choices"
-    },
-    "Set": {
-      "body": "{variable} = {value}",
-      "set": {
-        "key": "variable",
-        "value": "value"
-      }
-    },
-    "Condition": {
-      "body": "{condition}",
-      "condition": "condition"
-    }
-  }
+  "label": "Hand over {watch}",
+  "requires": "trust_level >= 1",
+  "effects": [
+    { "op": "set", "key": "watch_owner", "value": "Reyes" },
+    { "op": "add", "key": "trust_level", "value": "1" }
+  ]
 }
 ```
 
-节点填写：
-
-Choice 节点 `choices`：
+Node Requirement:
 
 ```text
-Hand over {watch}
-Keep {watch} hidden
+trust_level >= 2 && lantern_lit == true
 ```
 
-Set 节点：
+Result: Play shows buttons with variable replacement, unavailable choices can be hidden or disabled, option Effects change variables only when that option is chosen, and node Requirements (or matching Playbook gate actions) can control the route.
 
-```text
-variable: trust
-value: high
-```
-
-Condition：
-
-```text
-condition: trust == high
-```
-
-结果：Play 里按钮能显示变量，经过 Set 会改变量，Condition 会按变量走不同连线。

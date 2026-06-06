@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Narrative Canvas</title>
-    <link rel="stylesheet" href="./canvas.css?v=20260604-ui">
+    <link rel="stylesheet" href="./canvas.css?v=1.1.0">
   </head>
   <body>
     <div class="app-shell">
@@ -74,7 +74,6 @@
             <select id="customNodeKind" title="Node behavior">
               <option value="node">Node</option>
               <option value="frame">Frame</option>
-              <option value="eventFrame">Event Frame</option>
             </select>
             <textarea id="customNodeFields" class="custom-node-fields" rows="3" placeholder="Fields, one per line" spellcheck="false"></textarea>
           </div>
@@ -121,6 +120,7 @@
           <div class="canvas-frame">
             <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
               <div id="canvasContent" class="canvas-content">
+                <div id="frameLayer" class="frame-layer"></div>
                 <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
                 <div id="nodeLayer" class="node-layer"></div>
                 <div id="marqueeLayer" class="marquee-layer"><div id="marqueeRect" class="marquee-rect" hidden></div></div>
@@ -149,7 +149,11 @@
               Find
               <input id="eventSearchInput" type="search" data-event-search placeholder="Find event" spellcheck="false">
             </label>
-            <div id="matchCount" data-search-scope="adventure">0 matches</div>
+            <label class="workspace-search-box playbook-search-box" data-search-scope="variables" hidden>
+              Find
+              <input id="playbookSearchInput" type="search" data-playbook-search placeholder="Find in Playbook" spellcheck="false">
+            </label>
+            <div id="matchCount">0 / 0</div>
           </div>
         </footer>
       </main>
@@ -249,7 +253,7 @@
           <span class="pane-kicker">Events Sheet</span>
           <h2>Reset sheet columns?</h2>
           <p class="confirm-body">
-            This restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Event Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.
+            This restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.
           </p>
         </header>
         <footer class="confirm-actions">
@@ -268,6 +272,7 @@
         </header>
         <footer class="confirm-actions">
           <button id="genericConfirmButton" class="small-button danger-button" value="confirm">Confirm</button>
+          <button id="genericConfirmSecondaryButton" class="small-button" value="secondary" hidden>Keep</button>
           <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
         </footer>
       </form>
@@ -301,12 +306,11 @@
           <section>
             <h3>Can do</h3>
             <ul>
-                <li>Store project variables for text like <code>{traveler}</code>.</li>
-                <li>Build category-based state lines such as <code>Set Variable TalkWChief to True</code>.</li>
-                <li>Tell Play which node field becomes title, body, or choice buttons.</li>
-                <li>Write variables when a node is visited.</li>
-                <li>Read simple condition fields such as <code>flag == true</code>.</li>
-                <li>Use the builder for common rules and Advanced JSON for exact edits.</li>
+              <li>Store project variables for text such as <code>{traveler}</code>.</li>
+              <li>Batch-edit node Requirements, Effects, and Routing in Script Builder.</li>
+              <li>Gate simple branches with conditions such as <code>flag == true</code>.</li>
+              <li>Control the demo runner with Start Node, Choice Display, End Condition, Visit Tracking, and Debug Mode.</li>
+              <li>Use Advanced JSON for exact edits without changing the canvas schema.</li>
             </ul>
           </section>
           <section>
@@ -315,19 +319,16 @@
               <li>Run arbitrary JavaScript.</li>
               <li>Create canvas links, move nodes, or change layout.</li>
               <li>Add or delete node fields directly. Use Node Library for schema changes.</li>
-              <li>Evaluate complex code expressions.</li>
+              <li>Replace a game engine runtime or evaluate complex code expressions.</li>
             </ul>
           </section>
         </div>
   <pre class="playbook-example"><code>{
-    "variables": { "flag": false },
-    "actions": [
-      { "trigger": "onVisit", "target": "Dialog", "op": "set", "category": "Variable", "key": "TalkWChief", "value": "True" }
-    ],
-    "nodeTypes": {
-      "Choice": { "body": "{body}", "choices": "choices" },
-    "Set": { "set": { "key": "variable", "value": "value" } },
-    "Condition": { "condition": "condition" }
+  "variables": { "has_badge": false, "trust": 1 },
+  "playRules": {
+    "startNode": { "enabled": true, "value": "Start" },
+    "choiceDisplay": { "enabled": true, "value": "hideUnavailable" },
+    "debugMode": { "enabled": false, "value": false }
   }
 }</code></pre>
         <footer class="confirm-actions">
@@ -342,30 +343,26 @@
           <span class="pane-kicker">Playbook</span>
           <h2>Add play rule</h2>
         </header>
-        <label class="field">
-          <span>Apply to (node type, label, or node id)</span>
-          <input id="playRuleTargetInput" spellcheck="false" autocomplete="off" placeholder="Content">
-        </label>
         <div class="playbook-rule-options">
-          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="text">
-            <strong>Text template</strong>
-            <span>Title and body for a node type.</span>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="startNode">
+            <strong>Start Node</strong>
+            <span>Choose the exact node title Play starts from.</span>
           </button>
-          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="choices">
-            <strong>Choices</strong>
-            <span>Turn a field into Play buttons.</span>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="choiceDisplay">
+            <strong>Choice Display</strong>
+            <span>Decide how gated choices appear in Play.</span>
           </button>
-          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="set">
-            <strong>Set variable</strong>
-            <span>Write state when a node is visited.</span>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="endCondition">
+            <strong>End Condition</strong>
+            <span>Stop the demo route when a condition becomes true.</span>
           </button>
-          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="condition">
-            <strong>Condition gate</strong>
-            <span>Use a field to decide if a node can run.</span>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="visitTracking">
+            <strong>Visit Tracking</strong>
+            <span>Record visited node titles during Play.</span>
           </button>
-          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="selected">
-            <strong>From selected node</strong>
-            <span>Infer a rule from the selected node.</span>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="debugMode">
+            <strong>Debug Mode</strong>
+            <span>Show variable and condition details while previewing.</span>
           </button>
         </div>
         <footer class="confirm-actions">
@@ -407,7 +404,6 @@
           <select id="nodeTypeKindInput">
             <option value="node">Node</option>
             <option value="frame">Frame</option>
-            <option value="eventFrame">Event Frame</option>
           </select>
         </label>
         <label class="field">
@@ -422,6 +418,10 @@
           <label class="nc-checkbox-field">
             <input id="nodeTypeHiddenInput" type="checkbox">
             <span>Hide from library</span>
+          </label>
+          <label class="nc-checkbox-field">
+            <input id="nodeTypeEventHiddenInput" type="checkbox">
+            <span>Hide frame rows from Events Sheet</span>
           </label>
         </div>
         <footer class="confirm-actions">
