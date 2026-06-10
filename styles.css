@@ -3915,6 +3915,40 @@
   line-height: 1.25;
 }
 
+.narrative-canvas-plugin-host .playbook-rule-allset {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--background-secondary, rgba(255, 255, 255, 0.04));
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.narrative-canvas-plugin-host .play-rule-status {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.3;
+  min-height: 14px;
+}
+
+.narrative-canvas-plugin-host .play-rule-status-empty {
+  display: none;
+}
+
+.narrative-canvas-plugin-host .play-rule-status-ok {
+  color: var(--text-success, #4caf50);
+}
+
+.narrative-canvas-plugin-host .play-rule-status-unknown {
+  color: var(--text-warning, #c9962b);
+}
+
+.narrative-canvas-plugin-host .play-rule-status-invalid {
+  color: var(--text-error, #d94a4a);
+}
+
 .narrative-canvas-plugin-host .confirm-actions {
   display: flex;
   justify-content: flex-end;
@@ -4206,4 +4240,58 @@
     right: 12px;
     bottom: auto;
   }
+}
+
+.narrative-canvas-plugin-host textarea[data-project-field="variables"]::selection {
+  background: rgba(255, 196, 96, 0.55);
+  color: inherit;
+}
+
+.narrative-canvas-plugin-host .app-shell[data-theme="light"] textarea[data-project-field="variables"]::selection, .narrative-canvas-plugin-host .app-shell[data-theme="light"] textarea[data-project-field="variables"]::selection {
+  background: rgba(220, 130, 0, 0.4);
+  color: inherit;
+}
+
+.narrative-canvas-plugin-host .playbook-json-frame {
+  position: relative;
+  display: block;
+}
+
+.narrative-canvas-plugin-host .playbook-json-highlight {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: rgba(255, 196, 96, 0.32);
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 1;
+  transition: top 90ms ease-out;
+}
+
+.narrative-canvas-plugin-host .app-shell[data-theme="light"] .playbook-json-highlight, .narrative-canvas-plugin-host .app-shell[data-theme="light"] .playbook-json-highlight {
+  background: rgba(220, 130, 0, 0.22);
+}
+
+.narrative-canvas-plugin-host .app-shell[data-theme="light"] .small-button:not(.primary):not(.danger-button), .narrative-canvas-plugin-host .app-shell[data-theme="light"] .small-button:not(.primary):not(.danger-button), .narrative-canvas-plugin-host .app-shell[data-theme="light"] .toolbar-button:not(.primary):not(.danger-button), .narrative-canvas-plugin-host .app-shell[data-theme="light"] .toolbar-button:not(.primary):not(.danger-button) {
+  border-color: rgba(35, 31, 27, 0.3);
+  background: rgba(35, 31, 27, 0.045);
+  color: var(--text-normal);
+  box-shadow: inset 0 -1px 0 rgba(35, 31, 27, 0.06);
+}
+
+.narrative-canvas-plugin-host .app-shell[data-theme="light"] .small-button:not(.primary):not(.danger-button):hover, .narrative-canvas-plugin-host .app-shell[data-theme="light"] .small-button:not(.primary):not(.danger-button):hover, .narrative-canvas-plugin-host .app-shell[data-theme="light"] .toolbar-button:not(.primary):not(.danger-button):hover, .narrative-canvas-plugin-host .app-shell[data-theme="light"] .toolbar-button:not(.primary):not(.danger-button):hover {
+  border-color: rgba(35, 31, 27, 0.42);
+  background: rgba(35, 31, 27, 0.085);
+}
+
+.narrative-canvas-plugin-host .app-shell[data-theme="light"] .help-button, .narrative-canvas-plugin-host .app-shell[data-theme="light"] .help-button {
+  border-color: rgba(35, 31, 27, 0.3);
+  background: rgba(35, 31, 27, 0.045);
+  color: var(--text-normal);
+}
+
+.narrative-canvas-plugin-host .app-shell[data-theme="light"] .inspector-tab:not(.active):not(:disabled), .narrative-canvas-plugin-host .app-shell[data-theme="light"] .inspector-tab:not(.active):not(:disabled), .narrative-canvas-plugin-host .app-shell[data-theme="light"] .playbook-tab:not(.active):not(:disabled), .narrative-canvas-plugin-host .app-shell[data-theme="light"] .playbook-tab:not(.active):not(:disabled) {
+  border-color: rgba(35, 31, 27, 0.18);
+  background: rgba(35, 31, 27, 0.04);
+  color: var(--text-normal);
 }

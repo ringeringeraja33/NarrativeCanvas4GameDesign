@@ -469,10 +469,10 @@ const fileViews = {
 };
 
 const fileViewLabels = {
-  adventure: "Narrative canvas page",
-  characters: "Characters page",
-  events: "Events sheet page",
-  variables: "Playbook page"
+  adventure: "Narrative canvas",
+  characters: "Characters",
+  events: "Events sheet",
+  variables: "Playbook"
 };
 
 const uiTranslations = {
@@ -481,6 +481,10 @@ const uiTranslations = {
     "Add character": "添加角色",
     "Add frame": "添加框架",
     "Add play rule": "添加演示规则",
+    "All play rules already enabled.": "演示规则已全部启用。",
+    "OK": "OK",
+    "Invalid expression": "表达式无法解析",
+    "Unknown variable: {key}": "未识别的变量：{key}",
     "Add script line": "添加旧脚本行",
     "Add variable": "添加变量",
     "Advanced JSON": "高级 JSON",
@@ -718,7 +722,6 @@ const uiTranslations = {
     "Cannot do": "不能做",
     "Control the demo runner with Start Node, Choice Display, End Condition, Visit Tracking, and Debug Mode.": "用起始节点、选项显示、结束条件、访问记录和调试模式控制演示路线。",
     "Create canvas links, move nodes, or change layout.": "创建画布连线、移动节点或更改布局。",
-    "Characters page": "角色",
     "Choice Display": "选项显示",
     "Choose the exact node title Play starts from.": "填写演示开始时使用的精确节点标题。",
     "Close preview": "关闭演示",
@@ -740,7 +743,7 @@ const uiTranslations = {
     "End route": "结束路线",
     "Effects": "效果",
     "Event Column": "事件列",
-    "Events sheet page": "事件表",
+    "Events sheet": "事件表",
     "Exact node title": "精确节点标题",
     "Go to title": "跳到标题",
     "Got it": "知道了",
@@ -751,13 +754,12 @@ const uiTranslations = {
     "Keep": "保留",
     "Matches 1 node by title.": "按标题匹配到 1 个节点。",
     "Matches node:": "匹配节点：",
-    "Narrative canvas page": "叙事画布",
+    "Narrative canvas": "叙事画布",
     "Next page": "下一页",
     "No editable node logic yet.": "还没有可编辑的节点逻辑。",
     "No effects yet.": "还没有效果。",
     "No matching node, type, or ID.": "没有匹配的节点、类型或 ID。",
     "All characters are hidden.": "所有角色都已隐藏。",
-    "Playbook page": "演示设置",
     "Playbook sections": "演示设置分区",
     "Playbook.json stores variables, node logic, and demo runner rules. Variables define state. Script Builder batch-edits node Requirements, Effects, and Routing. Play Rules only control the sample runner: start node, choice display, end condition, visit tracking, and debug mode. It does not run JavaScript or replace a game engine.": "Playbook.json 保存变量、节点逻辑和演示运行规则。变量定义状态；脚本构建器批量编辑节点的条件要求、效果和路线；演示规则只控制样例演示器的起始节点、选项显示、结束条件、访问记录和调试模式。它不会运行 JavaScript，也不能替代游戏引擎。",
     "Previous": "上一页",
@@ -2068,6 +2070,8 @@ function localizePlayRuleDialog() {
     button.querySelector("strong").textContent = t(title);
     button.querySelector("span").textContent = t(body);
   });
+  const allSet = dialog.querySelector("[data-playbook-rule-allset]");
+  if (allSet) allSet.textContent = t("All play rules already enabled.");
   const cancel = dialog.querySelector(".confirm-cancel");
   if (cancel) cancel.textContent = t("Cancel");
 }
@@ -2614,6 +2618,7 @@ function renderVariablesPage(options = {}) {
   const ruleCards = getPlaybookRuleCards();
   const actionCount = actions.length;
   const ruleCount = ruleCards.length;
+  const optionalRuleCount = ruleCards.filter((card) => !card.required).length;
   const limit = getDocumentRenderLimit("variables");
   const visibleEntries = entries.slice(0, limit);
   const activeCategoryFilter = state.playbookCategoryFilter;
@@ -2630,7 +2635,7 @@ function renderVariablesPage(options = {}) {
         <div>
           <span class="pane-kicker">Playbook</span>
           <h2>${PLAYBOOK_FILE_NAME}</h2>
-          <div class="document-meta">${t("{variables} variables, {rules} Play rules, {actions} node logic rows", { variables: entries.length, rules: ruleCount, actions: scriptNodes.length })}</div>
+          <div class="document-meta">${t("{variables} variables, {rules} Play rules, {actions} node logic rows", { variables: entries.length, rules: optionalRuleCount, actions: scriptNodes.length })}</div>
         </div>
         <div class="document-actions">
           <button class="help-button" type="button" data-action="show-playbook-help" aria-label="${escapeAttr(t("What can Playbook.json do?"))}">?</button>
@@ -2692,13 +2697,17 @@ function renderVariablesPage(options = {}) {
       ${state.playbookJsonOpen ? `
         <label class="field json-field">
           <span>${t("Advanced JSON")}</span>
-          <textarea data-project-field="variables" data-playbook-json-version="${state.dirtyVersion}" rows="${getPlaybookJsonRows(playbookJson)}" spellcheck="false">${escapeHtml(playbookJson)}</textarea>
+          <div class="playbook-json-frame">
+            <textarea data-project-field="variables" data-playbook-json-version="${state.dirtyVersion}" rows="${getPlaybookJsonRows(playbookJson)}" spellcheck="false">${escapeHtml(playbookJson)}</textarea>
+            <div class="playbook-json-highlight" data-playbook-json-highlight hidden></div>
+          </div>
         </label>
       ` : ""}
     </div>
   `;
   requestAnimationFrame(() => {
     const textarea = resizePlaybookJsonTextarea();
+    restorePlaybookJsonSearchHighlight();
     if (options.focusJsonToken) focusPlaybookJsonToken(options.focusJsonToken, textarea);
     focusPendingPlaybookTarget();
   });
@@ -2957,6 +2966,7 @@ function renderRunnerRuleCardModel(id, rule) {
       <label class="field">
         <span>${t("End Condition")}</span>
         <input data-runner-rule-field="endCondition" value="${escapeAttr(rule.value || "")}" placeholder="ending_reached == true" spellcheck="false">
+        <small class="play-rule-status play-rule-status-${getEndConditionStatus(rule.value).status}" data-end-condition-status>${escapeHtml(formatEndConditionStatusLabel(getEndConditionStatus(rule.value)))}</small>
       </label>
     `,
     visitTracking: `
@@ -5691,11 +5701,38 @@ function showPlaybookHelp() {
 }
 
 function showPlayRuleDialog() {
+  const firstDisabled = getFirstDisabledPlayRuleKind();
   if (dom.playRuleDialog?.showModal) {
+    refreshPlayRuleDialogAvailability();
     if (!dom.playRuleDialog.open) dom.playRuleDialog.showModal();
     return;
   }
-  addPlaybookRule("endCondition");
+  if (firstDisabled) addPlaybookRule(firstDisabled);
+}
+
+function getFirstDisabledPlayRuleKind() {
+  const rules = getRunnerRules();
+  return ["startNode", "choiceDisplay", "endCondition", "visitTracking", "debugMode"]
+    .find((key) => !rules[key]?.enabled) || "";
+}
+
+function refreshPlayRuleDialogAvailability() {
+  const dialog = dom.playRuleDialog;
+  if (!dialog) return;
+  const rules = getRunnerRules();
+  let remaining = 0;
+  dialog.querySelectorAll("[data-playbook-rule-kind]").forEach((button) => {
+    const kind = button.dataset.playbookRuleKind;
+    const enabled = Boolean(rules[kind]?.enabled);
+    button.hidden = enabled;
+    button.disabled = enabled;
+    if (!enabled) remaining += 1;
+  });
+  const allSetMessage = dialog.querySelector("[data-playbook-rule-allset]");
+  if (allSetMessage) {
+    allSetMessage.hidden = remaining > 0;
+    allSetMessage.textContent = t("All play rules already enabled.");
+  }
 }
 
 function showNodeContextMenu(nodeId, clientX, clientY) {
@@ -5963,9 +6000,6 @@ function selectFile(fileId) {
 
   renderDocumentFileSwitch();
   setStatus(`${PLAYBOOK_FILE_NAME} opened.`);
-  requestAnimationFrame(() => {
-    dom.variablesPanel?.querySelector("[data-project-field='variables']")?.focus();
-  });
 }
 
 function renderDocumentFileSwitch() {
@@ -6079,6 +6113,7 @@ function handleInput(event) {
   if (target.hasAttribute && target.hasAttribute("data-playbook-search")) {
     state.playbookSearch = target.value;
     state.playbookSearchIndex = -1;
+    hidePlaybookJsonSearchHighlight();
     refreshWorkspaceSearchCount();
     return;
   }
@@ -6137,6 +6172,7 @@ function handleInput(event) {
   }
   if (target.dataset.runnerRuleField) {
     setRunnerRuleField(target.dataset.runnerRuleField, getRunnerRuleInputValue(target), false);
+    if (target.dataset.runnerRuleField === "endCondition") updateEndConditionStatusHint(target);
     return;
   }
 
@@ -8935,20 +8971,137 @@ function focusSearchMatch(scope, match) {
 }
 
 function focusPlaybookJsonAtOffset(offset) {
+  const wasOpen = state.playbookJsonOpen;
   state.playbookJsonOpen = true;
-  renderVariablesPage();
-  requestAnimationFrame(() => {
+  if (!wasOpen) renderVariablesPage();
+  const searchInput = dom.playbookSearchInput;
+  const restoreSearchFocus = document.activeElement === searchInput;
+  const searchCaretStart = restoreSearchFocus ? searchInput.selectionStart : null;
+  const searchCaretEnd = restoreSearchFocus ? searchInput.selectionEnd : null;
+  const searchDirection = restoreSearchFocus ? searchInput.selectionDirection : "none";
+  const apply = () => {
     const textarea = dom.variablesPanel?.querySelector('textarea[data-project-field="variables"]');
     if (!textarea) return;
     const length = (state.playbookSearch || "").length;
     const end = offset + Math.max(0, length);
-    textarea.focus();
-    try { textarea.setSelectionRange(offset, end); } catch (_error) { /* no-op */ }
-    const before = textarea.value.slice(0, offset);
-    const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight) || 18;
-    const lineIndex = (before.match(/\n/g) || []).length;
-    textarea.scrollTop = Math.max(0, lineIndex * lineHeight - textarea.clientHeight / 2);
+    const highlight = showPlaybookJsonSearchHighlight(textarea, offset, end);
+    centerPlaybookJsonOffset(textarea, offset, highlight);
+    if (restoreSearchFocus && searchInput) {
+      try {
+        searchInput.focus({ preventScroll: true });
+      } catch (_error) {
+        searchInput.focus();
+      }
+      if (searchCaretStart != null && searchCaretEnd != null && typeof searchInput.setSelectionRange === "function") {
+        try { searchInput.setSelectionRange(searchCaretStart, searchCaretEnd, searchDirection || "none"); } catch (_error) { /* no-op */ }
+      }
+    }
+  };
+  if (wasOpen) apply();
+  else requestAnimationFrame(apply);
+}
+
+function restorePlaybookJsonSearchHighlight() {
+  if (!state.playbookJsonOpen || state.playbookSearchIndex < 0 || !(state.playbookSearch || "").trim()) return;
+  requestAnimationFrame(() => {
+    if (!state.playbookJsonOpen || state.playbookSearchIndex < 0 || !(state.playbookSearch || "").trim()) return;
+    const textarea = dom.variablesPanel?.querySelector('textarea[data-project-field="variables"]');
+    if (!textarea) return;
+    const matches = getPlaybookSearchMatchOffsets();
+    const offset = matches[state.playbookSearchIndex];
+    if (!Number.isFinite(offset)) {
+      hidePlaybookJsonSearchHighlight();
+      return;
+    }
+    const length = (state.playbookSearch || "").length;
+    const highlight = showPlaybookJsonSearchHighlight(textarea, offset, offset + Math.max(0, length));
+    if (document.activeElement === dom.playbookSearchInput) centerPlaybookJsonOffset(textarea, offset, highlight);
   });
+}
+
+function hidePlaybookJsonSearchHighlight() {
+  const highlight = dom.variablesPanel?.querySelector("[data-playbook-json-highlight]");
+  if (!highlight) return;
+  highlight.hidden = true;
+  highlight.removeAttribute("data-search-match-start");
+  highlight.removeAttribute("data-search-match-end");
+}
+
+function showPlaybookJsonSearchHighlight(textarea, start, end) {
+  const highlight = dom.variablesPanel?.querySelector("[data-playbook-json-highlight]");
+  if (!highlight) return null;
+  const metrics = getPlaybookJsonLineMetrics(textarea, start);
+  highlight.style.top = `${metrics.top}px`;
+  highlight.style.height = `${metrics.lineHeight}px`;
+  highlight.hidden = false;
+  highlight.dataset.searchMatchStart = String(start);
+  highlight.dataset.searchMatchEnd = String(end);
+  return highlight;
+}
+
+function centerPlaybookJsonOffset(textarea, offset, highlight = null) {
+  const metrics = getPlaybookJsonLineMetrics(textarea, offset);
+  const scrollable = findScrollableAncestor(textarea);
+  if (!scrollable) return;
+  const textareaRect = textarea.getBoundingClientRect();
+  const lineCenterInViewport = textareaRect.top
+    + metrics.borderTop
+    + metrics.paddingTop
+    + metrics.lineIndex * metrics.lineHeight
+    + metrics.lineHeight / 2;
+  const isDocumentScroller = scrollable === document.scrollingElement
+    || scrollable === document.documentElement
+    || scrollable === document.body;
+  if (isDocumentScroller) {
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || scrollable.clientHeight;
+    const currentScrollTop = window.scrollY || scrollable.scrollTop || 0;
+    const maxScrollTop = Math.max(0, scrollable.scrollHeight - viewportHeight);
+    const targetScrollTop = clamp(currentScrollTop + lineCenterInViewport - viewportHeight / 2, 0, maxScrollTop);
+    if (typeof window.scrollTo === "function") {
+      window.scrollTo({ left: window.scrollX || 0, top: targetScrollTop, behavior: "auto" });
+    } else {
+      scrollable.scrollTop = targetScrollTop;
+    }
+    return;
+  }
+  const scrollableRect = scrollable.getBoundingClientRect();
+  const lineYInScrollable = (textareaRect.top - scrollableRect.top)
+    + scrollable.scrollTop
+    + metrics.borderTop
+    + metrics.paddingTop
+    + metrics.lineIndex * metrics.lineHeight
+    + metrics.lineHeight / 2;
+  const maxScrollTop = Math.max(0, scrollable.scrollHeight - scrollable.clientHeight);
+  const targetScrollTop = clamp(lineYInScrollable - scrollable.clientHeight / 2, 0, maxScrollTop);
+  scrollable.scrollTop = targetScrollTop;
+}
+
+function getPlaybookJsonLineMetrics(textarea, offset) {
+  const style = window.getComputedStyle ? window.getComputedStyle(textarea) : null;
+  const parsedLineHeight = Number.parseFloat(style?.lineHeight || "");
+  const fontSize = Number.parseFloat(style?.fontSize || "");
+  const lineHeight = Number.isFinite(parsedLineHeight) ? parsedLineHeight : Math.max(18, (Number.isFinite(fontSize) ? fontSize * 1.35 : 18));
+  const paddingTop = Number.parseFloat(style?.paddingTop || "") || 0;
+  const borderTop = Number.parseFloat(style?.borderTopWidth || "") || 0;
+  const before = textarea.value.slice(0, Math.max(0, offset));
+  const lineIndex = (before.match(/\n/g) || []).length;
+  return {
+    lineIndex,
+    lineHeight,
+    borderTop,
+    paddingTop,
+    top: textarea.offsetTop + borderTop + paddingTop + lineIndex * lineHeight
+  };
+}
+
+function findScrollableAncestor(element) {
+  let node = element?.parentElement;
+  while (node && node !== document.body) {
+    const style = window.getComputedStyle(node);
+    if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
 }
 
 function focusCanvasNode(id) {
@@ -9196,6 +9349,7 @@ function finishNodeTypeBadgeEdit(message) {
 
 function setProjectField(field, value) {
   if (field === "variables") {
+    if (value === buildVariablesJson()) return;
     try {
       applyScriptJson(value);
       setStatus("Playbook JSON updated.");
@@ -11689,6 +11843,68 @@ function isPreviewEndConditionMet() {
   return Boolean(rule?.enabled && rule.value && evaluateCondition(rule.value));
 }
 
+function getEndConditionStatus(source) {
+  const text = String(source || "").trim();
+  if (!text) return { status: "empty" };
+  const variables = normalizeVariablesObject(state.project.variables);
+  const unknown = collectEndConditionUnknownKeys(text, variables);
+  if (unknown === null) return { status: "invalid" };
+  if (unknown.length) return { status: "unknown", key: unknown[0] };
+  return { status: "ok" };
+}
+
+function collectEndConditionUnknownKeys(text, variables) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return [];
+  const orParts = splitConditionExpression(trimmed, "||");
+  if (orParts.length > 1) {
+    const merged = [];
+    for (const part of orParts) {
+      const sub = collectEndConditionUnknownKeys(part, variables);
+      if (sub === null) return null;
+      merged.push(...sub);
+    }
+    return merged;
+  }
+  const andParts = splitConditionExpression(trimmed, "&&");
+  if (andParts.length > 1) {
+    const merged = [];
+    for (const part of andParts) {
+      const sub = collectEndConditionUnknownKeys(part, variables);
+      if (sub === null) return null;
+      merged.push(...sub);
+    }
+    return merged;
+  }
+  const bareIdentifier = trimmed.match(/^([a-zA-Z_][\w.-]*)$/);
+  if (bareIdentifier) {
+    const key = bareIdentifier[1];
+    return Object.prototype.hasOwnProperty.call(variables, key) ? [] : [key];
+  }
+  const match = trimmed.match(/^\s*([a-zA-Z_][\w.-]*)\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*$/);
+  if (!match) return null;
+  const key = match[1];
+  return Object.prototype.hasOwnProperty.call(variables, key) ? [] : [key];
+}
+
+function formatEndConditionStatusLabel(status) {
+  if (!status || status.status === "empty") return "";
+  if (status.status === "ok") return t("OK");
+  if (status.status === "invalid") return t("Invalid expression");
+  if (status.status === "unknown") return t("Unknown variable: {key}", { key: status.key });
+  return "";
+}
+
+function updateEndConditionStatusHint(input) {
+  if (!input) return;
+  const hint = input.parentElement?.querySelector("[data-end-condition-status]");
+  if (!hint) return;
+  const status = getEndConditionStatus(input.value);
+  hint.textContent = formatEndConditionStatusLabel(status);
+  hint.classList.remove("play-rule-status-empty", "play-rule-status-ok", "play-rule-status-invalid", "play-rule-status-unknown");
+  hint.classList.add(`play-rule-status-${status.status}`);
+}
+
 function getRunnerRuleValue(key) {
   const rule = getRunnerRules()[key];
   return rule?.enabled ? rule.value : "";
@@ -12196,6 +12412,8 @@ function evaluateCondition(source) {
   if (orParts.length > 1) return orParts.some((part) => evaluateCondition(part));
   const andParts = splitConditionExpression(text, "&&");
   if (andParts.length > 1) return andParts.every((part) => evaluateCondition(part));
+  const bareIdentifier = text.match(/^([a-zA-Z_][\w.-]*)$/);
+  if (bareIdentifier) return coerceBoolean(state.project.variables?.[bareIdentifier[1]]);
   const match = text.match(/^\s*([a-zA-Z_][\w.-]*)\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*$/);
   if (!match) return false;
   const actualRaw = state.project.variables?.[match[1]];

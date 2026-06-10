@@ -752,8 +752,85 @@
         await waitFor(`${label}: playbook Advanced JSON opens`, () => Boolean(doc.querySelector("textarea[data-project-field='variables']")));
         const playbookJsonEditor = doc.querySelector("textarea[data-project-field='variables']");
         assert(`${label}: playbook JSON editor is available after adding variable`, Boolean(playbookJsonEditor));
-        (playbookJsonEditor || doc.activeElement || doc.body).dispatchEvent(new win.KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }));
-        await waitFor(`${label}: Ctrl+Z undoes playbook edit`, () => doc.querySelectorAll(".variable-row:not(.variable-heading)").length === variableRowsBeforeUndo);
+        const playbookSearch = doc.querySelector("#playbookSearchInput");
+        assert(`${label}: playbook search input is available`, Boolean(playbookSearch));
+        if (playbookJsonEditor && playbookSearch) {
+          playbookJsonEditor.setSelectionRange(4, 4);
+          const jsonSelectionBeforeSearch = [playbookJsonEditor.selectionStart, playbookJsonEditor.selectionEnd].join(":");
+          setControlValue(win, playbookSearch, "trust_level");
+          playbookSearch.setSelectionRange(playbookSearch.value.length, playbookSearch.value.length);
+          playbookSearch.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+          await waitFor(`${label}: playbook search keeps focus on search box`, () => doc.activeElement === playbookSearch);
+          const getPlaybookHighlight = () => {
+            const element = doc.querySelector("[data-playbook-json-highlight]");
+            return element && element.isConnected && !element.hidden ? element : null;
+          };
+          await waitFor(`${label}: playbook search highlights Advanced JSON without editor focus`, () => (
+            getPlaybookHighlight()
+            && doc.activeElement === playbookSearch
+          ));
+          const variablesPanel = doc.querySelector("#variablesPanel");
+          const getPlaybookScrollContainer = () => {
+            const textarea = doc.querySelector("textarea[data-project-field='variables']");
+            let node = textarea?.parentElement;
+            while (node && node !== doc.body) {
+              const style = win.getComputedStyle(node);
+              if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+              node = node.parentElement;
+            }
+            return doc.scrollingElement || doc.documentElement;
+          };
+          const getPlaybookScrollContainerRect = (container) => {
+            if (!container) return null;
+            if (container === doc.scrollingElement || container === doc.documentElement || container === doc.body) {
+              return { top: 0, bottom: win.innerHeight, height: win.innerHeight };
+            }
+            return container.getBoundingClientRect();
+          };
+          const getPlaybookSearchCenterMetrics = () => {
+            const playbookHighlight = getPlaybookHighlight();
+            const scrollContainer = getPlaybookScrollContainer();
+            if (!playbookHighlight || !scrollContainer || playbookHighlight.hidden) return false;
+            const highlightRect = playbookHighlight.getBoundingClientRect();
+            const panelRect = getPlaybookScrollContainerRect(scrollContainer);
+            const highlightCenter = highlightRect.top + highlightRect.height / 2;
+            const panelCenter = panelRect.top + panelRect.height / 2;
+            const delta = Math.abs(highlightCenter - panelCenter);
+            return {
+              ok: delta < panelRect.height * 0.22,
+              delta,
+              threshold: panelRect.height * 0.22,
+              panelScrollTop: scrollContainer.scrollTop,
+              panelClientHeight: scrollContainer.clientHeight,
+              highlightTop: highlightRect.top,
+              highlightBottom: highlightRect.bottom,
+              panelTop: panelRect.top,
+              panelBottom: panelRect.bottom,
+              dataStart: playbookHighlight.dataset.searchMatchStart,
+              dataEnd: playbookHighlight.dataset.searchMatchEnd
+            };
+          };
+          await waitFor(`${label}: playbook search centers highlighted JSON line`, () => {
+            const metrics = getPlaybookSearchCenterMetrics();
+            return Boolean(metrics && metrics.ok);
+          });
+          const firstSearchMatchStart = getPlaybookHighlight()?.dataset.searchMatchStart || "";
+          const searchSelectionAfterFirst = [playbookSearch.selectionStart, playbookSearch.selectionEnd].join(":");
+          playbookSearch.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+          await waitFor(`${label}: playbook search advances to next JSON match`, () => (
+            doc.activeElement === playbookSearch
+            && getPlaybookHighlight()?.dataset.searchMatchStart !== firstSearchMatchStart
+            && doc.querySelector("#matchCount")?.textContent.trim().startsWith("2 /")
+          ));
+          await waitFor(`${label}: playbook search centers next JSON line`, () => {
+            const metrics = getPlaybookSearchCenterMetrics();
+            return Boolean(metrics && metrics.ok && doc.activeElement === playbookSearch);
+          });
+          assert(`${label}: playbook search preserves search caret`, [playbookSearch.selectionStart, playbookSearch.selectionEnd].join(":") === searchSelectionAfterFirst);
+          assert(`${label}: playbook search preserves JSON editor selection`, [playbookJsonEditor.selectionStart, playbookJsonEditor.selectionEnd].join(":") === jsonSelectionBeforeSearch);
+        }
+        click(undoButton);
+        await waitFor(`${label}: toolbar Undo undoes playbook edit after search`, () => doc.querySelectorAll(".variable-row:not(.variable-heading)").length === variableRowsBeforeUndo);
         const variableTypes = [...doc.querySelectorAll("[data-variable-field='type']")].map((select) => select.value);
         ["string", "number", "boolean", "json"].forEach((type) => {
           assert(`${label}: sample includes ${type} variable`, variableTypes.includes(type));
